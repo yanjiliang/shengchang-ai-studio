@@ -6,8 +6,11 @@ const CONFIG_DIR = path.join(homedir(), '.shengchang');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 
 export const DEFAULT_CONFIG = {
-  provider: 'volcengine-api-key',
-  endpoint: 'https://openspeech.bytedance.com/api/v3/tts/unidirectional',
+  // Demo on fresh installs (design A5): a stranger's first run — sample
+  // project, 一键成片, direction lab — works offline with zero keys. Existing
+  // installs keep whatever their config file says.
+  provider: 'demo',
+  endpoint: '',
   accessKey: '',
   resourceId: 'seed-tts-2.0',
   // The latest HTTP API only needs this for cloned voices. Official voices omit it.

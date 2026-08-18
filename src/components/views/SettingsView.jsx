@@ -12,6 +12,7 @@ export function SettingsView({ config, loading, onSave, onTestLlm, onToast }) {
   const [saving, setSaving] = useState(false);
   const [testingLlm, setTestingLlm] = useState(false);
   const [llmResult, setLlmResult] = useState(null);
+  const [demoBannerDismissed, setDemoBannerDismissed] = useState(false);
 
   useEffect(() => setDraft(config), [config]);
 
@@ -37,6 +38,7 @@ export function SettingsView({ config, loading, onSave, onTestLlm, onToast }) {
   return (
     <main className="asset-view settings-view">
       <header className="view-header"><div><span className="view-kicker">凭证仅存储在本机</span><h2>模型连接</h2><p>这里只配置语音与文本模型。角色音色在当前作品的“角色音色”中单独锁定。</p></div><span className={`provider-state ${draft.provider === 'demo' || draft.hasAccessKey ? 'is-ready' : ''}`}><ShieldCheck size={14} />{draft.provider === 'demo' ? '开发测试模式' : draft.hasAccessKey ? '凭证已保存' : '等待配置'}</span></header>
+      {draft.provider === 'demo' && !demoBannerDismissed ? <div className="demo-provider-banner"><span>当前为离线演示引擎，生成的是占位音——链路是真的，声音是假的。配置豆包语音 API Key 后即可生成真实语音。</span><button type="button" onClick={() => setDemoBannerDismissed(true)}>知道了</button></div> : null}
       <div className="settings-columns expanded-settings">
         <section className="settings-panel model-settings-panel">
           <div className="settings-panel-head"><KeyRound size={17} /><div><strong>语音模型</strong><p>新版豆包语音仅使用 API Key；角色 voice_id 在“角色音色”中固定。</p></div></div>

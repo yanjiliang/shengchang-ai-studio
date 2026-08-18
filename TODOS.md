@@ -17,25 +17,15 @@ only when `validateLlmConfig` fails; results carry `breakdown: 'heuristic'`,
 persisted to project state, shown as a sidebar badge and labeled in the task
 message. Covered by `server/story-analyzer.test.js` and e2e check #11.
 
-## TODO-2: Per-line continue-past-errors for batch generation
+## TODO-2: Per-line continue-past-errors - SHIPPED 2026-08-18
 
-- **What:** Change the generation loop to record per-line failures and continue,
-  instead of aborting at the first `synthesize` error, so one run surfaces ALL
-  failing lines at once.
-- **Why:** Better batch UX on large novels - today one bad line hides the state of
-  everything after it; the user fixes and retries blind.
-- **Pros:** Complete failure visibility per run; pairs naturally with an
-  attention-list UI.
-- **Cons:** Changes the manual generation flows' behavior (premise 3 tension from
-  the v1 design - "manual workbench untouched"); needs UI to surface per-line
-  failures, not just a count.
-- **Context:** Rejected for v1 at the 2026-08-14 eng review (OV-2) to keep manual
-  flows byte-identical. The natural moment to revisit is when B3's
-  `runGenerationRequests` extraction has landed - the helper becomes the single
-  place both manual and orchestrated generation flow through. Note the existing
-  failure path already captures partial results (`task-manager.js` - "已完成的 N
-  句已进入缓存").
-- **Depends on / blocked by:** B3 extraction (`runGenerationRequests`) landed.
+Shipped together with B3: the per-request loop now lives in the exported
+`runGenerationRequests` helper (`task-manager.js`), which collects per-line
+failures and continues instead of aborting. Partial failures complete the task
+with `result.failures[]` (lineId, text, error); all-failed runs keep `failed`
+status for one-click retry (successful lines replay from cache for free).
+The task history in 制作中心 renders a per-line failure detail list; toasts
+carry the failure count. The old "已完成的 N 句已进入缓存" message is superseded.
 
 ## Done 2026-08-18 (session follow-ups)
 
@@ -43,3 +33,9 @@ message. Covered by `server/story-analyzer.test.js` and e2e check #11.
 - GitHub Actions CI added (`.github/workflows/ci.yml`): Node 22, ffmpeg via apt,
   `npm test` + `npm run test:e2e`.
 - TODO-1 shipped (above).
+- B3 shipped: `runGenerationRequests` extracted in `task-manager.js` (injectable
+  `synthesize` for tests); App.jsx `runGeneration`/`generateBatch` merged into a
+  shared `runGenerationTask`. TODO-2 shipped on top of it (above). NOTE: the
+  one-click orchestrator from the 一键成片 design doc (one-click.js, stage
+  checkpointing) was never built in this repo - the design doc's B3–B6 plan is
+  the blueprint if it is ever wanted here.

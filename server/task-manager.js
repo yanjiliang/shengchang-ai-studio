@@ -108,6 +108,86 @@ function applyPronunciation(text, dictionary = []) {
   }, text);
 }
 
+// B3: the single pipeline every generation flow - manual scene/line, batch
+// fill/stale, and the future one-click orchestrator - runs requests through.
+// Per-line failures are collected and the run continues (TODO-2): one bad
+// line must not hide the state of the lines after it. synthesize is
+// injectable so tests can fail specific lines on demand.
+export async function runGenerationRequests(config, requests, { projectId, sceneId, onProgress, shouldCancel, synthesize: synthesizeLine = synthesize } = {}) {
+  const results = [];
+  const failures = [];
+  const projectDictionary = getProject(projectId)?.state?.pronunciationDictionary || [];
+  for (let index = 0; index < requests.length; index += 1) {
+    if (shouldCancel?.()) return { status: 'cancelled', results, failures };
+    const request = requests[index];
+    onProgress?.({ index, total: requests.length, message: `正在处理 ${index + 1} / ${requests.length} 句` });
+    try {
+      const resolved = { ...request, text: applyPronunciation(request.text, projectDictionary) };
+      const contentHash = audioContentHash(config, resolved);
+      const cached = findCachedAudio(contentHash);
+      if (await validCache(cached)) {
+        // Re-insert to bump created_at: eviction removes the least recently
+        // *used* entries, not the least recently generated ones.
+        cacheAudio({ contentHash, url: cached.url, mime: cached.mime, provider: cached.provider, model: cached.model, voiceId: cached.voice_id });
+        results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: cached.url, mime: cached.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: true, createdAt: Date.now() });
+      } else {
+        const recovered = await recoverCachedAudioFromDisk(contentHash);
+        if (recovered) {
+          cacheAudio({ contentHash, url: recovered.url, mime: recovered.mime, provider: config.provider || '', model: config.model || '', voiceId: resolved.voiceId || '' });
+          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: recovered.url, mime: recovered.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: true, createdAt: Date.now() });
+        } else {
+          const audio = await synthesizeLine(config, resolved);
+          const extension = extensionForMime(audio.mime, config.audioFormat);
+          const saved = await saveMedia(contentHash, extension, audio.buffer);
+          cacheAudio({ contentHash, url: saved.url, mime: audio.mime, provider: config.provider || '', model: config.model || '', voiceId: resolved.voiceId || '' });
+          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: saved.url, mime: audio.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: false, createdAt: Date.now() });
+        }
+      }
+    } catch (error) {
+      failures.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, text: request.text, error: error.name === 'AbortError' ? '模型请求超时' : error.message });
+    }
+  }
+  return { status: 'done', results, failures };
+}
+
+async function runGenerationTask(task, config) {
+  const requests = task.payload.requests || [];
+  updatePersistentTask(task.id, { status: 'running', progress: 2, message: '正在准备生成参数', startedAt: Date.now(), error: '' });
+  try {
+    const outcome = await runGenerationRequests(config, requests, {
+      projectId: task.projectId,
+      sceneId: task.sceneId,
+      onProgress: ({ index, total, message }) => updatePersistentTask(task.id, { message, progress: Math.max(3, Math.round((index / total) * 90)) }),
+      shouldCancel: () => Boolean(getPersistentTask(task.id)?.cancelRequested),
+    });
+    if (outcome.status === 'cancelled') {
+      updatePersistentTask(task.id, { status: 'cancelled', message: '任务已取消', result: { results: outcome.results }, completedAt: Date.now() });
+      return;
+    }
+    applyResultsToProject(task.projectId, task.sceneId, outcome.results);
+    await evictAudioCacheIfNeeded(config.cacheLimitGb);
+    const { results, failures } = outcome;
+    const cacheHits = results.filter((item) => item.cached).length;
+    if (failures.length) {
+      // All-failed runs keep the failed status so one-click retry applies;
+      // partial failures complete so the good audio lands in the project.
+      // Successful lines stay in the audio cache, so a retry replays them
+      // for free and only pays for the failed ones.
+      const allFailed = !results.length;
+      updatePersistentTask(task.id, {
+        status: allFailed ? 'failed' : 'completed', progress: 100,
+        message: allFailed ? `生成失败：${failures.length} 句全部失败` : `生成完成：${results.length} 句成功，${failures.length} 句失败（任务历史可逐句查看）`,
+        error: allFailed ? failures[0].error : '',
+        result: { results, failures, cacheHits }, completedAt: Date.now(),
+      });
+      return;
+    }
+    updatePersistentTask(task.id, { status: 'completed', progress: 100, message: cacheHits ? `生成完成，复用了 ${cacheHits} 条缓存` : '语音已生成并写入项目', result: { results, cacheHits }, completedAt: Date.now() });
+  } catch (error) {
+    updatePersistentTask(task.id, { status: 'failed', message: '生成失败', error: error.name === 'AbortError' ? '模型请求超时' : error.message, completedAt: Date.now() });
+  }
+}
+
 async function runTask(task) {
   const config = await readConfig();
   if (task.kind === 'export-project') {
@@ -144,51 +224,7 @@ async function runTask(task) {
     }
     return;
   }
-  const requests = task.payload.requests || [];
-  const results = [];
-  const projectDictionary = getProject(task.projectId)?.state?.pronunciationDictionary || [];
-  updatePersistentTask(task.id, { status: 'running', progress: 2, message: '正在准备生成参数', startedAt: Date.now(), error: '' });
-  try {
-    for (let index = 0; index < requests.length; index += 1) {
-      const latest = getPersistentTask(task.id);
-      if (latest.cancelRequested) {
-        updatePersistentTask(task.id, { status: 'cancelled', message: '任务已取消', result: { results }, completedAt: Date.now() });
-        return;
-      }
-      const request = requests[index];
-      const resolved = { ...request, text: applyPronunciation(request.text, projectDictionary) };
-      const contentHash = audioContentHash(config, resolved);
-      const cached = findCachedAudio(contentHash);
-      updatePersistentTask(task.id, { message: `正在处理 ${index + 1} / ${requests.length} 句`, progress: Math.max(3, Math.round((index / requests.length) * 90)) });
-      if (await validCache(cached)) {
-        // Re-insert to bump created_at: eviction removes the least recently
-        // *used* entries, not the least recently generated ones.
-        cacheAudio({ contentHash, url: cached.url, mime: cached.mime, provider: cached.provider, model: cached.model, voiceId: cached.voice_id });
-        results.push({ lineId: request.lineId, sceneId: request.sceneId || task.sceneId, url: cached.url, mime: cached.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: true, createdAt: Date.now() });
-      } else {
-        const recovered = await recoverCachedAudioFromDisk(contentHash);
-        if (recovered) {
-          cacheAudio({ contentHash, url: recovered.url, mime: recovered.mime, provider: config.provider, model: config.model, voiceId: resolved.voiceId || '' });
-          results.push({ lineId: request.lineId, sceneId: request.sceneId || task.sceneId, url: recovered.url, mime: recovered.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: true, createdAt: Date.now() });
-        } else {
-          const audio = await synthesize(config, resolved);
-          const extension = extensionForMime(audio.mime, config.audioFormat);
-          const saved = await saveMedia(contentHash, extension, audio.buffer);
-          cacheAudio({ contentHash, url: saved.url, mime: audio.mime, provider: config.provider, model: config.model, voiceId: resolved.voiceId || '' });
-          results.push({ lineId: request.lineId, sceneId: request.sceneId || task.sceneId, url: saved.url, mime: audio.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: false, createdAt: Date.now() });
-        }
-      }
-    }
-    applyResultsToProject(task.projectId, task.sceneId, results);
-    await evictAudioCacheIfNeeded(config.cacheLimitGb);
-    const cacheHits = results.filter((item) => item.cached).length;
-    updatePersistentTask(task.id, { status: 'completed', progress: 100, message: cacheHits ? `生成完成，复用了 ${cacheHits} 条缓存` : '语音已生成并写入项目', result: { results, cacheHits }, completedAt: Date.now() });
-  } catch (error) {
-    // Partial results stay in the audio cache, so a retry replays them for
-    // free; say so, or the failure reads as total loss.
-    const message = results.length ? `生成失败；已完成的 ${results.length} 句已进入缓存，重试时直接复用` : '生成失败';
-    updatePersistentTask(task.id, { status: 'failed', message, error: error.name === 'AbortError' ? '模型请求超时' : error.message, result: { results }, completedAt: Date.now() });
-  }
+  await runGenerationTask(task, config);
 }
 
 function pumpQueue() {

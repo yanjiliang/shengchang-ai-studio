@@ -122,47 +122,47 @@ function App() {
     return true;
   };
   const generationRequest = (line) => ({ lineId: line.id, speakerId: line.speakerId, voiceId: state.voiceMap?.[line.speakerId] || '', text: line.text, subtext: line.subtext || '', emotion: line.emotion, emotionScale: Math.max(0.1, (line.intensity || 40) / 100), speed: (line.pace || 90) / 100, distance: line.distance || '' });
-  const runGeneration = async (requests, kind = 'scene') => {
-    if (!project || !currentScene || !ensureVoiceConfigured() || generation) return;
-    if (!requests.length) { setToast('当前场景没有可生成的对白'); return; }
+  // Shared pipeline for every generation entry point (scene / line / batch
+  // fill / batch stale): guard, enqueue one persistent task, watch it, then
+  // refresh. Server-side B3's runGenerationRequests is the other half of this
+  // contract - both manual and future orchestrated flows converge here.
+  const runGenerationTask = async ({ kind, requests, sceneId, buildingMessage, doneMessage }) => {
+    if (!project || generation || !ensureVoiceConfigured()) return false;
     const missingVoices = [...new Set(requests.filter((request) => !request.voiceId).map((request) => request.speakerId))];
-    if (missingVoices.length) { setView('voices'); setToast(`有 ${missingVoices.length} 个角色尚未绑定 voice_id`); return; }
+    if (missingVoices.length) { setView('voices'); setToast(`有 ${missingVoices.length} 个角色尚未绑定 voice_id`); return false; }
     try {
-      setGeneration({ progress: 1, message: '正在创建持久任务' });
+      setGeneration({ progress: 1, message: buildingMessage(requests.length) });
       await commitPendingSave();
-      const task = await api.generate({ projectId: project.id, sceneId: currentScene.id, kind, requests });
+      const task = await api.generate({ projectId: project.id, sceneId, kind, requests });
       setGeneration({ progress: task.progress || 1, message: task.message, taskId: task.id });
       const completed = await waitForTask(task.id, (taskState) => setGeneration({ progress: taskState.progress, message: taskState.message, taskId: task.id }));
       await refreshProjects(project.id);
-      setToast(`${completed.message}，${completed.result?.results?.length || 0} 句可用`);
-      if (kind === 'line') setRequestedLineId(requests[0].lineId);
-    } catch (error) { setToast(error.message); }
+      setTaskRefreshToken(Date.now());
+      const failureCount = completed.result?.failures?.length || 0;
+      const note = failureCount ? `，${failureCount} 句失败（任务历史可逐句查看）` : '';
+      setToast(`${doneMessage(completed)}${note}`);
+      return true;
+    } catch (error) { setToast(error.message); return false; }
     finally { setGeneration(null); }
   };
-  const generateScene = () => runGeneration(currentScene?.lines.filter((line) => line.type === 'dialogue').map(generationRequest) || []);
-  const regenerateLine = (line) => runGeneration([generationRequest(line)], 'line');
+  const generateScene = () => {
+    const requests = currentScene?.lines.filter((line) => line.type === 'dialogue').map(generationRequest) || [];
+    if (!requests.length) { setToast('当前场景没有可生成的对白'); return; }
+    runGenerationTask({ kind: 'scene', requests, sceneId: currentScene.id, buildingMessage: () => '正在创建持久任务', doneMessage: (completed) => `${completed.message}，${completed.result?.results?.length || 0} 句可用` });
+  };
+  const regenerateLine = async (line) => {
+    const ok = await runGenerationTask({ kind: 'line', requests: [generationRequest(line)], sceneId: currentScene?.id, buildingMessage: () => '正在创建持久任务', doneMessage: (completed) => completed.message });
+    if (ok) setRequestedLineId(line.id);
+  };
   // Shared by "fill in missing" and "regenerate stale": same batch pipeline, only
   // the line predicate and the wording differ.
-  const generateBatch = async ({ sceneIds = [], selects, kind, emptyMessage, doneMessage }) => {
-    if (!project || generation || !ensureVoiceConfigured()) return;
+  const generateBatch = ({ sceneIds = [], selects, kind, emptyMessage, doneMessage }) => {
     const targets = scenes.filter((scene) => !sceneIds.length || sceneIds.includes(scene.id));
     const requests = targets.flatMap((scene) => scene.lines
       .filter((line) => line.type === 'dialogue' && selects(line))
       .map((line) => ({ ...generationRequest(line), sceneId: scene.id })));
     if (!requests.length) { setToast(emptyMessage); return; }
-    const missingVoices = [...new Set(requests.filter((request) => !request.voiceId).map((request) => request.speakerId))];
-    if (missingVoices.length) { setView('voices'); setToast(`有 ${missingVoices.length} 个角色尚未绑定 voice_id`); return; }
-    try {
-      setGeneration({ progress: 1, message: `正在创建 ${requests.length} 句生成任务` });
-      await commitPendingSave();
-      const task = await api.generate({ projectId: project.id, kind, requests });
-      setGeneration({ progress: task.progress || 1, message: task.message, taskId: task.id });
-      const completed = await waitForTask(task.id, (taskState) => setGeneration({ progress: taskState.progress, message: taskState.message, taskId: task.id }));
-      await refreshProjects(project.id);
-      setTaskRefreshToken(Date.now());
-      setToast(doneMessage(completed.result?.results?.length || 0));
-    } catch (error) { setToast(error.message); }
-    finally { setGeneration(null); }
+    runGenerationTask({ kind, requests, buildingMessage: (count) => `正在创建 ${count} 句生成任务`, doneMessage: (completed) => doneMessage(completed.result?.results?.length || 0) });
   };
   const generateMissingDialogue = (sceneIds = []) => generateBatch({ sceneIds, selects: (line) => !line.audioUrl, kind: 'batch-missing', emptyMessage: '没有需要生成的缺失对白', doneMessage: (count) => `已补全 ${count} 句对白` });
   const regenerateStaleDialogue = (sceneIds = []) => generateBatch({ sceneIds, selects: (line) => line.audioUrl && line.audioStale, kind: 'batch-stale', emptyMessage: '没有需要重新生成的过期对白', doneMessage: (count) => `已重新生成 ${count} 句对白` });

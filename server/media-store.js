@@ -211,12 +211,23 @@ async function renderTimeline(scene, output, { targetLufs = -16, normalize = tru
   if (bedLabels.length) {
     busFilter(bedLabels, 'beds', filters);
     filters.push('[dialogue]asplit=2[dialogue_mix][dialogue_side]');
-    filters.push('[beds][dialogue_side]sidechaincompress=threshold=0.025:ratio=8:attack=20:release=450[ducked]');
+    // Pad the sidechain copy of the dialogue bus: sidechaincompress stops
+    // when EITHER input ends, so an unpadded sidechain would cut looped beds
+    // off at the end of the last dialogue line (caught by structural test).
+    // The pad is bounded (not infinite apad) or the filter graph never sees
+    // EOF and the render hangs.
+    filters.push(`[dialogue_side]apad=pad_dur=${resolved.totalDuration.toFixed(3)}[dialogue_side_pad]`);
+    filters.push(`[beds][dialogue_side_pad]sidechaincompress=threshold=0.025:ratio=8:attack=20:release=450[ducked]`);
     filters.push('[dialogue_mix][ducked]amix=inputs=2:duration=longest:normalize=0[mixed]');
     mixedLabel = '[mixed]';
   }
   const finalDuration = resolved.totalDuration + tailPadMs / 1000;
-  const finalChain = [`apad=pad_dur=${(tailPadMs / 1000).toFixed(3)}`, `atrim=0:${finalDuration.toFixed(3)}`];
+  // Pad past the end and cut at finalDuration: totalDuration can run longer
+  // than any track's actual content (e.g. the trailing gap after the last
+  // dialogue line), which would leave the rendered file shorter than the
+  // duration we report. pad_dur=finalDuration is a guaranteed-sufficient
+  // bound; an unbounded apad can hang downstream filters waiting for EOF.
+  const finalChain = [`apad=pad_dur=${finalDuration.toFixed(3)}`, `atrim=0:${finalDuration.toFixed(3)}`];
   if (normalize) finalChain.push(`loudnorm=I=${targetLufs}:TP=-1:LRA=11`);
   finalChain.push('alimiter=limit=0.95');
   filters.push(`${mixedLabel}${finalChain.join(',')}[out]`);

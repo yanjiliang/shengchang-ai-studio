@@ -78,10 +78,9 @@ export function applyResultsToProject(projectId, sceneId, results) {
     if (!resultByScene.has(targetSceneId)) resultByScene.set(targetSceneId, []);
     resultByScene.get(targetSceneId).push(result);
   }
-  const state = { ...project.state, scenes: (project.state.scenes || []).map((scene) => !resultByScene.has(scene.id) ? scene : {
-    ...scene,
-    status: 'ready',
-    lines: scene.lines.map((line) => {
+  const state = { ...project.state, scenes: (project.state.scenes || []).map((scene) => {
+    if (!resultByScene.has(scene.id)) return scene;
+    const lines = scene.lines.map((line) => {
       const result = resultByScene.get(scene.id).find((item) => item.lineId === line.id);
       if (!result) return line;
       return {
@@ -96,7 +95,11 @@ export function applyResultsToProject(projectId, sceneId, results) {
         // otherwise the regeneration must clear the badge.
         audioStale: String(line.text ?? '') !== String(result.text ?? ''),
       };
-    }),
+    });
+    // A scene is only ready once every dialogue line actually has audio; a
+    // partially-failed run must not relabel the scene as finished.
+    const complete = lines.some((line) => line.type === 'dialogue') && lines.every((line) => line.type !== 'dialogue' || line.audioUrl);
+    return { ...scene, status: complete ? 'ready' : scene.status, lines };
   }) };
   updateProject(projectId, { state, trustedAudio: true });
 }

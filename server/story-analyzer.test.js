@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeNovel, heuristicAnalysis } from './story-analyzer.js';
+import { analyzeNovel, heuristicAnalysis, splitNovel } from './story-analyzer.js';
 
 // No LLM fields -> validateLlmConfig fails -> heuristic path engages.
 const NO_LLM_CONFIG = {};
@@ -70,4 +70,37 @@ test('规则拆解：长叙述切成适合合成的短句', () => {
   const narrations = result.scenes.flatMap((scene) => scene.lines).map((line) => line.text);
   assert.ok(narrations.length > 1);
   assert.ok(narrations.every((text) => text.length <= 180), `每句不应过长: ${Math.max(...narrations.map((text) => text.length))}`);
+});
+
+test('规则拆解：英文直引号对白归属正确', async () => {
+  const result = await analyzeNovel(NO_LLM_CONFIG, { text: '林夏低声说道："你终于来了。"\n"路上堵了。"王五叹道。', filename: 'demo.txt' }, {});
+  const lines = result.scenes.flatMap((scene) => scene.lines).filter((line) => line.type === 'dialogue');
+  const first = lines.find((line) => line.text === '你终于来了。');
+  const second = lines.find((line) => line.text === '路上堵了。');
+  assert.ok(first, '直引号内容应成为台词');
+  assert.equal(first.speakerId, '林夏');
+  assert.equal(second?.speakerId, '王五');
+  assert.ok(!lines.some((line) => line.text.includes('说道')), '归属短语不应进入台词');
+});
+
+test('规则拆解：直引号中的知道不误判为说话人', async () => {
+  const result = await analyzeNovel(NO_LLM_CONFIG, { text: '"我知道你会来。"她说。', filename: 'demo.txt' }, {});
+  assert.ok(!result.characters.some((character) => character.name.includes('知道')));
+  const spoken = result.scenes.flatMap((scene) => scene.lines).find((line) => line.text === '我知道你会来。');
+  assert.ok(spoken, '直引号内容应成为台词');
+});
+
+test('分块：单换行分段的小说在段落边界切分', () => {
+  const paragraphs = Array.from({ length: 200 }, (_unused, index) => `第${index + 1}段。${'叙述文字。'.repeat(20)}`);
+  const chunks = splitNovel(paragraphs.join('\n'), 1000);
+  assert.ok(chunks.length > 1, '应切分为多块');
+  for (const chunk of chunks) {
+    assert.ok(chunk.length <= 1000, `块不应超长: ${chunk.length}`);
+    assert.ok(/。$/.test(chunk), '块应在段落边界结束，不应从句子中间断开');
+  }
+});
+
+test('分块：换行结构在块内保留', () => {
+  const chunks = splitNovel('第一段。\n\n第二段。', 1000);
+  assert.deepEqual(chunks, ['第一段。\n\n第二段。']);
 });

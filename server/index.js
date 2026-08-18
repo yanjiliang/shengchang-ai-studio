@@ -203,8 +203,11 @@ app.post('/api/voices/design', async (request, response, next) => {
     const config = await readConfig();
     const result = await designVoice(config, request.body);
     if (result.preview) {
-      const saved = await saveUploadedAsset(randomUUID(), 'wav', result.preview.buffer);
-      result.previewUrl = saved.url;
+      // Previews are auditioned once and never referenced by any project, so
+      // persist nothing: files written here could never be reclaimed (not in
+      // the audio cache, not deletable via the asset policy). A data URL lets
+      // the browser play the clip straight from the response.
+      result.previewUrl = `data:${result.preview.mime};base64,${result.preview.buffer.toString('base64')}`;
       delete result.preview;
     }
     response.json(result);
@@ -263,3 +266,19 @@ app.use((error, _request, response, _next) => {
   response.status(status).json({ error: error.message || '本地服务处理失败' });
 });
 app.listen(PORT, '127.0.0.1', () => console.log(`声场本地服务：http://127.0.0.1:${PORT}`));
+// Loopback-only guard: the server binds 127.0.0.1, but a hostile web page can
+// still drive mutations at it (form POSTs need no CORS preflight, and a DNS-
+// rebinding attack can fake the Host). Reject API calls whose Host or Origin
+// is not loopback. Non-browser clients (curl, e2e) send no Origin and pass.
+const LOCAL_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '[::1]']);
+const hostnameOf = (header) => {
+  // Host arrives bare (127.0.0.1:4174), Origin with a scheme (http://...).
+  try { return new URL(header.includes('://') ? header : `http://${header}`).hostname; } catch { return ''; }
+};
+app.use('/api', (request, response, next) => {
+  if (!LOCAL_HOSTNAMES.has(hostnameOf(request.headers.host || ''))) {
+    return response.status(403).json({ error: '仅允许本机访问' });
+  }
+  if (request.headers.origin && !LOCAL_HOSTNAMES.has(hostnameOf(request.headers.origin))) {
+    return response.status(403).json({ error: '仅允许本机页面调用接口' });
+  }

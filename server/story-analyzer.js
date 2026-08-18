@@ -36,13 +36,17 @@ function normalizeResult(result, fallbackName) {
   return { name: String(result.project?.name || fallbackName || '未命名作品'), genre: String(result.project?.genre || ''), characters, scenes };
 }
 
-function splitNovel(text, maxChars = 24_000) {
+// Exported for tests.
+export function splitNovel(text, maxChars = 24_000) {
   const chunks = [];
   let current = '';
-  for (const paragraph of text.split(/\n{2,}/)) {
+  // Chinese web novels commonly separate paragraphs with a single newline.
+  // Split on any line break so those are packed (not hard-cut) below; the
+  // regex fallback now only fires on a single line longer than the cap.
+  for (const paragraph of text.split(/\r?\n/)) {
     const parts = paragraph.length > maxChars ? paragraph.match(new RegExp(`[\\s\\S]{1,${maxChars}}`, 'g')) : [paragraph];
     for (const part of parts) {
-      const candidate = current ? `${current}\n\n${part}` : part;
+      const candidate = current ? `${current}\n${part}` : part;
       if (candidate.length > maxChars && current) { chunks.push(current); current = part; }
       else current = candidate;
     }
@@ -96,8 +100,14 @@ const SPEECH_ADVERB = '(?:轻声|低声|大声|沉声|冷冷|缓缓|急忙|连�
 // does not swallow the verb; the after-quote gap is separator-only so it
 // cannot eat into the name from the left.
 const SPEAKER_NAME = '([\\u4e00-\\u9fa5A-Za-z·]{1,12}?)';
-const SPEAKER_BEFORE_QUOTE = new RegExp(SPEAKER_NAME + SPEECH_ADVERB + SPEECH_VERB + '[\\s:：,，、]*[「『“]');
-const SPEAKER_AFTER_QUOTE = new RegExp('[」』”][\\s,，、:：;；——-]*' + SPEAKER_NAME + SPEECH_ADVERB + SPEECH_VERB);
+// ASCII double quotes are included alongside CJK quotes: many web novels use
+// straight quotes for dialogue, and without them every line lands on the
+// narrator. Straight quotes pair sequentially (first opens, second closes).
+const QUOTE_OPEN = '[「『“"]';
+const QUOTE_CLOSE = '[」』”"]';
+const QUOTE_PAIR = /[「『“"]([^「『“”」』"]{1,400})[」』”"]/g;
+const SPEAKER_BEFORE_QUOTE = new RegExp(SPEAKER_NAME + SPEECH_ADVERB + SPEECH_VERB + '[\\s:：,，、]*' + QUOTE_OPEN);
+const SPEAKER_AFTER_QUOTE = new RegExp(QUOTE_CLOSE + '[\\s,，、:：;；——-]*' + SPEAKER_NAME + SPEECH_ADVERB + SPEECH_VERB);
 const PRONOUN_SPEAKERS = new Set(['他', '她', '它', '他们', '她们', '它们']);
 // Fragments the name regex grabs that are scene description, not a person.
 const NAME_FILLER = /^(?:只听|只见|听|见|这时|然后|接着|突然|忽然|原来|一个|那个|这个)+/;
@@ -160,7 +170,7 @@ export function heuristicAnalysis(text, fallbackName) {
   for (const [index, group] of groups.entries()) {
     const lines = [];
     for (const paragraph of group.paragraphs) {
-      const quotes = [...paragraph.matchAll(/[「『“]([^「『“”」』]{1,400})[」』”]/g)];
+      const quotes = [...paragraph.matchAll(QUOTE_PAIR)];
       if (!quotes.length) {
         for (const chunk of narrationChunks(paragraph)) lines.push({ type: 'dialogue', speaker: '旁白', speakerId: 'narrator', text: chunk });
         continue;
@@ -170,7 +180,7 @@ export function heuristicAnalysis(text, fallbackName) {
       if (speaker) lastSpeaker = speaker;
       // Walk the paragraph quote by quote; the text around quotes becomes
       // narrator lines, minus the attribution clause we already understood.
-      const attributionClause = attributionSpan.replace(/[「『“]$/, '').replace(/^[」』”]/, '');
+      const attributionClause = attributionSpan.replace(new RegExp(QUOTE_OPEN + '$'), '').replace(new RegExp('^' + QUOTE_CLOSE), '');
       let cursor = 0;
       const pushNarration = (text) => {
         const narration = (text.includes(attributionClause) && attributionClause ? text.replace(attributionClause, '') : text).replace(/^[\s，。：:、—-]+/, '').trim();

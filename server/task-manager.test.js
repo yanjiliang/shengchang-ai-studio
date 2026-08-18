@@ -15,6 +15,7 @@ after(() => rmSync(scratch, { recursive: true, force: true }));
 
 const stateWith = (lines) => ({ scenes: [{ id: 'scene-1', title: '测试场景', lines }], assets: [], characters: [] });
 const staleLine = (id, text) => ({ id, type: 'dialogue', speaker: '旁白', speakerId: 'narrator', text, audioUrl: '/media/old.wav', audioMime: 'audio/wav', audioStale: true });
+const plainLine = (id, text) => ({ id, type: 'dialogue', speaker: '旁白', speakerId: 'narrator', text });
 const resultFor = (lineId, text, url = '/media/new.wav') => ({ lineId, sceneId: 'scene-1', url, mime: 'audio/wav', text, synthesizedText: text, contentHash: 'hash-1', createdAt: 123 });
 
 describe('生成结果写回项目', () => {
@@ -47,6 +48,16 @@ describe('生成结果写回项目', () => {
     const lines = getProject(project.id).state.scenes[0].lines;
     assert.equal(lines[1].audioUrl, '/media/old.wav');
     assert.equal(lines[1].audioStale, true);
+  });
+
+  test('全部对白有音频后场景才标为 ready', () => {
+    const project = createProject({ name: '状态测试', state: stateWith([plainLine('l1', '第一句'), plainLine('l2', '第二句')]) });
+
+    applyResultsToProject(project.id, 'scene-1', [resultFor('l1', '第一句')]);
+    assert.notEqual(getProject(project.id).state.scenes[0].status, 'ready', '仍有对白缺音频时不应标为 ready');
+
+    applyResultsToProject(project.id, 'scene-1', [resultFor('l2', '第二句')]);
+    assert.equal(getProject(project.id).state.scenes[0].status, 'ready');
   });
 });
 

@@ -18,10 +18,32 @@ const rootDir = path.resolve(serverDir, '..');
 const app = express();
 
 await ensureRuntime();
+// Fresh install (zero project rows): seed the 三打白骨精 sample so the first
+// contact is 一键成片 on a real, direction-rich project — no key, no setup.
+const seeded = seedSampleProject();
+if (seeded.created) console.log(`已创建示例项目「西游记 · 三打白骨精」：一键成片可在离线演示引擎下完整跑通`);
 // The novel import caps at 2M characters; CJK costs 3 bytes per character in
 // UTF-8, so the body limit has to clear 6MB for that check to be the one that
 // rejects oversized input instead of the parser.
 app.use(express.json({ limit: '24mb' }));
+// Loopback-only guard: the server binds 127.0.0.1, but a hostile web page can
+// still drive mutations at it (form POSTs need no CORS preflight, and a DNS-
+// rebinding attack can fake the Host). Reject API calls whose Host or Origin
+// is not loopback. Non-browser clients (curl, e2e) send no Origin and pass.
+const LOCAL_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '[::1]']);
+const hostnameOf = (header) => {
+  // Host arrives bare (127.0.0.1:4174), Origin with a scheme (http://...).
+  try { return new URL(header.includes('://') ? header : `http://${header}`).hostname; } catch { return ''; }
+};
+app.use('/api', (request, response, next) => {
+  if (!LOCAL_HOSTNAMES.has(hostnameOf(request.headers.host || ''))) {
+    return response.status(403).json({ error: '仅允许本机访问' });
+  }
+  if (request.headers.origin && !LOCAL_HOSTNAMES.has(hostnameOf(request.headers.origin))) {
+    return response.status(403).json({ error: '仅允许本机页面调用接口' });
+  }
+  next();
+});
 app.use('/media/exports', express.static(runtimePaths.EXPORT_DIR, { fallthrough: false }));
 app.use('/media', express.static(runtimePaths.MEDIA_DIR, { fallthrough: false }));
 
@@ -267,23 +289,3 @@ app.use((error, _request, response, _next) => {
   response.status(status).json({ error: error.message || '本地服务处理失败' });
 });
 app.listen(PORT, '127.0.0.1', () => console.log(`声场本地服务：http://127.0.0.1:${PORT}`));
-// Loopback-only guard: the server binds 127.0.0.1, but a hostile web page can
-// still drive mutations at it (form POSTs need no CORS preflight, and a DNS-
-// rebinding attack can fake the Host). Reject API calls whose Host or Origin
-// is not loopback. Non-browser clients (curl, e2e) send no Origin and pass.
-const LOCAL_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '[::1]']);
-const hostnameOf = (header) => {
-  // Host arrives bare (127.0.0.1:4174), Origin with a scheme (http://...).
-  try { return new URL(header.includes('://') ? header : `http://${header}`).hostname; } catch { return ''; }
-};
-app.use('/api', (request, response, next) => {
-  if (!LOCAL_HOSTNAMES.has(hostnameOf(request.headers.host || ''))) {
-    return response.status(403).json({ error: '仅允许本机访问' });
-  }
-  if (request.headers.origin && !LOCAL_HOSTNAMES.has(hostnameOf(request.headers.origin))) {
-    return response.status(403).json({ error: '仅允许本机页面调用接口' });
-  }
-// Fresh install (zero project rows): seed the 三打白骨精 sample so the first
-// contact is 一键成片 on a real, direction-rich project — no key, no setup.
-const seeded = seedSampleProject();
-if (seeded.created) console.log(`已创建示例项目「西游记 · 三打白骨精」：一键成片可在离线演示引擎下完整跑通`);

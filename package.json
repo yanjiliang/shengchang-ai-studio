@@ -9,6 +9,7 @@
     "start": "node server/index.js",
     "test": "node --test server/*.test.js",
     "test:e2e": "node scripts/e2e.mjs",
+    "seed": "node scripts/seed-sample.mjs",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1"
   },

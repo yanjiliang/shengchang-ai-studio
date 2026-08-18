@@ -39,3 +39,8 @@ carry the failure count. The old "已完成的 N 句已进入缓存" message is 
   one-click orchestrator from the 一键成片 design doc (one-click.js, stage
   checkpointing) was never built in this repo - the design doc's B3–B6 plan is
   the blueprint if it is ever wanted here.
+- §8 attention-list deep links + stage-checklist panel shipped, adapted to the
+  manual workbench: QualityView issues with a locate target deep-link into the
+  studio line (voices/sounds/media issues jump to their surface), and a
+  project-wide 成片进度 stage panel (拆解/音色/对白/素材/导出) links to the view
+  where each stage is fixed.

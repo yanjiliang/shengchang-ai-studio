@@ -9,6 +9,7 @@ import { archiveProject, createProject, getProject, listPersistentTasks, listPro
 import { designVoice, validateProviderConfig } from './model-adapters.js';
 import { ensureRuntime, exportSceneTimeline, inspectProjectMedia, probeFfmpeg, renderScenePreview, runtimePaths, saveUploadedAsset } from './media-store.js';
 import { cancelTask, enqueueGeneration, enqueueNovelAnalysis, enqueueOneClick, enqueueProjectExport, estimateGeneration, getTask, retryTask } from './task-manager.js';
+import { seedSampleProject } from './sample-project.js';
 import { testLlm, validateLlmConfig } from './story-analyzer.js';
 
 const PORT = Number(process.env.SHENGCHANG_API_PORT || 4174);
@@ -282,3 +283,7 @@ app.use('/api', (request, response, next) => {
   if (request.headers.origin && !LOCAL_HOSTNAMES.has(hostnameOf(request.headers.origin))) {
     return response.status(403).json({ error: '仅允许本机页面调用接口' });
   }
+// Fresh install (zero project rows): seed the 三打白骨精 sample so the first
+// contact is 一键成片 on a real, direction-rich project — no key, no setup.
+const seeded = seedSampleProject();
+if (seeded.created) console.log(`已创建示例项目「西游记 · 三打白骨精」：一键成片可在离线演示引擎下完整跑通`);

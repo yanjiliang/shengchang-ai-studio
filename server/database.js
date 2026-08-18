@@ -79,6 +79,12 @@ export function listProjects() {
   });
 }
 
+// Counts every row including archived ones — the sample seeder treats ANY
+// row as "this install is not fresh".
+export function countProjects() {
+  return database.prepare('SELECT COUNT(*) AS count FROM projects').get().count;
+}
+
 export function getProject(id) {
   return projectRow(database.prepare('SELECT * FROM projects WHERE id=?').get(id));
 }
@@ -214,13 +220,15 @@ export function audioContentHash(config, request) {
   return createHash('sha256').update(JSON.stringify({ provider: config.provider, endpoint: config.endpoint, model: config.model, resourceId: config.resourceId, voiceId: request.voiceId, text: request.text, subtext: request.subtext, emotion: request.emotion, emotionScale: request.emotionScale, speed: request.speed, distance: request.distance, format: config.audioFormat, sampleRate: config.sampleRate })).digest('hex');
 }
 
+// Imports a pre-sqlite project-state.json once. A genuinely fresh install
+// creates nothing here — the sample seeder (sample-project.js, called from
+// index.js) owns the first-run experience.
 export function migrateLegacyProject() {
-  const count = database.prepare('SELECT COUNT(*) AS count FROM projects').get().count;
-  if (count) return;
+  if (countProjects()) return;
   const legacyPath = path.join(path.dirname(runtimePaths.MEDIA_DIR), 'project-state.json');
-  let state = { scenes: [], assets: [], characters: [] };
-  try { state = JSON.parse(readFileSync(legacyPath, 'utf8')); } catch { /* First run. */ }
-  createProject({ name: state.scenes?.length ? '雾港来信' : '我的第一部广播剧', genre: state.scenes?.length ? '悬疑' : '', state });
+  let state = null;
+  try { state = JSON.parse(readFileSync(legacyPath, 'utf8')); } catch { /* No legacy file: fresh install, nothing to do. */ }
+  if (state) createProject({ name: state.scenes?.length ? '雾港来信' : '我的第一部广播剧', genre: state.scenes?.length ? '悬疑' : '', state });
 }
 
 recoverInterruptedTasks();

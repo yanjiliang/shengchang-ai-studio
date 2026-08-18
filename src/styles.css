@@ -695,3 +695,5 @@ button { cursor: pointer; }
 .dot-ambient { background: var(--color-mint); }
 .dot-sfx { background: var(--color-gold); }
 .dot-music { background: var(--color-violet); }
+.empty-project-actions { display: flex; gap: 9px; margin-top: 4px; }
+

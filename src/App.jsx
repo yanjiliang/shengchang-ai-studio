@@ -364,7 +364,14 @@ function App() {
     return { metrics, issues, passed, score: Math.round(metrics.coverage * .35 + metrics.voices * .22 + metrics.soundWorld * .18 + metrics.text * .1 + metrics.media * .15), canExport: voiced.length > 0 && invalid === 0 };
   }, [currentScene, state.voiceMap, config, mediaReport]);
 
-  if (loading || !project) return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><div className="app-loading">正在打开本地项目数据库</div><Toast message={toast} /></div>;
+  if (loading || !project) {
+    // A finished load with zero projects must not sit on the "opening
+    // database" screen forever — offer the two first-run paths instead.
+    if (!loading && !project && projects.length === 0) {
+      return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><div className="app-content"><div className="empty-project"><h2>欢迎来到声场</h2><p>还没有作品。创建一部，或运行 <code>npm run seed</code> 导入《西游记 · 三打白骨精》示例，离线体验一键成片。</p><div className="empty-project-actions"><button className="button primary-button" type="button" onClick={createProject}>创建第一部作品</button></div></div></div><Toast message={toast} /></div>;
+    }
+    return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><div className="app-loading">正在打开本地项目数据库</div><Toast message={toast} /></div>;
+  }
   const activeProgress = analysis || generation;
   let content;
   if (view === 'studio') content = currentScene ? <div className="studio-layout"><SceneSidebar project={project} scenes={scenes} currentSceneId={currentSceneId} mediaReport={mediaReport} onSceneChange={changeScene} onImportNovel={importNovel} onAddScene={addScene} onDeleteScene={deleteScene} /><SceneCanvas scene={currentScene} durationMs={mediaReport?.scenes?.find((item) => item.sceneId === currentScene.id)?.durationMs} sourceText={project.sourceText} characters={state.characters || []} selectedLineId={selectedLineId} onSelectLine={setSelectedLineId} onUpdateLine={updateLine} onRegenerate={regenerateLine} onPlayLine={playLine} onAddLine={addLine} onDeleteLine={deleteLine} generationProgress={activeProgress?.progress ?? null} generationMessage={activeProgress?.message} onCancelTask={cancelActiveTask} /><Inspector line={selectedLine} characters={state.characters || []} voiceMap={state.voiceMap || {}} provider={config?.provider} onUpdate={(patch) => updateLine(selectedLine.id, patch)} onOpenVoices={() => setView('voices')} /></div> : <div className="empty-project"><h2>{project.name}</h2><p>{analysis ? `${analysis.message} · ${analysis.progress}%` : '还没有场景。导入 TXT 小说后，文本模型会识别角色、对白、旁白、声音事件和场景结构。'}</p>{analysis ? <button className="button secondary-button" type="button" onClick={cancelActiveTask}>取消拆解</button> : <><button className="button primary-button" type="button" onClick={importNovel}>导入小说并拆解</button><button className="button secondary-button" type="button" onClick={addScene}>手动新建场景</button></>}</div>;

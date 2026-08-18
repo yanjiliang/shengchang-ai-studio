@@ -67,6 +67,10 @@ check('unknown /api route is 404 JSON', nope.status === 404 && typeof nope.paylo
 const saved = await call('/api/config', { method: 'PUT', body: JSON.stringify({ provider: 'demo' }) });
 check('config saved with demo provider', saved.status === 200 && saved.payload.provider === 'demo');
 
+// 3.5 fresh boot auto-seeds the 三打白骨精 sample (design B2)
+const listing = await call('/api/projects');
+check('sample project auto-seeded on fresh install', listing.payload.projects.some((item) => item.name.includes('三打白骨精')), JSON.stringify(listing.payload.projects.map((item) => item.name)));
+
 // 4. create project with one dialogue line + voice mapping
 const created = await call('/api/projects', { method: 'POST', body: JSON.stringify({ name: 'E2E 验证' }) });
 const projectId = created.payload.id;
@@ -144,6 +148,17 @@ check('one-click result carries attention list', Array.isArray(oneClickTask.resu
 const finalProject = (await call(`/api/projects/${projectId}`)).payload;
 check('one-click auto-mapped unmapped voices', Boolean(finalProject.state.voiceMap?.林夏), JSON.stringify(finalProject.state.voiceMap));
 check('one-click generated the missing dialogue', finalProject.state.scenes.some((scene) => scene.lines.some((line) => line.speakerId === '林夏' && line.audioUrl)));
+
+// 13. seed script is idempotent: force mode skips when the marker exists
+const seed = await new Promise((resolve) => {
+  const child = spawn(process.execPath, ['scripts/seed-sample.mjs'], { env: { ...process.env, SHENGCHANG_RUNTIME_DIR: scratchRuntime }, stdio: ['ignore', 'pipe', 'inherit'] });
+  let out = '';
+  child.stdout.on('data', (chunk) => { out += chunk; });
+  child.on('close', () => resolve(out));
+});
+check('seed script skips when sample exists', seed.includes('跳过'), seed.trim());
+const listing2 = await call('/api/projects');
+check('seed script did not duplicate the sample', listing2.payload.projects.filter((item) => item.name.includes('三打白骨精')).length === 1);
 
 console.log(process.exitCode ? 'E2E FAILED' : 'E2E GREEN');
 // The spawned server would keep the event loop alive forever; tear down

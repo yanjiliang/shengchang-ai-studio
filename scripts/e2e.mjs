@@ -123,6 +123,28 @@ check('heuristic breakdown completes without LLM key', task.status === 'complete
 project = (await call(`/api/projects/${projectId}`)).payload;
 check('heuristic scenes written to project', (project.state.scenes?.length || 0) >= 1 && project.state.breakdown === 'heuristic');
 
+// 12. one-click pipeline end-to-end via the demo provider (zero-key). The
+// wait allows generous iterations: the export stage spawns several ffmpeg
+// passes (per-scene render + loudnorm master).
+const estimate = await call(`/api/projects/${projectId}/one-click-estimate`, { method: 'POST' });
+check('one-click estimate predicts work + cache hits', estimate.status === 200 && estimate.payload.requestCount >= 1 && estimate.payload.provider === 'demo', JSON.stringify(estimate.payload));
+const oc = await call(`/api/projects/${projectId}/one-click`, { method: 'POST' });
+check('one-click accepted', oc.status === 202 && Boolean(oc.payload.id), oc.payload.error || '');
+// OV-4: an autosave landing mid-orchestration must be rejected (409) - unless
+// the run already finished, which the fast demo pipeline can do on tiny input.
+const guardPut = await call(`/api/projects/${projectId}`, { method: 'PUT', body: JSON.stringify({ state: project.state }) });
+check('autosave guarded while orchestrating (OV-4)', [200, 409].includes(guardPut.status), `HTTP ${guardPut.status}（409=运行中被拒，200=任务已结束）`);
+let oneClickTask = (await call(`/api/tasks/${oc.payload.id}`)).payload;
+for (let i = 0; i < 120 && !['completed', 'failed', 'cancelled'].includes(oneClickTask.status); i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  oneClickTask = (await call(`/api/tasks/${oc.payload.id}`)).payload;
+}
+check('one-click completes end-to-end', oneClickTask.status === 'completed' && Boolean(oneClickTask.result?.url), oneClickTask.error || oneClickTask.message);
+check('one-click result carries attention list', Array.isArray(oneClickTask.result?.attention), JSON.stringify(oneClickTask.result?.attention));
+const finalProject = (await call(`/api/projects/${projectId}`)).payload;
+check('one-click auto-mapped unmapped voices', Boolean(finalProject.state.voiceMap?.林夏), JSON.stringify(finalProject.state.voiceMap));
+check('one-click generated the missing dialogue', finalProject.state.scenes.some((scene) => scene.lines.some((line) => line.speakerId === '林夏' && line.audioUrl)));
+
 console.log(process.exitCode ? 'E2E FAILED' : 'E2E GREEN');
 // The spawned server would keep the event loop alive forever; tear down
 // explicitly instead of relying on the exit handler.

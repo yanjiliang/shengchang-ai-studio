@@ -2,11 +2,12 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { buildGenerationRequests } from '../shared/generation-requests.mjs';
 import { publicConfig, readConfig, writeConfig } from './config-store.js';
 import { archiveProject, createProject, getProject, listPersistentTasks, listProjects, updateProject } from './database.js';
 import { designVoice, validateProviderConfig } from './model-adapters.js';
 import { ensureRuntime, exportSceneTimeline, inspectProjectMedia, probeFfmpeg, renderScenePreview, runtimePaths, saveUploadedAsset } from './media-store.js';
-import { cancelTask, enqueueGeneration, enqueueNovelAnalysis, enqueueProjectExport, getTask, retryTask } from './task-manager.js';
+import { cancelTask, enqueueGeneration, enqueueNovelAnalysis, enqueueOneClick, enqueueProjectExport, estimateGeneration, getTask, retryTask } from './task-manager.js';
 import { testLlm, validateLlmConfig } from './story-analyzer.js';
 
 const PORT = Number(process.env.SHENGCHANG_API_PORT || 4174);
@@ -67,9 +68,16 @@ app.get('/api/projects/:projectId', (request, response) => {
   return project ? response.json(project) : response.status(404).json({ error: '项目不存在' });
 });
 app.put('/api/projects/:projectId', (request, response, next) => {
-  // Whitelist: trustedAudio is a server-internal flag and must never be
-  // settable by the browser, or the stale-snapshot guard is bypassable.
-  try { response.json(updateProject(request.params.projectId, { name: request.body.name, genre: request.body.genre, sourceFilename: request.body.sourceFilename, sourceText: request.body.sourceText, state: request.body.state })); } catch (error) { next(error); }
+  try {
+    // OV-4 stale-autosave guard: the browser holds a whole-project snapshot,
+    // so an autosave landing mid-orchestration would silently revert the
+    // voiceMap/scenes the one-click task just wrote. Read-only until it ends.
+    const active = listPersistentTasks(request.params.projectId, 100).some((task) => task.kind === 'one-click' && ['queued', 'running'].includes(task.status));
+    if (active) return response.status(409).json({ error: '一键成片运行中，完成后可继续编辑' });
+    // Whitelist: trustedAudio is a server-internal flag and must never be
+    // settable by the browser, or the stale-snapshot guard is bypassable.
+    response.json(updateProject(request.params.projectId, { name: request.body.name, genre: request.body.genre, sourceFilename: request.body.sourceFilename, sourceText: request.body.sourceText, state: request.body.state }));
+  } catch (error) { next(error); }
 });
 app.delete('/api/projects/:projectId', (request, response, next) => {
   try { archiveProject(request.params.projectId); response.json({ ok: true }); } catch (error) { next(error); }
@@ -125,6 +133,49 @@ app.post('/api/projects/:projectId/export-episode', (request, response, next) =>
   try {
     if (!getProject(request.params.projectId)) throw new Error('项目不存在');
     response.status(202).json(enqueueProjectExport({ projectId: request.params.projectId }));
+  } catch (error) { next(error); }
+});
+// One-click pre-flight + enqueue (design B3 endpoint guards): 409 on a live
+// run, 400 when there is nothing to make an episode from, provider validation
+// before any money can burn. The LLM check is deliberately absent: since the
+// offline 拆解 fallback shipped, a keyless project runs the whole pipeline
+// heuristically instead of dying at stage 1.
+app.post('/api/projects/:projectId/one-click', async (request, response, next) => {
+  try {
+    const project = getProject(request.params.projectId);
+    if (!project) throw new Error('项目不存在');
+    const active = listPersistentTasks(project.id, 100).some((task) => task.kind === 'one-click' && ['queued', 'running'].includes(task.status));
+    if (active) return response.status(409).json({ error: '该项目的一键成片任务已在运行中' });
+    if (!project.state.scenes?.length && !project.sourceText?.trim()) throw new Error('请先导入小说文本或手动创建场景');
+    const config = await readConfig();
+    validateProviderConfig(config);
+    response.status(202).json(enqueueOneClick({ projectId: project.id }));
+  } catch (error) { next(error); }
+});
+// Cost guardrail (design B4 + §8 server estimate follow-up): the browser has
+// the scene math, but only the server can predict cache hits.
+app.post('/api/projects/:projectId/one-click-estimate', async (request, response, next) => {
+  try {
+    const project = getProject(request.params.projectId);
+    if (!project) throw new Error('项目不存在');
+    const config = await readConfig();
+    const dialogue = (project.state.scenes || []).flatMap((scene) => (scene.lines || []).filter((line) => line.type === 'dialogue'));
+    // Count every line the run would generate: the pipeline's 音色 stage
+    // auto-maps unmapped characters first, so requests without a voiceId
+    // today are still billable lines (except genuinely unmappable ones, which
+    // the pipeline skips - hence the separate unmappedVoiceCount).
+    const requests = buildGenerationRequests(project.state);
+    const mappable = requests.filter((item) => item.voiceId);
+    response.json({
+      provider: config.provider,
+      sceneCount: project.state.scenes?.length || 0,
+      dialogueCount: dialogue.length,
+      requestCount: requests.length,
+      unmappedVoiceCount: requests.length - mappable.length,
+      characters: requests.reduce((sum, item) => sum + String(item.text || '').length, 0),
+      cacheHits: await estimateGeneration(config, mappable, { projectId: project.id }),
+      needsLlm: !project.state.scenes?.length && !['demo'].includes(config.provider),
+    });
   } catch (error) { next(error); }
 });
 app.post('/api/generate', async (request, response, next) => {

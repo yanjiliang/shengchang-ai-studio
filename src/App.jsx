@@ -12,6 +12,7 @@ import { SoundsView } from './components/views/SoundsView';
 import { VoicesView } from './components/views/VoicesView';
 import { ProductionView } from './components/views/ProductionView';
 import { api, waitForTask } from './lib/api';
+import { buildGenerationRequest } from '../shared/generation-requests.mjs';
 
 const EMPTY_STATE = { scenes: [], assets: [], characters: [], voiceMap: {} };
 
@@ -121,7 +122,7 @@ function App() {
     if (config.provider !== 'demo' && !config.hasAccessKey) { setView('settings'); setToast('请先配置真实语音模型凭证'); return false; }
     return true;
   };
-  const generationRequest = (line) => ({ lineId: line.id, speakerId: line.speakerId, voiceId: state.voiceMap?.[line.speakerId] || '', text: line.text, subtext: line.subtext || '', emotion: line.emotion, emotionScale: Math.max(0.1, (line.intensity || 40) / 100), speed: (line.pace || 90) / 100, distance: line.distance || '' });
+  const generationRequest = (line) => buildGenerationRequest(line, state.voiceMap);
   // Shared pipeline for every generation entry point (scene / line / batch
   // fill / batch stale): guard, enqueue one persistent task, watch it, then
   // refresh. Server-side B3's runGenerationRequests is the other half of this
@@ -320,6 +321,27 @@ function App() {
     setSelectedLineId(lineId);
   };
 
+  // 一键成片 (design B4/B5): server-backed estimate first - it predicts cache
+  // hits, which the browser cannot - then confirm, enqueue, and hand the user
+  // to the tasks tab where the orchestrator's progress renders (OV-8).
+  const [oneClickToken, setOneClickToken] = useState(0);
+  const oneClick = async () => {
+    if (!project || exporting) return;
+    try {
+      const estimate = await api.oneClickEstimate(project.id);
+      const parts = [`${estimate.sceneCount} 个场景`, `${estimate.requestCount} 句待生成`];
+      if (estimate.cacheHits) parts.push(`预计缓存命中 ${estimate.cacheHits} 句`);
+      const cost = estimate.provider === 'demo' ? '离线演示引擎 · 免费' : `真实语音 · 约 ${estimate.characters} 字`;
+      const llmNote = estimate.needsLlm ? '\n项目还没有场景，将先拆解原文（未配置文本模型时使用规则拆解）。' : '';
+      if (!window.confirm(`一键成片\n${parts.join(' · ')} · ${cost}${llmNote}\n\n开始后自动执行：拆解 → 配音色 → 生成 → 体检 → 导出整集。`)) return;
+      await commitPendingSave();
+      await api.oneClick(project.id);
+      setOneClickToken((value) => value + 1);
+      setTaskRefreshToken(Date.now());
+      setToast('一键成片已开始，可在任务历史查看进度与结果');
+    } catch (error) { setToast(error.message); }
+  };
+
   const qualityReport = useMemo(() => {
     if (!currentScene) return { score: 0, metrics: { coverage: 0, voices: 0, soundWorld: 0, text: 0 }, issues: [], passed: [], canExport: false };
     const dialogue = currentScene.lines.filter((line) => line.type === 'dialogue'); const voiced = dialogue.filter((line) => line.audioUrl); const speakers = [...new Set(dialogue.map((line) => line.speakerId))]; const mapped = speakers.filter((id) => state.voiceMap?.[id]); const sounds = currentScene.lines.filter((line) => line.type !== 'dialogue'); const bound = sounds.filter((line) => line.assetUrl);
@@ -341,7 +363,7 @@ function App() {
   if (view === 'studio') content = currentScene ? <div className="studio-layout"><SceneSidebar project={project} scenes={scenes} currentSceneId={currentSceneId} mediaReport={mediaReport} onSceneChange={changeScene} onImportNovel={importNovel} onAddScene={addScene} onDeleteScene={deleteScene} /><SceneCanvas scene={currentScene} durationMs={mediaReport?.scenes?.find((item) => item.sceneId === currentScene.id)?.durationMs} sourceText={project.sourceText} characters={state.characters || []} selectedLineId={selectedLineId} onSelectLine={setSelectedLineId} onUpdateLine={updateLine} onRegenerate={regenerateLine} onPlayLine={playLine} onAddLine={addLine} onDeleteLine={deleteLine} generationProgress={activeProgress?.progress ?? null} generationMessage={activeProgress?.message} onCancelTask={cancelActiveTask} /><Inspector line={selectedLine} characters={state.characters || []} voiceMap={state.voiceMap || {}} provider={config?.provider} onUpdate={(patch) => updateLine(selectedLine.id, patch)} onOpenVoices={() => setView('voices')} /></div> : <div className="empty-project"><h2>{project.name}</h2><p>{analysis ? `${analysis.message} · ${analysis.progress}%` : '还没有场景。导入 TXT 小说后，文本模型会识别角色、对白、旁白、声音事件和场景结构。'}</p>{analysis ? <button className="button secondary-button" type="button" onClick={cancelActiveTask}>取消拆解</button> : <><button className="button primary-button" type="button" onClick={importNovel}>导入小说并拆解</button><button className="button secondary-button" type="button" onClick={addScene}>手动新建场景</button></>}</div>;
   else if (view === 'voices') content = <VoicesView characters={state.characters || []} voiceMap={state.voiceMap || {}} voiceDesignConfig={config} onDesignVoice={designVoice} onSetVoice={setVoice} onToast={setToast} />;
   else if (view === 'sounds') content = <SoundsView assets={state.assets || []} sceneUsage={assetUsage} sceneEvents={(currentScene?.lines || []).filter((line) => line.type !== 'dialogue')} sceneTitle={currentScene?.title || ''} onUpload={uploadAsset} onBindAsset={bindAsset} onDeleteAsset={deleteAsset} onUpdateAsset={updateAsset} onToast={setToast} />;
-  else if (view === 'production') content = <ProductionView project={project} mediaReport={mediaReport} currentSceneId={currentSceneId} onSceneChange={changeScene} onUpdateLine={updateLine} onUpdateDictionary={updateDictionary} onExportScene={exportSceneById} onExportEpisode={exportEpisode} onGenerateMissing={generateMissingDialogue} generating={Boolean(generation)} exporting={exporting} taskRefreshToken={taskRefreshToken} onToast={setToast} />;
+  else if (view === 'production') content = <ProductionView project={project} mediaReport={mediaReport} currentSceneId={currentSceneId} onSceneChange={changeScene} onUpdateLine={updateLine} onUpdateDictionary={updateDictionary} onExportScene={exportSceneById} onExportEpisode={exportEpisode} onOneClick={oneClick} oneClickToken={oneClickToken} onGenerateMissing={generateMissingDialogue} generating={Boolean(generation)} exporting={exporting} taskRefreshToken={taskRefreshToken} onToast={setToast} />;
   else if (view === 'quality') content = <QualityView report={qualityReport} stages={stageProgress} onToast={setToast} onExport={() => exportSceneById(currentScene?.id)} onOpenProduction={() => setView('production')} onOpenView={setView} onLocateLine={locateLine} onOpenVoices={() => setView('voices')} onOpenSounds={() => setView('sounds')} onGenerateMissing={() => generateMissingDialogue([currentScene?.id])} onRegenerateStale={() => regenerateStaleDialogue([currentScene?.id])} generating={Boolean(generation)} exporting={exporting} />;
   else content = <SettingsView config={config} loading={false} onSave={saveConfig} onTestLlm={api.testLlm} onToast={setToast} />;
 

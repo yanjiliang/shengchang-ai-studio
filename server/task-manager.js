@@ -5,6 +5,7 @@ import { audioContentHash, cacheAudio, createPersistentTask, deleteAudioCache, f
 import { exportProjectTimeline, runtimePaths, saveMedia } from './media-store.js';
 import { synthesize } from './model-adapters.js';
 import { analyzeNovel } from './story-analyzer.js';
+import { runOneClickPipeline } from './one-click.js';
 
 const MAX_CONCURRENCY = 2;
 let activeWorkers = 0;
@@ -190,6 +191,18 @@ async function runGenerationTask(task, config) {
 
 async function runTask(task) {
   const config = await readConfig();
+  if (task.kind === 'one-click') {
+    // The pipeline owns its progress/message/status writes; this wrapper only
+    // maps its outcomes onto task status.
+    updatePersistentTask(task.id, { status: 'running', progress: 2, message: '一键成片启动', startedAt: Date.now(), error: '' });
+    try {
+      await runOneClickPipeline(task, config);
+    } catch (error) {
+      if (error.code === 'TASK_CANCELLED') updatePersistentTask(task.id, { status: 'cancelled', message: '一键成片已取消', error: '', completedAt: Date.now() });
+      else updatePersistentTask(task.id, { status: 'failed', message: '一键成片失败', error: error.message, completedAt: Date.now() });
+    }
+    return;
+  }
   if (task.kind === 'export-project') {
     updatePersistentTask(task.id, { status: 'running', progress: 5, message: '正在准备整集时间轴', startedAt: Date.now(), error: '' });
     try {
@@ -256,6 +269,26 @@ export function enqueueProjectExport(input) {
   const task = createPersistentTask({ kind: 'export-project', projectId: input.projectId, payload: {} });
   queueMicrotask(pumpQueue);
   return task;
+}
+
+// one-click gets its own enqueue path on purpose: GENERATION_KINDS above
+// would coerce the kind to 'scene' (design B3, endpoint guards).
+export function enqueueOneClick({ projectId }) {
+  const task = createPersistentTask({ kind: 'one-click', projectId, payload: { completedStages: [] } });
+  queueMicrotask(pumpQueue);
+  return task;
+}
+
+// Cache-hit prediction for the estimate endpoint (§8 follow-up): runs the
+// exact hash path generation would take, minus the synthesis.
+export async function estimateGeneration(config, requests, { projectId } = {}) {
+  const projectDictionary = getProject(projectId)?.state?.pronunciationDictionary || [];
+  let cacheHits = 0;
+  for (const request of requests) {
+    const resolved = { ...request, text: applyPronunciation(request.text, projectDictionary) };
+    if (await validCache(findCachedAudio(audioContentHash(config, resolved)))) cacheHits += 1;
+  }
+  return cacheHits;
 }
 
 export function retryTask(taskId) {

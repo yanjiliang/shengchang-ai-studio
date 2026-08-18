@@ -162,9 +162,13 @@ export function listPersistentTasks(projectId, limit = 30) {
 export function updatePersistentTask(id, patch) {
   const task = getPersistentTask(id);
   if (!task) throw new Error('任务不存在');
-  database.prepare('UPDATE tasks SET status=?,progress=?,message=?,result_json=?,error=?,cancel_requested=?,started_at=?,completed_at=? WHERE id=?').run(
+  // payload merges shallowly (design T2): the one-click orchestrator persists
+  // completedStages checkpoints here - the one home that survives both crash
+  // recovery and retryTask (which copies only payload).
+  const payload = patch.payload ? { ...task.payload, ...patch.payload } : task.payload;
+  database.prepare('UPDATE tasks SET status=?,progress=?,message=?,payload_json=?,result_json=?,error=?,cancel_requested=?,started_at=?,completed_at=? WHERE id=?').run(
     patch.status ?? task.status, patch.progress ?? task.progress, patch.message ?? task.message,
-    JSON.stringify(patch.result ?? task.result), patch.error ?? task.error,
+    JSON.stringify(payload), JSON.stringify(patch.result ?? task.result), patch.error ?? task.error,
     patch.cancelRequested === undefined ? Number(task.cancelRequested) : Number(patch.cancelRequested),
     patch.startedAt ?? task.startedAt, patch.completedAt ?? task.completedAt, id,
   );

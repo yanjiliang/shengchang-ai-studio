@@ -1,6 +1,37 @@
-# 声场
+# 声场 ShengChang
 
-个人使用的 AI 多人广播剧制作工作台。作品与任务写入本地 SQLite，模型凭证由本地服务保存，浏览器只访问本机 API。
+**Personal AI radio-drama workbench — paste a novel, get a directed, mixed episode.**
+个人使用的 AI 多人广播剧制作工作台：小说进，成片出。
+
+---
+
+## English Quickstart
+
+ShengChang turns a novel chapter into a finished radio-drama episode: scene/line breakdown → per-character voice mapping → directed TTS (emotion / subtext / intensity / distance folded into one voice instruction) → FFmpeg mix desk with sidechain ducking → loudness-normalized MP3.
+
+**Zero-key first run.** A fresh install ships with a sample project — a condensed, direction-rich excerpt from *Journey to the West* (Chapter 27, public domain) — and defaults to the offline demo engine. Clone, install, run, and the full pipeline (一键成片 one-click episode) works end-to-end with placeholder tones: no API key, no signup, no cost. The plumbing is real; only the voice is a placeholder. Real voices need a [豆包语音](https://www.volcengine.com/product/speech) key; pasting your own novel works without any key via the rule-based breakdown (tagged for manual review) or with an LLM key for full understanding.
+
+```bash
+# Requirements: Node.js 22.5+, FFmpeg + ffprobe on PATH
+npm install
+npm run dev          # workbench on http://127.0.0.1:4173
+```
+
+1. Open the sample project 「西游记 · 三打白骨精」.
+2. 制作中心 → 「一键成片」 → confirm the estimate → walk away.
+3. Come back to a mixed episode MP3 (demo-engine tones).
+
+What to look at as a developer:
+
+- **The direction layer** — select a dialogue line, open 方向实验室 (Direction Lab) in the Inspector: the same line under three different directions (subtext/emotion/intensity/distance), auditioned side by side. Takes are cached per direction, so applying a take and regenerating is an instant cache hit.
+- **The mix graph** — per-scene timelines with auto-sequenced dialogue, looped beds, sidechain-compressed ducking, loudnorm + limiter master chain (`server/media-store.js`).
+- **Production plumbing** — persistent resumable tasks in SQLite with stage checkpoints, content-addressed audio cache with disk recovery and LRU eviction, server-owned audio fields that survive browser autosave races.
+
+Everything runs on loopback (`127.0.0.1`); credentials never leave `~/.shengchang/`. API routes reject non-loopback `Host`/`Origin`.
+
+中文详细文档如下 / Full documentation in Chinese below.
+
+---
 
 ## 环境要求
 
@@ -19,6 +50,8 @@ npm run dev
 - 前端工作台：`127.0.0.1:4173`
 - 本地模型网关：`127.0.0.1:4174`（只绑定本机回环地址）
 
+全新安装会自动创建示例项目「西游记 · 三打白骨精」（公版节选，每句台词都带完整导演参数），并默认使用离线演示引擎——不配任何密钥即可完整体验一键成片。已有安装可运行 `npm run seed` 补种示例。
+
 生产构建：
 
 ```bash
@@ -26,13 +59,13 @@ npm run build
 npm start
 ```
 
-Docker 运行（镜像内含 Node 22 与 FFmpeg，单端口 4174）：
+Docker 运行（镜像内含 Node 22 与 FFmpeg，以非 root 的 node 用户运行，单端口 4174）：
 
 ```bash
 docker build -t shengchang .
 docker run -p 4174:4174 \
   -v shengchang-runtime:/app/.runtime \
-  -v shengchang-config:/root/.shengchang \
+  -v shengchang-config:/home/node/.shengchang \
   shengchang
 ```
 
@@ -41,8 +74,20 @@ docker run -p 4174:4174 \
 运行测试：
 
 ```bash
-npm test
+npm test          # 单元测试（含混音结构化测试）
+npm run test:e2e  # 沙箱端到端：真实起服务、走完生成/一键成片全链路
 ```
+
+## 零密钥能做什么
+
+| 能力 | 无任何密钥 | 配置文本模型 | 再配豆包语音 |
+|------|-----------|-------------|-------------|
+| 示例项目一键成片 | ✅（占位音） | — | ✅ 真实语音 |
+| 导入自己的小说 | ✅ 规则拆解（建议人工校对角色归属） | ✅ 语义拆解 | — |
+| 生成真实语音 | ❌ | ❌ | ✅ |
+| 方向实验室对比 | ✅（占位音） | — | ✅ |
+
+离线演示引擎的定位：链路是真的，声音是假的。设置页会在演示引擎激活时提示。
 
 ## 模型配置
 
@@ -52,9 +97,9 @@ npm test
 - 自定义 HTTP：使用 JSON 请求头和请求体模板连接其他服务。请求体模板支持 `{{text}}`、`{{voiceId}}`、`{{emotion}}`、`{{emotionScale}}`、`{{speed}}`、`{{model}}`、`{{subtext}}`、`{{distance}}` 等变量。
 - 开发测试引擎（demo）：只用于离线验证生成、回放和导出链路，不用于正式制作。
 
-小说拆解使用 OpenAI Chat Completions 兼容接口（默认指向火山方舟）。在设置页填写 endpoint、API Key 和模型名称后，可用“测试连接”发起一次真实请求验证。长篇原文会按自然段分块处理，并携带已经确认的角色表来保持人物 ID 连续。
+小说拆解使用 OpenAI Chat Completions 兼容接口（默认指向火山方舟）。在设置页填写 endpoint、API Key 和模型名称后，可用“测试连接”发起一次真实请求验证。长篇原文按段落分块处理（兼容单换行分段的网文格式），并携带已经确认的角色表来保持人物 ID 连续。
 
-未配置文本模型时，导入小说会自动退回到规则拆解：按章节标题（或固定段落数）切分场景，用引号与说话人动词（“X说：「…」”）推断对白归属，代词跟随最近说话人，无法归属的文本一律归为旁白。规则拆解的结果会在场景侧栏标记“规则拆解 · 建议人工校对”，角色归属与场景切分可在工作台内手动修正。
+未配置文本模型时，导入小说会自动退回到规则拆解：按章节标题（或固定段落数）切分场景，用引号与说话人动词（“X说：「…」”，含英文直引号）推断对白归属，代词跟随最近说话人，无法归属的文本一律归为旁白。规则拆解的结果会在场景侧栏标记“规则拆解 · 建议人工校对”，角色归属与场景切分可在工作台内手动修正。
 
 角色音色有两种配置方式：
 
@@ -75,7 +120,7 @@ npm test
 0. （可选）在制作中心点「一键成片」：自动拆解 -> 预设音色映射 -> 批量生成 -> 音频体检 -> 整集导出，一次跑完。启动前会显示预估（句数、字数、缓存命中）；阶段进度与注意事项在任务历史查看，失败可从断点重试。
 1. 导入 TXT 小说自动拆解，或手动新建场景。
 2. 在角色音色页创建或映射每个角色的 `voice_id`。
-3. 调整场景、台词、潜台词、情绪、语速和空间参数（台词改动后已有音频会标记“待重生成”，不会被静默删除）。
+3. 调整场景、台词、潜台词、情绪、语速和空间参数（台词改动后已有音频会标记“待重生成”，不会被静默删除）。选中对白后可在「方向实验室」用同一句台词试听三种演法，应用后再生成会直接命中缓存。
 4. 生成单句、整个场景或仅重新生成过期台词，音频自动写回台词事件。
 5. 在声音素材页导入音乐、环境声、动作音效和人物主题，试听并选择具体声音事件进行绑定。删除素材时先自动解除全部绑定，服务器确认无任何引用后才从磁盘移除文件。
 6. 在质量审听页检查音频覆盖、音色绑定、素材绑定与文件健康，检查条目可点击直达问题台词。
@@ -90,3 +135,13 @@ npm test
 - 整集导出：按场景顺序渲染中间文件，最终统一到目标 LUFS、-1 dBTP、MP3 192 kbps；中间文件在导出完成后自动清理。
 - 任务历史：保留小说拆解、语音生成和整集导出的进度，可取消和重试失败任务。
 - 发音词典：项目级原文替换规则在语音合成前生效，替换结果参与音频缓存键计算。
+
+## 安全边界
+
+- 服务只绑定 `127.0.0.1`，`/api` 拒绝非回环的 `Host` 与 `Origin`（防跨站表单提交与 DNS rebinding）。
+- 凭证文件权限 0600，浏览器永远拿不到明文，设置页只回显脱敏提示。
+- 上传与导出的文件名经过消毒；素材删除遵守引用检查。
+
+## 许可
+
+MIT（见 LICENSE）。示例文本《西游记》为公版作品，本仓库使用的节选与导演标注为原创改编。

@@ -60,8 +60,55 @@ carry the failure count. The old "已完成的 N 句已进入缓存" message is 
   sentence ends). media-store golden tests remain open - export output is not
   byte-deterministic, needs a structural-diff approach.
 
+## Done 2026-08-18 (review fixes)
+
+- Voice-design previews no longer leak files: the demo preview round-trips as
+  a base64 data URL instead of an untracked file on disk (nothing referenced
+  it, nothing could reclaim it).
+- `splitNovel` packs single-newline-separated novels at paragraph boundaries
+  instead of hard-cutting them mid-sentence; structure is preserved verbatim.
+- Heuristic 拆解 understands ASCII straight quotes (common in web novels) for
+  both quote extraction and speaker attribution; covered by unit tests.
+- Loopback API guard: `/api` rejects requests whose Host or Origin is not
+  loopback (form-POST CSRF + DNS-rebinding protection for the local server).
+- Dockerfile runs as the non-root `node` user; config volume moved to
+  `/home/node/.shengchang`.
+- `applyResultsToProject` only marks a scene `ready` once every dialogue line
+  has audio; partial-failure writes keep the previous status.
+- media-store structural tests shipped (`media-store.test.js`): render real
+  timelines through ffmpeg and assert duration/format with ffprobe. They
+  immediately caught two real bugs, both fixed: sidechaincompress truncated
+  looped beds at the end of the last dialogue (sidechain input now padded),
+  and rendered files came up short whenever totalDuration included phantom
+  tail gap (final chain now pads to the reported duration).
+
+## Done 2026-08-18 (follow-up tasks, design §8)
+
+- **B2 sample project**: `server/sample-project.js` seeds 西游记·第二十七回
+  节选（公版）— 3 scenes, 19 directed dialogue lines, 7 characters, sound
+  events, full direction data (subtext/emotion/intensity/distance). Boot path
+  seeds only genuinely fresh installs (countProjects() includes archived
+  rows); `npm run seed` force-adds to existing installs, marker-idempotent.
+  Empty project list now renders a welcome screen instead of hanging.
+  Acceptance: sandbox one-click on the sample completes — 19/19 voiced,
+  7 voices auto-mapped, 3 scenes exported.
+- **Direction lab (Approach C)**: same line × 3 direction takes (可编辑
+  情绪/强度/潜台词/距离) auditioned side by side in the Inspector. Server
+  kind `direction-lab` skips project writeback; takes land in the audio cache
+  keyed by direction params, so apply-take → regenerate is an instant cache
+  hit. Covered by e2e checks (no-writeback + take audio served).
+- **README bilingual rewrite**: English quickstart (zero-key first run), 中文
+  深度文档, zero-key capability table, security boundary notes.
+- **Design A5**: fresh installs default to the demo provider (zero-key first
+  run); Settings 面板 shows a dismissible demo-engine banner.
+- **Sample content tests**: `server/sample-project.test.js` validates the
+  hand-authored direction data (full direction fields, unique ids, speaker
+  roster coverage, scene cast sync, sound events). 51/51 unit tests green.
+
 ## Still open
 
-- Direction A/B lab (design Approach C), B2 sample project seeding +
-  real-voice demo episode, README bilingual rewrite + GitHub publish + tag,
-  media-store golden tests.
+- Real-voice demo episode MP3: must be rendered by the owner with a 豆包 key
+  (一键成片 on the sample project), then referenced from README's demo section.
+- GitHub publish + tag (requires owner's account/authorization).
+- Docker image smoke test on a real daemon (mountpoint ownership fix pending
+  verification by `docker run`).

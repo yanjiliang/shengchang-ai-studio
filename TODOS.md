@@ -35,12 +35,33 @@ carry the failure count. The old "已完成的 N 句已进入缓存" message is 
 - TODO-1 shipped (above).
 - B3 shipped: `runGenerationRequests` extracted in `task-manager.js` (injectable
   `synthesize` for tests); App.jsx `runGeneration`/`generateBatch` merged into a
-  shared `runGenerationTask`. TODO-2 shipped on top of it (above). NOTE: the
-  one-click orchestrator from the 一键成片 design doc (one-click.js, stage
-  checkpointing) was never built in this repo - the design doc's B3–B6 plan is
-  the blueprint if it is ever wanted here.
+  shared `runGenerationTask`. TODO-2 shipped on top of it (above).
 - §8 attention-list deep links + stage-checklist panel shipped, adapted to the
   manual workbench: QualityView issues with a locate target deep-link into the
   studio line (voices/sounds/media issues jump to their surface), and a
   project-wide 成片进度 stage panel (拆解/音色/对白/素材/导出) links to the view
   where each stage is fixed.
+- 一键成片 orchestrator shipped (design B3-B5, now in THIS repo):
+  `server/one-click.js` five-stage pipeline with completedStages checkpointing
+  (payload merge in `updatePersistentTask`), preset voice auto-mapping that
+  never overwrites user choices, endpoint guards (409 live-run / 400 empty /
+  provider preflight / OV-4 autosave 409), `shared/generation-requests.mjs`
+  request contract shared by browser + server, estimate endpoint with
+  cache-hit prediction, UI button + confirm + auto-switch to tasks tab.
+  Zero-key end-to-end (heuristic 拆解 + demo provider) covered by e2e.
+- Docker shipped: `Dockerfile` (node:22-slim + ffmpeg) + `.dockerignore`,
+  single-port 4174, runtime/config volumes; README section added.
+- Asset-file deletion policy shipped: `DELETE /api/assets` removes the file
+  from disk only when no project references it; browser unbinds + flushes
+  before deleting.
+- story-analyzer golden-file test shipped (`story-analyzer.golden.test.js` +
+  `fixtures/heuristic-golden.json`); building it caught and fixed a real
+  attribution bug (bare verb 道 false-positive on 知道, verb-quote gap crossing
+  sentence ends). media-store golden tests remain open - export output is not
+  byte-deterministic, needs a structural-diff approach.
+
+## Still open
+
+- Direction A/B lab (design Approach C), B2 sample project seeding +
+  real-voice demo episode, README bilingual rewrite + GitHub publish + tag,
+  media-store golden tests.

@@ -88,13 +88,15 @@ export function validateLlmConfig(config) {
 // and the UI asks the user to review it - a wrong guess must be visible,
 // not silent.
 const CHAPTER_HEADING = /^(?:第[0-9一二三四五六七八九十百千两]+[章节卷回幕集部]|序章|楔子|引子|尾声|终章|后记|番外.{0,10}|chapter\s+\d+)/i;
-const SPEECH_VERB = '(?:说道?|问道?|喊道?|叫道?|笑道?|答道?|叹道?|念道?|骂道?|吼道?|催道?|低声说|轻声说|沉声说|大声说|开口|接话|嘀咕|嘟囔|说|道|问|喊|叫|答|笑|叹|念|催|回)';
+// Multi-char verbs first; bare 道/答/笑 etc. are deliberately absent - 道
+// alone false-positives on 知道 inside quoted text (caught by the golden run).
+const SPEECH_VERB = '(?:低声说|轻声说|沉声说|大声说|说道?|问道?|喊道?|叫道?|笑道?|答道|叹道?|骂道?|吼道?|催道|念叨|开口|接话|嘀咕|嘟囔|说|问|喊)';
 const SPEECH_ADVERB = '(?:轻声|低声|大声|沉声|冷冷|缓缓|急忙|连忙|忽然|突然|随即|接着|随后|笑着|叹了口气)?';
 // Lazy capture (min 1 char) so single-char pronouns resolve and the name
 // does not swallow the verb; the after-quote gap is separator-only so it
 // cannot eat into the name from the left.
 const SPEAKER_NAME = '([\\u4e00-\\u9fa5A-Za-z·]{1,12}?)';
-const SPEAKER_BEFORE_QUOTE = new RegExp(SPEAKER_NAME + SPEECH_ADVERB + SPEECH_VERB + '[^「『“]*[「『“]');
+const SPEAKER_BEFORE_QUOTE = new RegExp(SPEAKER_NAME + SPEECH_ADVERB + SPEECH_VERB + '[\\s:：,，、]*[「『“]');
 const SPEAKER_AFTER_QUOTE = new RegExp('[」』”][\\s,，、:：;；——-]*' + SPEAKER_NAME + SPEECH_ADVERB + SPEECH_VERB);
 const PRONOUN_SPEAKERS = new Set(['他', '她', '它', '他们', '她们', '它们']);
 // Fragments the name regex grabs that are scene description, not a person.

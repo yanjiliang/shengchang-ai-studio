@@ -1,0 +1,64 @@
+{
+  "project": {
+    "name": "golden-demo",
+    "genre": ""
+  },
+  "characters": [
+    {
+      "id": "老人",
+      "name": "老人"
+    }
+  ],
+  "scenes": [
+    {
+      "title": "第一章 雨夜",
+      "lines": [
+        {
+          "speakerId": "narrator",
+          "text": "出租车停在巷口，林夏付了钱。雨点砸在车顶上，像有人不耐烦地敲着桌子。"
+        },
+        {
+          "speakerId": "narrator",
+          "text": "就是这里？"
+        },
+        {
+          "speakerId": "narrator",
+          "text": "司机没有回答，只是抬了抬下巴，指向那扇亮着灯的木门。门上的漆剥落了大半，露出底下更旧的漆。"
+        },
+        {
+          "speakerId": "narrator",
+          "text": "林夏推开门，风铃响了。柜台后坐着一个老人，正在读一份三天前的报纸。"
+        },
+        {
+          "speakerId": "老人",
+          "text": "你终于来了。"
+        },
+        {
+          "speakerId": "老人",
+          "text": "等了七年。"
+        },
+        {
+          "speakerId": "老人",
+          "text": "我需要知道真相。"
+        },
+        {
+          "speakerId": "老人",
+          "text": "关于我父亲。"
+        },
+        {
+          "speakerId": "narrator",
+          "text": "老人放下报纸，笑了。"
+        }
+      ]
+    },
+    {
+      "title": "第二章 灯",
+      "lines": [
+        {
+          "speakerId": "narrator",
+          "text": "灯亮了。走廊尽头传来水声。林夏站在原地，听见自己的心跳。"
+        }
+      ]
+    }
+  ]
+}

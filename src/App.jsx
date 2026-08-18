@@ -245,7 +245,10 @@ function App() {
     persistState({ ...state, scenes: remaining });
     if (currentSceneId === sceneId) { setCurrentSceneId(remaining[0]?.id || null); setSelectedLineId(null); }
   };
-  const deleteAsset = (asset) => {
+  // Deletion is two steps against one policy: unbind every line in the
+  // project state, flush the save, then let the server remove the file only
+  // if nothing still references it (another project may).
+  const deleteAsset = async (asset) => {
     const usedBy = scenes.flatMap((scene) => scene.lines.filter((line) => line.assetId === asset.id).map((line) => scene.title));
     if (!window.confirm(usedBy.length ? `「${asset.name}」正被 ${usedBy.length} 个声音事件使用，删除后这些事件会失去绑定。继续？` : `删除素材「${asset.name}」？`)) return;
     persistState({
@@ -253,6 +256,10 @@ function App() {
       assets: (state.assets || []).filter((item) => item.id !== asset.id),
       scenes: scenes.map((scene) => ({ ...scene, lines: scene.lines.map((line) => line.assetId === asset.id ? { ...line, assetUrl: undefined, assetName: undefined, assetId: undefined } : line) })),
     });
+    try {
+      await commitPendingSave();
+      await api.deleteAsset(asset.url);
+    } catch (error) { setToast(error.message); }
   };
   const updateAsset = (assetId, patch) => persistState({ ...state, assets: (state.assets || []).map((item) => (item.id === assetId ? { ...item, ...patch } : item)) });
   const assetUsage = useMemo(() => {

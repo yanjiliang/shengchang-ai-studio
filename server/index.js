@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'node:path';
+import { unlink } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { buildGenerationRequests } from '../shared/generation-requests.mjs';
@@ -217,6 +218,23 @@ app.post('/api/assets/upload', express.raw({ type: 'audio/*', limit: '100mb' }),
     const id = randomUUID();
     const saved = await saveUploadedAsset(id, extension, request.body);
     response.json({ id: `asset-${id}`, name: originalName.replace(/\.[^.]+$/, ''), url: saved.url, mime: request.header('content-type'), size: request.body.length });
+  } catch (error) { next(error); }
+});
+// Asset-file deletion policy (§8): a file leaves disk only once nothing
+// references it. The browser unbinds its lines first, so a 409 here means
+// another project (or a manual reference) still needs the file.
+app.delete('/api/assets', async (request, response, next) => {
+  try {
+    const url = String(request.query.url || '');
+    const filename = path.basename(url);
+    if (!url.startsWith('/media/') || !filename || filename.includes('..')) throw new Error('无效的素材地址');
+    const referenced = listProjects().some((summary) => {
+      const project = getProject(summary.id);
+      return (project?.state?.scenes || []).some((scene) => (scene.lines || []).some((line) => line.assetUrl === url || line.audioUrl === url));
+    });
+    if (referenced) return response.status(409).json({ error: '素材仍被台词引用，请先解除全部绑定' });
+    await unlink(path.join(runtimePaths.MEDIA_DIR, filename)).catch(() => {});
+    response.json({ ok: true });
   } catch (error) { next(error); }
 });
 app.get('/api/tasks/:taskId', (request, response) => {

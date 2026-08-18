@@ -28,6 +28,7 @@ export function SceneSidebar({ project, scenes, currentSceneId, mediaReport, onS
           <div>
             <h1>{project.name}</h1>
             <p>{project.genre || '未分类'} · {scenes.length} 个场景</p>
+            {project.state?.breakdown === 'heuristic' ? <p className="breakdown-note">规则拆解 · 建议人工校对</p> : null}
           </div>
         </div>
         <div className="project-progress"><span style={{ width: `${scenes.length ? (generatedCount / scenes.length) * 100 : 0}%` }} /></div>

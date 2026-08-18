@@ -82,6 +82,118 @@ export function validateLlmConfig(config) {
   if (!config.llmModel) throw new Error('请在设置中填写文本理解模型名称');
 }
 
+// --- Offline rule-based fallback (TODO-1) -------------------------------
+// Engages only when no LLM is configured. Chinese dialogue attribution by
+// regex is genuinely lossy, so every output is tagged breakdown:'heuristic'
+// and the UI asks the user to review it - a wrong guess must be visible,
+// not silent.
+const CHAPTER_HEADING = /^(?:第[0-9一二三四五六七八九十百千两]+[章节卷回幕集部]|序章|楔子|引子|尾声|终章|后记|番外.{0,10}|chapter\s+\d+)/i;
+const SPEECH_VERB = '(?:说道?|问道?|喊道?|叫道?|笑道?|答道?|叹道?|念道?|骂道?|吼道?|催道?|低声说|轻声说|沉声说|大声说|开口|接话|嘀咕|嘟囔|说|道|问|喊|叫|答|笑|叹|念|催|回)';
+const SPEECH_ADVERB = '(?:轻声|低声|大声|沉声|冷冷|缓缓|急忙|连忙|忽然|突然|随即|接着|随后|笑着|叹了口气)?';
+// Lazy capture (min 1 char) so single-char pronouns resolve and the name
+// does not swallow the verb; the after-quote gap is separator-only so it
+// cannot eat into the name from the left.
+const SPEAKER_NAME = '([\\u4e00-\\u9fa5A-Za-z·]{1,12}?)';
+const SPEAKER_BEFORE_QUOTE = new RegExp(SPEAKER_NAME + SPEECH_ADVERB + SPEECH_VERB + '[^「『“]*[「『“]');
+const SPEAKER_AFTER_QUOTE = new RegExp('[」』”][\\s,，、:：;；——-]*' + SPEAKER_NAME + SPEECH_ADVERB + SPEECH_VERB);
+const PRONOUN_SPEAKERS = new Set(['他', '她', '它', '他们', '她们', '它们']);
+// Fragments the name regex grabs that are scene description, not a person.
+const NAME_FILLER = /^(?:只听|只见|听|见|这时|然后|接着|突然|忽然|原来|一个|那个|这个)+/;
+
+const MAX_SYNTH_CHARS = 120;
+
+function cleanSpeakerName(raw, lastSpeaker) {
+  const name = String(raw || '').replace(NAME_FILLER, '').trim();
+  if (PRONOUN_SPEAKERS.has(name)) return lastSpeaker || null;
+  if (name.length < 2 || name.length > 12) return null;
+  return name;
+}
+
+function attributeParagraph(paragraph, lastSpeaker) {
+  // Try "X说：「…」" first, then "「…」X说". Both regexes are anchored so the
+  // captured name sits directly against a speech verb next to a quote.
+  const before = paragraph.match(SPEAKER_BEFORE_QUOTE);
+  const after = !before && paragraph.match(SPEAKER_AFTER_QUOTE);
+  const matched = before || after;
+  if (!matched) return { speaker: null, attributionSpan: '' };
+  return { speaker: cleanSpeakerName(matched[1], lastSpeaker), attributionSpan: matched[0] };
+}
+
+function narrationChunks(text) {
+  if (!text.trim()) return [];
+  const sentences = text.split(/(?<=[。！？；!?…])/);
+  const chunks = [];
+  let buffer = '';
+  for (const sentence of sentences) {
+    if (buffer && (buffer + sentence).length > MAX_SYNTH_CHARS) { chunks.push(buffer); buffer = sentence; }
+    else buffer += sentence;
+  }
+  if (buffer.trim()) chunks.push(buffer);
+  // A single unpunctuated run can still exceed the cap; hard-split it.
+  return chunks.flatMap((chunk) => chunk.length > MAX_SYNTH_CHARS * 1.5 ? chunk.match(new RegExp('[\\s\\S]{1,' + MAX_SYNTH_CHARS + '}', 'g')) : [chunk]);
+}
+
+export function heuristicAnalysis(text, fallbackName) {
+  const paragraphs = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const chapters = [];
+  for (const line of paragraphs) {
+    if (line.length <= 40 && CHAPTER_HEADING.test(line)) chapters.push({ title: line.slice(0, 24), paragraphs: [] });
+    else {
+      if (!chapters.length) chapters.push({ title: '', paragraphs: [] });
+      chapters[chapters.length - 1].paragraphs.push(line);
+    }
+  }
+  let groups = chapters.filter((chapter) => chapter.paragraphs.length);
+  // No recognizable chapter structure: regroup into fixed-size scenes so a
+  // chapterless novel still lands as several reviewable scenes, not one giant.
+  if (groups.length <= 1) {
+    const flat = groups.flatMap((chapter) => chapter.paragraphs);
+    groups = [];
+    for (let index = 0; index < flat.length; index += 40) groups.push({ title: '', paragraphs: flat.slice(index, index + 40) });
+  }
+
+  const speakers = new Map();
+  let lastSpeaker = null;
+  const scenes = [];
+  for (const [index, group] of groups.entries()) {
+    const lines = [];
+    for (const paragraph of group.paragraphs) {
+      const quotes = [...paragraph.matchAll(/[「『“]([^「『“”」』]{1,400})[」』”]/g)];
+      if (!quotes.length) {
+        for (const chunk of narrationChunks(paragraph)) lines.push({ type: 'dialogue', speaker: '旁白', speakerId: 'narrator', text: chunk });
+        continue;
+      }
+      const { speaker: attributed, attributionSpan } = attributeParagraph(paragraph, lastSpeaker);
+      let speaker = attributed;
+      if (speaker) lastSpeaker = speaker;
+      // Walk the paragraph quote by quote; the text around quotes becomes
+      // narrator lines, minus the attribution clause we already understood.
+      const attributionClause = attributionSpan.replace(/[「『“]$/, '').replace(/^[」』”]/, '');
+      let cursor = 0;
+      const pushNarration = (text) => {
+        const narration = (text.includes(attributionClause) && attributionClause ? text.replace(attributionClause, '') : text).replace(/^[\s，。：:、—-]+/, '').trim();
+        for (const chunk of narrationChunks(narration)) lines.push({ type: 'dialogue', speaker: '旁白', speakerId: 'narrator', text: chunk });
+      };
+      for (const quote of quotes) {
+        pushNarration(paragraph.slice(cursor, quote.index));
+        const text = quote[1].trim();
+        cursor = quote.index + quote[0].length;
+        if (!text) continue;
+        // Unattributed speech falls back to the narrator (TODO-1 spec): a
+        // wrong character assignment is worse than an audible narrator.
+        const resolved = speaker || '旁白';
+        const speakerId = resolved === '旁白' ? 'narrator' : resolved;
+        if (speakerId !== 'narrator' && !speakers.has(speakerId)) speakers.set(speakerId, { id: speakerId, name: resolved, role: '角色', description: '由规则拆解推断的说话人，请人工确认角色与声音设定。' });
+        lines.push({ type: 'dialogue', speaker: resolved, speakerId, text });
+      }
+      pushNarration(paragraph.slice(cursor));
+    }
+    if (lines.length) scenes.push({ title: group.title || '场景 ' + (index + 1), location: '待设定', mood: '待导演', synopsis: '规则拆解：按章节或固定段落分组，未经文本模型理解。', lines });
+  }
+  const characters = [...speakers.values()];
+  return { project: { name: fallbackName, genre: '' }, characters, scenes };
+}
+
 export async function testLlm(config) {
   validateLlmConfig(config);
   const startedAt = Date.now();
@@ -106,9 +218,17 @@ async function callLlm(config, sourceText) {
 }
 
 export async function analyzeNovel(config, { text, filename, name }, { onProgress, shouldCancel } = {}) {
-  validateLlmConfig(config);
   if (!text.trim()) throw new Error('小说文本为空');
   const fallbackName = name || filename.replace(/\.[^.]+$/, '');
+  // Zero-key fallback (TODO-1): when no LLM is configured, break the novel
+  // down with rules instead of failing the import. The result is tagged so
+  // both the task message and the UI can label it as heuristic.
+  let llmReady = true;
+  try { validateLlmConfig(config); } catch { llmReady = false; }
+  if (!llmReady) {
+    onProgress?.({ current: 1, total: 1, progress: 60 });
+    return { ...normalizeResult(heuristicAnalysis(text, fallbackName), fallbackName), breakdown: 'heuristic' };
+  }
   const chunks = splitNovel(text);
   const merged = { project: { name: fallbackName, genre: '' }, characters: [], scenes: [] };
   for (let index = 0; index < chunks.length; index += 1) {
@@ -125,5 +245,5 @@ export async function analyzeNovel(config, { text, filename, name }, { onProgres
     mergeAnalysis(merged, result);
   }
   onProgress?.({ current: chunks.length, total: chunks.length, progress: 94 });
-  return normalizeResult(merged, fallbackName);
+  return { ...normalizeResult(merged, fallbackName), breakdown: 'llm' };
 }

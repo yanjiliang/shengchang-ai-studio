@@ -114,6 +114,15 @@ const again = await call('/api/generate', { method: 'POST', body: JSON.stringify
 task = await waitForTask(again.payload.id);
 check('identical request served from cache', task.status === 'completed' && task.result?.cacheHits === 1, `cacheHits=${task.result?.cacheHits}`);
 
+// 11. zero-key import: rule-based breakdown fallback (TODO-1). The scratch
+// server has no LLM configured, so analysis must still complete heuristically.
+const novel = await call(`/api/projects/${projectId}/analyze`, { method: 'POST', body: JSON.stringify({ text: '第一章 雨夜\n\n林夏说：「我到了。」', filename: 'demo.txt' }) });
+check('heuristic analysis accepted', novel.status === 202 && Boolean(novel.payload.id), novel.payload.error || '');
+task = await waitForTask(novel.payload.id);
+check('heuristic breakdown completes without LLM key', task.status === 'completed' && task.result?.breakdown === 'heuristic', task.error || task.message);
+project = (await call(`/api/projects/${projectId}`)).payload;
+check('heuristic scenes written to project', (project.state.scenes?.length || 0) >= 1 && project.state.breakdown === 'heuristic');
+
 console.log(process.exitCode ? 'E2E FAILED' : 'E2E GREEN');
 // The spawned server would keep the event loop alive forever; tear down
 // explicitly instead of relying on the exit handler.

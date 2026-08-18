@@ -136,8 +136,8 @@ async function runTask(task) {
       });
       const project = getProject(task.projectId);
       if (!project) throw new Error('分析目标项目不存在');
-      updateProject(task.projectId, { name: analyzed.name, genre: analyzed.genre, sourceFilename: task.payload.filename, sourceText: task.payload.text, trustedAudio: true, state: { ...project.state, characters: analyzed.characters, scenes: analyzed.scenes, assets: project.state.assets || [] } });
-      updatePersistentTask(task.id, { status: 'completed', progress: 100, message: `拆解完成，共 ${analyzed.scenes.length} 个场景`, result: { sceneCount: analyzed.scenes.length, characterCount: analyzed.characters.length }, completedAt: Date.now() });
+      updateProject(task.projectId, { name: analyzed.name, genre: analyzed.genre, sourceFilename: task.payload.filename, sourceText: task.payload.text, trustedAudio: true, state: { ...project.state, characters: analyzed.characters, scenes: analyzed.scenes, assets: project.state.assets || [], breakdown: analyzed.breakdown } });
+      updatePersistentTask(task.id, { status: 'completed', progress: 100, message: `拆解完成${analyzed.breakdown === 'heuristic' ? '（未配置文本模型，规则拆解结果建议人工校对）' : ''}，共 ${analyzed.scenes.length} 个场景`, result: { sceneCount: analyzed.scenes.length, characterCount: analyzed.characters.length, breakdown: analyzed.breakdown }, completedAt: Date.now() });
     } catch (error) {
       if (error.code === 'TASK_CANCELLED') updatePersistentTask(task.id, { status: 'cancelled', message: '小说拆解已取消', error: '', completedAt: Date.now() });
       else updatePersistentTask(task.id, { status: 'failed', message: '小说拆解失败', error: error.name === 'AbortError' ? '文本模型请求超时' : error.message, completedAt: Date.now() });

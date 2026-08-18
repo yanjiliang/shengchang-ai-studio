@@ -105,6 +105,7 @@ button { cursor: pointer; }
 .project-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .project-heading h1 { margin: 0 0 5px; font-size: 17px; line-height: 1.25; font-style: normal; font-weight: 680; overflow-wrap: anywhere; }
 .project-heading p { margin: 0; color: var(--color-muted); font-size: 10px; }
+.breakdown-note { margin: 6px 0 0; color: var(--color-accent); font-size: 10px; font-weight: 600; }
 .project-heading button { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: var(--color-muted); }
 .project-progress { height: 3px; margin: 15px 0 7px; overflow: hidden; border-radius: 2px; background: var(--color-paper-4); }
 .project-progress span { display: block; height: 100%; background: var(--color-accent); }

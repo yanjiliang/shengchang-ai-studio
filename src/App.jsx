@@ -184,7 +184,7 @@ function App() {
         const chunkCount = Math.max(1, Math.ceil(text.length / 24000));
         const completed = await waitForTask(task.id, (taskState) => setAnalysis({ progress: taskState.progress, message: taskState.message, taskId: task.id }), { timeoutMs: chunkCount * 3.5 * 60 * 1000 });
         await refreshProjects(project.id);
-        setToast(`小说拆解完成：${completed.result.sceneCount} 个场景，${completed.result.characterCount} 个角色`);
+        setToast(`小说拆解完成${completed.result.breakdown === 'heuristic' ? '（规则拆解，建议人工校对角色归属）' : ''}：${completed.result.sceneCount} 个场景，${completed.result.characterCount} 个角色`);
       } catch (error) { setToast(error.message); }
       finally { setAnalysis(null); }
     };

@@ -37,6 +37,10 @@ function App() {
   const [exporting, setExporting] = useState(false);
   const [taskRefreshToken, setTaskRefreshToken] = useState(0);
   const [mediaReport, setMediaReport] = useState(null);
+  // Direction-lab (Approach C): the latest A/B/C take results for audition in
+  // the Inspector. Keyed by lineId; a take's audio lives in the cache, never
+  // on the line itself.
+  const [labResult, setLabResult] = useState(null);
   const saveTimer = useRef(null);
   const pendingSave = useRef(null);
 
@@ -154,6 +158,31 @@ function App() {
   const regenerateLine = async (line) => {
     const ok = await runGenerationTask({ kind: 'line', requests: [generationRequest(line)], sceneId: currentScene?.id, buildingMessage: () => '正在创建持久任务', doneMessage: (completed) => completed.message });
     if (ok) setRequestedLineId(line.id);
+  };
+  // Direction lab (Approach C): render the SAME line under N direction takes.
+  // Server kind 'direction-lab' skips the project writeback, so the line keeps
+  // its current audio; every take lands in the cache keyed by its direction
+  // params, making "apply take → regenerate" an instant cache hit.
+  const runDirectionLab = async (line, variants) => {
+    if (!project || generation || !ensureVoiceConfigured()) return;
+    const base = generationRequest(line);
+    if (!base.voiceId) { setView('voices'); setToast('该角色尚未绑定 voice_id，先在角色音色页配置'); return; }
+    try {
+      setGeneration({ progress: 1, message: `正在生成 ${variants.length} 组方向对比` });
+      await commitPendingSave();
+      const requests = variants.map((variant) => ({
+        ...base,
+        emotion: variant.emotion,
+        emotionScale: Math.max(0.1, (variant.intensity || 40) / 100),
+        subtext: variant.subtext || '',
+        distance: variant.distance || '',
+      }));
+      const task = await api.generate({ projectId: project.id, sceneId: currentScene?.id, kind: 'direction-lab', requests });
+      const completed = await waitForTask(task.id, (taskState) => setGeneration({ progress: taskState.progress, message: taskState.message, taskId: task.id }));
+      setLabResult({ lineId: line.id, results: completed.result?.results || [] });
+      setToast('方向对比已生成，可在检查器逐组试听');
+    } catch (error) { setToast(error.message); }
+    finally { setGeneration(null); }
   };
   // Shared by "fill in missing" and "regenerate stale": same batch pipeline, only
   // the line predicate and the wording differ.
@@ -374,7 +403,7 @@ function App() {
   }
   const activeProgress = analysis || generation;
   let content;
-  if (view === 'studio') content = currentScene ? <div className="studio-layout"><SceneSidebar project={project} scenes={scenes} currentSceneId={currentSceneId} mediaReport={mediaReport} onSceneChange={changeScene} onImportNovel={importNovel} onAddScene={addScene} onDeleteScene={deleteScene} /><SceneCanvas scene={currentScene} durationMs={mediaReport?.scenes?.find((item) => item.sceneId === currentScene.id)?.durationMs} sourceText={project.sourceText} characters={state.characters || []} selectedLineId={selectedLineId} onSelectLine={setSelectedLineId} onUpdateLine={updateLine} onRegenerate={regenerateLine} onPlayLine={playLine} onAddLine={addLine} onDeleteLine={deleteLine} generationProgress={activeProgress?.progress ?? null} generationMessage={activeProgress?.message} onCancelTask={cancelActiveTask} /><Inspector line={selectedLine} characters={state.characters || []} voiceMap={state.voiceMap || {}} provider={config?.provider} onUpdate={(patch) => updateLine(selectedLine.id, patch)} onOpenVoices={() => setView('voices')} /></div> : <div className="empty-project"><h2>{project.name}</h2><p>{analysis ? `${analysis.message} · ${analysis.progress}%` : '还没有场景。导入 TXT 小说后，文本模型会识别角色、对白、旁白、声音事件和场景结构。'}</p>{analysis ? <button className="button secondary-button" type="button" onClick={cancelActiveTask}>取消拆解</button> : <><button className="button primary-button" type="button" onClick={importNovel}>导入小说并拆解</button><button className="button secondary-button" type="button" onClick={addScene}>手动新建场景</button></>}</div>;
+  if (view === 'studio') content = currentScene ? <div className="studio-layout"><SceneSidebar project={project} scenes={scenes} currentSceneId={currentSceneId} mediaReport={mediaReport} onSceneChange={changeScene} onImportNovel={importNovel} onAddScene={addScene} onDeleteScene={deleteScene} /><SceneCanvas scene={currentScene} durationMs={mediaReport?.scenes?.find((item) => item.sceneId === currentScene.id)?.durationMs} sourceText={project.sourceText} characters={state.characters || []} selectedLineId={selectedLineId} onSelectLine={setSelectedLineId} onUpdateLine={updateLine} onRegenerate={regenerateLine} onPlayLine={playLine} onAddLine={addLine} onDeleteLine={deleteLine} generationProgress={activeProgress?.progress ?? null} generationMessage={activeProgress?.message} onCancelTask={cancelActiveTask} /><Inspector line={selectedLine} characters={state.characters || []} voiceMap={state.voiceMap || {}} provider={config?.provider} onUpdate={(patch) => updateLine(selectedLine.id, patch)} onOpenVoices={() => setView('voices')} onLabGenerate={runDirectionLab} lab={labResult} labGenerating={Boolean(generation)} /></div> : <div className="empty-project"><h2>{project.name}</h2><p>{analysis ? `${analysis.message} · ${analysis.progress}%` : '还没有场景。导入 TXT 小说后，文本模型会识别角色、对白、旁白、声音事件和场景结构。'}</p>{analysis ? <button className="button secondary-button" type="button" onClick={cancelActiveTask}>取消拆解</button> : <><button className="button primary-button" type="button" onClick={importNovel}>导入小说并拆解</button><button className="button secondary-button" type="button" onClick={addScene}>手动新建场景</button></>}</div>;
   else if (view === 'voices') content = <VoicesView characters={state.characters || []} voiceMap={state.voiceMap || {}} voiceDesignConfig={config} onDesignVoice={designVoice} onSetVoice={setVoice} onToast={setToast} />;
   else if (view === 'sounds') content = <SoundsView assets={state.assets || []} sceneUsage={assetUsage} sceneEvents={(currentScene?.lines || []).filter((line) => line.type !== 'dialogue')} sceneTitle={currentScene?.title || ''} onUpload={uploadAsset} onBindAsset={bindAsset} onDeleteAsset={deleteAsset} onUpdateAsset={updateAsset} onToast={setToast} />;
   else if (view === 'production') content = <ProductionView project={project} mediaReport={mediaReport} currentSceneId={currentSceneId} onSceneChange={changeScene} onUpdateLine={updateLine} onUpdateDictionary={updateDictionary} onExportScene={exportSceneById} onExportEpisode={exportEpisode} onOneClick={oneClick} oneClickToken={oneClickToken} onGenerateMissing={generateMissingDialogue} generating={Boolean(generation)} exporting={exporting} taskRefreshToken={taskRefreshToken} onToast={setToast} />;

@@ -1,7 +1,16 @@
-import { Check, CircleDot, LockKeyhole, MapPin, Mic2, Volume2 } from 'lucide-react';
-import { useState } from 'react';
+import { Check, CircleDot, FlaskConical, LockKeyhole, MapPin, Mic2, Volume2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
 const emotions = ['警惕', '怀疑', '克制', '疲惫', '愤怒', '悲伤'];
+
+// Direction-lab takes (Approach C): the same line under three contrasting
+// directions. The pitch is the direction layer itself — identical text and
+// voice, audibly different performances.
+const labPresets = (line) => [
+  { name: 'A · 隐忍克制', emotion: '克制', intensity: 30, subtext: '压住情绪，话里有话', distance: line?.distance || '近讲' },
+  { name: 'B · 情绪外放', emotion: '愤怒', intensity: 85, subtext: '情绪决堤，音量抬高', distance: '近讲' },
+  { name: 'C · 耳语试探', emotion: '警惕', intensity: 45, subtext: '贴近耳边，压低声音试探', distance: '耳语' },
+];
 
 function RangeField({ label, value, suffix, min = 0, max = 100, onChange }) {
   return (
@@ -12,8 +21,16 @@ function RangeField({ label, value, suffix, min = 0, max = 100, onChange }) {
   );
 }
 
-export function Inspector({ line, characters = [], voiceMap = {}, provider, onUpdate, onOpenVoices }) {
+export function Inspector({ line, characters = [], voiceMap = {}, provider, onUpdate, onOpenVoices, onLabGenerate, lab, labGenerating }) {
   const [tab, setTab] = useState('performance');
+  const [labOpen, setLabOpen] = useState(false);
+  const [variants, setVariants] = useState(() => labPresets(line));
+
+  // Variants reset to presets when the selected line changes; edits within a
+  // line survive re-renders (state object identity changes on every keystroke,
+  // so the dependency has to be the id, not the object).
+  useEffect(() => { setVariants(labPresets(line)); setLabOpen(false); }, [line?.id]);
+  const updateVariant = (index, patch) => setVariants((current) => current.map((variant, position) => position === index ? { ...variant, ...patch } : variant));
 
   if (!line || line.type !== 'dialogue') {
     return (
@@ -56,6 +73,32 @@ export function Inspector({ line, characters = [], voiceMap = {}, provider, onUp
             </div>
             <RangeField label="情绪强度" value={line.intensity} suffix="%" onChange={(intensity) => onUpdate({ intensity })} />
             <RangeField label="语速" value={line.pace} suffix="%" min={70} max={120} onChange={(pace) => onUpdate({ pace })} />
+          </section>
+          <section className="inspector-section lab-section">
+            <div className="section-caption">方向实验室</div>
+            <button className="lab-toggle" type="button" onClick={() => setLabOpen((open) => !open)}><FlaskConical size={12} />{labOpen ? '收起对比' : '同一句台词，试三种演法'}</button>
+            {labOpen ? (
+              <>
+                <p className="lab-hint">对比只用于试听，不会写回台词；应用某个方向后重新生成，会直接命中缓存、瞬间完成。</p>
+                {variants.map((variant, index) => {
+                  const audio = lab?.lineId === line.id ? lab.results?.[index]?.url : '';
+                  const emotionOptions = emotions.includes(variant.emotion) ? emotions : [variant.emotion, ...emotions];
+                  return (
+                    <div className="lab-variant" key={variant.name}>
+                      <div className="lab-variant-head">
+                        <b>{variant.name}</b>
+                        <button type="button" onClick={() => onUpdate({ emotion: variant.emotion, intensity: variant.intensity, subtext: variant.subtext, distance: variant.distance })}>应用方向</button>
+                      </div>
+                      <label className="lab-field"><span>情绪</span><select value={variant.emotion} onChange={(event) => updateVariant(index, { emotion: event.target.value })}>{emotionOptions.map((emotion) => <option key={emotion} value={emotion}>{emotion}</option>)}</select></label>
+                      <RangeField label="强度" value={variant.intensity} suffix="%" onChange={(intensity) => updateVariant(index, { intensity })} />
+                      <label className="lab-field"><span>潜台词</span><input value={variant.subtext} onChange={(event) => updateVariant(index, { subtext: event.target.value })} /></label>
+                      {audio ? <audio controls preload="none" src={audio} /> : null}
+                    </div>
+                  );
+                })}
+                <button className="button secondary-button full-button" type="button" disabled={labGenerating} onClick={() => onLabGenerate(line, variants)}>{labGenerating ? '正在生成对比…' : '生成对比试听'}</button>
+              </>
+            ) : null}
           </section>
           <section className="inspector-section continuity-section">
             <div className="section-caption">连续性</div>

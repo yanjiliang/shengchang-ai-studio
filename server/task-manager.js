@@ -156,7 +156,12 @@ export async function runGenerationRequests(config, requests, { projectId, scene
 
 async function runGenerationTask(task, config) {
   const requests = task.payload.requests || [];
-  updatePersistentTask(task.id, { status: 'running', progress: 2, message: '正在准备生成参数', startedAt: Date.now(), error: '' });
+  // Direction-lab takes (design Approach C) are auditions only: same line,
+  // different 潜台词/情绪/强度/距离. The clips land in the audio cache (keyed
+  // by those params), so applying a take to the line and regenerating hits
+  // the cache for free — but the take itself must never overwrite the line.
+  const isDirectionLab = task.kind === 'direction-lab';
+  updatePersistentTask(task.id, { status: 'running', progress: 2, message: isDirectionLab ? '正在生成方向对比' : '正在准备生成参数', startedAt: Date.now(), error: '' });
   try {
     const outcome = await runGenerationRequests(config, requests, {
       projectId: task.projectId,
@@ -168,7 +173,7 @@ async function runGenerationTask(task, config) {
       updatePersistentTask(task.id, { status: 'cancelled', message: '任务已取消', result: { results: outcome.results }, completedAt: Date.now() });
       return;
     }
-    applyResultsToProject(task.projectId, task.sceneId, outcome.results);
+    if (!isDirectionLab) applyResultsToProject(task.projectId, task.sceneId, outcome.results);
     await evictAudioCacheIfNeeded(config.cacheLimitGb);
     const { results, failures } = outcome;
     const cacheHits = results.filter((item) => item.cached).length;
@@ -186,7 +191,9 @@ async function runGenerationTask(task, config) {
       });
       return;
     }
-    updatePersistentTask(task.id, { status: 'completed', progress: 100, message: cacheHits ? `生成完成，复用了 ${cacheHits} 条缓存` : '语音已生成并写入项目', result: { results, cacheHits }, completedAt: Date.now() });
+    updatePersistentTask(task.id, { status: 'completed', progress: 100, message: isDirectionLab
+      ? `方向对比已生成（${results.length} 组，可在检查器试听）`
+      : cacheHits ? `生成完成，复用了 ${cacheHits} 条缓存` : '语音已生成并写入项目', result: { results, cacheHits }, completedAt: Date.now() });
   } catch (error) {
     updatePersistentTask(task.id, { status: 'failed', message: '生成失败', error: error.name === 'AbortError' ? '模型请求超时' : error.message, completedAt: Date.now() });
   }
@@ -253,7 +260,7 @@ function pumpQueue() {
   }
 }
 
-const GENERATION_KINDS = new Set(['scene', 'line', 'batch-missing', 'batch-stale']);
+const GENERATION_KINDS = new Set(['scene', 'line', 'batch-missing', 'batch-stale', 'direction-lab']);
 
 export function enqueueGeneration(input) {
   const kind = GENERATION_KINDS.has(input.kind) ? input.kind : 'scene';

@@ -697,3 +697,19 @@ button { cursor: pointer; }
 .dot-music { background: var(--color-violet); }
 .empty-project-actions { display: flex; gap: 9px; margin-top: 4px; }
 
+
+/* Direction lab (Inspector) — same line, three direction takes. */
+.lab-section { padding-bottom: 6px; }
+.lab-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-paper-3); color: var(--color-text-soft); font-size: 10px; font-weight: 600; cursor: pointer; transition: border-color 140ms ease, color 140ms ease; }
+.lab-toggle:hover { border-color: var(--color-accent); color: var(--color-text); }
+.lab-hint { margin: 10px 0; color: var(--color-muted); font-size: 9px; line-height: 1.7; }
+.lab-variant { margin-bottom: 10px; padding: 10px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-paper-2); }
+.lab-variant-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lab-variant-head b { color: var(--color-text); font-size: 10px; font-weight: 650; }
+.lab-variant-head button { height: 22px; padding: 0 9px; border: 1px solid var(--color-line-strong); border-radius: var(--radius-sm); background: var(--color-paper-3); color: var(--color-text-soft); font-size: 9px; font-weight: 600; cursor: pointer; transition: border-color 140ms ease, color 140ms ease; }
+.lab-variant-head button:hover { border-color: var(--color-accent); color: var(--color-accent); }
+.lab-field { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.lab-field > span { flex: 0 0 42px; color: var(--color-muted); font-size: 9px; }
+.lab-field select, .lab-field input { flex: 1; min-width: 0; height: 26px; padding: 0 7px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-paper); color: var(--color-text-soft); font-size: 10px; }
+.lab-variant .range-field { margin-top: 8px; }
+.lab-variant audio { display: block; width: 100%; height: 28px; margin-top: 9px; }

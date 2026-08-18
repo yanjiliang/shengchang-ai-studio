@@ -118,6 +118,21 @@ const again = await call('/api/generate', { method: 'POST', body: JSON.stringify
 task = await waitForTask(again.payload.id);
 check('identical request served from cache', task.status === 'completed' && task.result?.cacheHits === 1, `cacheHits=${task.result?.cacheHits}`);
 
+// 10.5 direction lab (Approach C): takes generate and stay in the task
+// result; the line's audio must be untouched (audition, not writeback).
+const preLab = (await call(`/api/projects/${projectId}`)).payload.state.scenes[0].lines[0];
+const lab = await call('/api/generate', { method: 'POST', body: JSON.stringify({ projectId, sceneId: 'scene-1', kind: 'direction-lab', requests: [
+  { lineId: 'line-1', speakerId: 'narrator', voiceId: 'demo_voice', text: '改过的台词', subtext: '情绪决堤', emotion: '愤怒', emotionScale: 0.85, speed: 0.9, distance: '近讲' },
+  { lineId: 'line-1', speakerId: 'narrator', voiceId: 'demo_voice', text: '改过的台词', subtext: '压低声音试探', emotion: '警惕', emotionScale: 0.45, speed: 0.9, distance: '耳语' },
+] }) });
+check('direction-lab task accepted', lab.status === 202 && Boolean(lab.payload.id), lab.payload.error || '');
+task = await waitForTask(lab.payload.id);
+const labResults = task.result?.results || [];
+check('direction-lab takes generated', task.status === 'completed' && labResults.length === 2 && labResults.every((item) => item.url), task.error || task.message);
+const postLab = (await call(`/api/projects/${projectId}`)).payload.state.scenes[0].lines[0];
+check('direction-lab does not write back to the line', postLab.audioUrl === preLab.audioUrl, `audioUrl ${preLab.audioUrl} -> ${postLab.audioUrl}`);
+check('direction-lab take audio is served', labResults.length === 2 && (await fetch(`${BASE}${labResults[0].url}`)).status === 200);
+
 // 11. zero-key import: rule-based breakdown fallback (TODO-1). The scratch
 // server has no LLM configured, so analysis must still complete heuristically.
 const novel = await call(`/api/projects/${projectId}/analyze`, { method: 'POST', body: JSON.stringify({ text: '第一章 雨夜\n\n林夏说：「我到了。」', filename: 'demo.txt' }) });

@@ -1,7 +1,15 @@
 {
   "name": "shengchang-ai-drama-studio",
-  "private": true,
   "version": "0.1.0",
+  "description": "Personal AI radio-drama workbench — paste a novel, get a directed, mixed episode. 个人 AI 多人广播剧制作工作台：小说进，成片出。",
+  "license": "MIT",
+  "keywords": [
+    "tts",
+    "radio-drama",
+    "audiobook",
+    "ffmpeg",
+    "doubao"
+  ],
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n api,web -c yellow,cyan \"npm run server\" \"vite --host 127.0.0.1 --port 4173\"",

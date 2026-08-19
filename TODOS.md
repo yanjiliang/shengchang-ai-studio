@@ -105,10 +105,25 @@ carry the failure count. The old "已完成的 N 句已进入缓存" message is 
   hand-authored direction data (full direction fields, unique ids, speaker
   roster coverage, scene cast sync, sound events). 51/51 unit tests green.
 
+## Done 2026-08-19 (launch prep, /office-hours checklist)
+
+- package.json: `private` removed, description/license/keywords added for the
+  public repo (repository field pending the GitHub URL).
+- Docker smoke test on a real daemon: PASSED — and it caught a real bug. The
+  server bound `127.0.0.1` unconditionally, which makes `docker run -p`
+  unreachable (published ports forward to the container interface, never its
+  loopback). Fixed via `SHENGCHANG_BIND_HOST` (default stays `127.0.0.1`;
+  Dockerfile sets `0.0.0.0`; the Host/Origin loopback guard remains the
+  security boundary). Verified: host curl → 200, /api/health ok with ffmpeg,
+  sample project auto-seeds into the named volume as the node user (the
+  mountpoint-ownership fix works — sqlite + media dirs all node-owned).
+  51/51 unit tests green after the change.
+
 ## Still open
 
 - Real-voice demo episode MP3: must be rendered by the owner with a 豆包 key
   (一键成片 on the sample project), then referenced from README's demo section.
 - GitHub publish + tag (requires owner's account/authorization).
-- Docker image smoke test on a real daemon (mountpoint ownership fix pending
-  verification by `docker run`).
+- Silent-week check (from the launch design doc): verify whether GitHub renders
+  an inline `<audio>` player for a committed `docs/demo/*.mp3` on the live
+  repo; fallback is the embedded mp4 screen recording + MP3 link.

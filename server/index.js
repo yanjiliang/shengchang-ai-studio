@@ -13,6 +13,10 @@ import { seedSampleProject } from './sample-project.js';
 import { testLlm, validateLlmConfig } from './story-analyzer.js';
 
 const PORT = Number(process.env.SHENGCHANG_API_PORT || 4174);
+// Default binds loopback only. Docker sets SHENGCHANG_BIND_HOST=0.0.0.0 because
+// published ports (-p) forward to the container interface, never its loopback;
+// the Host/Origin guard below remains the actual security boundary there.
+const BIND_HOST = process.env.SHENGCHANG_BIND_HOST || '127.0.0.1';
 const serverDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(serverDir, '..');
 const app = express();
@@ -288,4 +292,4 @@ app.use((error, _request, response, _next) => {
   if (status === 413) return response.status(413).json({ error: '请求体过大，请按卷拆分后再导入' });
   response.status(status).json({ error: error.message || '本地服务处理失败' });
 });
-app.listen(PORT, '127.0.0.1', () => console.log(`声场本地服务：http://127.0.0.1:${PORT}`));
+app.listen(PORT, BIND_HOST, () => console.log(`声场本地服务：http://127.0.0.1:${PORT}（监听 ${BIND_HOST}）`));

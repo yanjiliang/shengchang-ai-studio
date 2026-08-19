@@ -26,6 +26,11 @@ RUN npm run build \
 
 USER node
 ENV SHENGCHANG_API_PORT=4174
+# Published ports forward to the container interface, so inside Docker the
+# server must listen on 0.0.0.0; loopback binding would make -p unreachable.
+# Security posture is unchanged: the /api Host/Origin guard still only serves
+# loopback clients. Host-native runs keep the 127.0.0.1 default.
+ENV SHENGCHANG_BIND_HOST=0.0.0.0
 ENV NODE_ENV=production
 EXPOSE 4174
 CMD ["node", "server/index.js"]

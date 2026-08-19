@@ -119,11 +119,22 @@ carry the failure count. The old "已完成的 N 句已进入缓存" message is 
   mountpoint-ownership fix works — sqlite + media dirs all node-owned).
   51/51 unit tests green after the change.
 
+## Done 2026-08-19 (launch: GitHub publish)
+
+- Code is on GitHub: https://github.com/yanjiliang/shengchang-ai-studio —
+  main pushed, `v0.1.0` tagged and pushed, `repository` field added in
+  095dcb6. Repo was created PRIVATE; owner needs to flip visibility to public
+  (Settings → Danger Zone → Change visibility).
+- Owner web-UI settings still pending: description, topics, Discussions,
+  social preview image (checklist in the launch design doc step 2).
+
 ## Still open
 
 - Real-voice demo episode MP3: must be rendered by the owner with a 豆包 key
   (一键成片 on the sample project), then referenced from README's demo section.
-- GitHub publish + tag (requires owner's account/authorization).
 - Silent-week check (from the launch design doc): verify whether GitHub renders
   an inline `<audio>` player for a committed `docs/demo/*.mp3` on the live
-  repo; fallback is the embedded mp4 screen recording + MP3 link.
+  repo. Pre-check 2026-08-19: html-pipeline's default sanitizer allowlist has
+  no `audio`/`video` elements, so inline `<audio>` will likely be stripped;
+  expected landing = GitHub-uploaded mp4 screen recording (renders a player in
+  markdown) + a prominent raw-MP3 link. Confirm on the live repo.

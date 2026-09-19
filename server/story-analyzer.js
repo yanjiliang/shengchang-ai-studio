@@ -220,10 +220,15 @@ async function callLlm(config, sourceText) {
     const response = await fetch(config.llmEndpoint, {
       method: 'POST', signal: controller.signal,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.llmApiKey}` },
-      body: JSON.stringify({ model: config.llmModel, temperature: 0.25, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: `${config.llmSystemPrompt}\n${SCHEMA_INSTRUCTION}` }, { role: 'user', content: sourceText }] }),
+      body: JSON.stringify({ model: config.llmModel, temperature: 0.25, max_tokens: 8_192, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: `${config.llmSystemPrompt}\n${SCHEMA_INSTRUCTION}` }, { role: 'user', content: sourceText }] }),
     });
     if (!response.ok) throw new Error(`文本模型返回 ${response.status}: ${(await response.text()).slice(0, 800)}`);
     const payload = await response.json();
+    // 8k is the floor of current chat-completions output caps (DeepSeek's is
+    // exactly 8k). Left unset, many providers default to 2-4k and the
+    // breakdown JSON gets cut mid-object; finish_reason 'length' is the
+    // provider saying even that was not enough.
+    if (payload.choices?.[0]?.finish_reason === 'length') throw new Error('模型输出达到长度上限被截断，拆解结果不完整。请在设置中换用输出上限更大的模型（建议 ≥16k token），或分章导入减少单段篇幅');
     const content = payload.choices?.[0]?.message?.content ?? payload.output?.text ?? payload.result;
     return extractJson(content);
   } finally { clearTimeout(timer); }

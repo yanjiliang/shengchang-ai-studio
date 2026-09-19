@@ -55,7 +55,9 @@ button { cursor: pointer; }
 
 .app-shell { height: 100vh; min-height: 640px; display: grid; grid-template-columns: var(--rail-width) minmax(0, 1fr); grid-template-rows: var(--topbar-height) minmax(0, 1fr) var(--player-height); background: var(--color-paper); overflow: hidden; }
 .app-rail { grid-column: 1; grid-row: 1 / 4; z-index: 5; display: flex; flex-direction: column; align-items: center; gap: var(--space-3); padding: 14px 0 13px; border-right: 1px solid var(--color-line); background: var(--color-paper-deep); }
-.brand-mark { width: 34px; height: 34px; display: grid; place-items: center; margin-bottom: 12px; padding: 0; border: 0; border-radius: var(--radius-md); background: var(--color-accent); color: var(--color-paper-deep); }
+.brand-mark { width: 34px; height: 34px; display: grid; place-items: center; margin-bottom: 12px; padding: 0; overflow: hidden; border: 0; border-radius: var(--radius-md); background: #111216; }
+.brand-mark img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.brand-mark:hover { outline: 1px solid var(--color-accent); outline-offset: 2px; }
 .rail-actions { display: flex; flex-direction: column; gap: 7px; }
 .rail-spacer { flex: 1; }
 .icon-button { position: relative; width: 36px; height: 36px; display: grid; place-items: center; padding: 0; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--color-dim); transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease; }
@@ -96,8 +98,18 @@ button { cursor: pointer; }
 
 .app-content { grid-column: 2; grid-row: 2 / 4; min-width: 0; min-height: 0; overflow: hidden; }
 .app-loading, .empty-project { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 11px; padding: 28px; color: var(--color-muted); text-align: center; }
-.empty-project h2 { margin: 0; color: var(--color-text); font-size: 20px; }
-.empty-project p { max-width: 520px; margin: 0 0 6px; font-size: 10px; line-height: 1.7; }
+.empty-project h2 { margin: 0; color: var(--color-text); font-size: 20px; overflow-wrap: anywhere; }
+.empty-project p { max-width: 520px; margin: 0 0 6px; color: var(--color-text-soft); font-size: 12px; line-height: 1.7; }
+.app-shell.is-welcome .app-content { grid-row: 1 / -1; }
+.empty-project { position: relative; isolation: isolate; overflow-y: auto; }
+.empty-project::before { content: ''; position: absolute; z-index: -1; inset: 0; background: url('/brand/stage-background.jpg') center / cover no-repeat; opacity: 0.22; pointer-events: none; }
+.empty-project .brand-signature { margin-bottom: 16px; }
+.brand-signature { display: flex; align-items: center; justify-content: center; gap: 10px; flex-shrink: 0; }
+.brand-signature img { display: block; border-radius: var(--radius-md); }
+.brand-signature > div { display: flex; flex-direction: column; gap: 4px; text-align: left; }
+.brand-signature strong { color: var(--color-text); font-size: 25px; font-weight: 700; letter-spacing: 4px; line-height: 1.1; }
+.brand-signature span { color: var(--color-text-soft); font-size: 9px; letter-spacing: 2px; }
+.app-loading .brand-signature { margin-bottom: 12px; }
 .studio-layout { height: calc(100% - var(--player-height)); display: grid; grid-template-columns: 250px minmax(420px, 1fr) 306px; min-width: 0; min-height: 0; }
 .scene-sidebar { min-width: 0; display: flex; flex-direction: column; overflow: hidden; border-right: 1px solid var(--color-line); background: var(--color-paper-2); }
 .project-summary { padding: 19px 15px 14px; border-bottom: 1px solid var(--color-line); }

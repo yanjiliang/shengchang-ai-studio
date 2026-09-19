@@ -5,3 +5,4 @@ dist/
 *.log
 .gstack/
 .hallmark/
+output/

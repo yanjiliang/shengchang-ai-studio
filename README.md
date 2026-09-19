@@ -1,5 +1,7 @@
 # 声场 ShengChang
 
+![声场：让故事，有声有场。AI 多人广播剧创作工作台](public/brand/launch-cover.jpg)
+
 **Personal AI radio-drama workbench — paste a novel, get a directed, mixed episode.**
 个人使用的 AI 多人广播剧制作工作台：小说进，成片出。
 
@@ -30,6 +32,8 @@ What to look at as a developer:
 Everything runs on loopback (`127.0.0.1`); credentials never leave `~/.shengchang/`. API routes reject non-loopback `Host`/`Origin`.
 
 中文详细文档如下 / Full documentation in Chinese below.
+
+品牌素材：[深底 Logo](public/brand/logo-dark.png) · [浅底横排 Logo](public/brand/logo-light.png) · [应用图标](public/brand/icon-256.png) · [使用说明](public/brand/README.md)
 
 ---
 

@@ -1,4 +1,4 @@
-import { AudioLines, BookOpenText, Library, Settings, ShieldCheck, SlidersHorizontal, Users } from 'lucide-react';
+import { BookOpenText, Library, Settings, ShieldCheck, SlidersHorizontal, Users } from 'lucide-react';
 import { IconButton } from './IconButton';
 
 const navItems = [
@@ -12,8 +12,8 @@ const navItems = [
 export function AppRail({ view, onViewChange }) {
   return (
     <nav className="app-rail" aria-label="产品功能">
-      <button className="brand-mark" type="button" aria-label="声场首页" onClick={() => onViewChange('studio')}>
-        <AudioLines size={18} strokeWidth={2.3} aria-hidden="true" />
+      <button className="brand-mark" type="button" aria-label="声场首页" title="声场 · 让故事，有声有场。" onClick={() => onViewChange('studio')}>
+        <img src="/brand/icon-256.png" alt="" width="34" height="34" />
       </button>
       <div className="rail-actions">
         {navItems.map((item) => (

@@ -1,4 +1,4 @@
-import { Check, ChevronDown, CloudCheck, FileUp, FolderPlus, Play, Sparkles } from 'lucide-react';
+import { Archive, Check, ChevronDown, CloudCheck, FileUp, FolderPlus, Play, Sparkles } from 'lucide-react';
 import { useState } from 'react';
 
 const titles = {
@@ -10,7 +10,7 @@ const titles = {
   settings: ['个人工作区', '生成设置'],
 };
 
-export function TopBar({ view, project, currentScene, projects, onSelectProject, onCreateProject, onGenerate, onReview, onImportNovel, generating, canReview }) {
+export function TopBar({ view, project, currentScene, projects, onSelectProject, onCreateProject, onArchiveProject, onGenerate, onReview, onImportNovel, generating, canReview }) {
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [defaultGroup, defaultTitle] = titles[view] || titles.studio;
   const group = view === 'studio' ? currentScene?.number ? `场景 ${currentScene.number}` : defaultGroup : defaultGroup;
@@ -21,7 +21,7 @@ export function TopBar({ view, project, currentScene, projects, onSelectProject,
         <span className="project-name">{project?.name || '选择作品'}</span>
         <ChevronDown size={14} aria-hidden="true" />
       </button>
-      {projectsOpen ? <div className="project-menu"><div className="project-menu-title">本地作品</div>{projects.map((item) => <button type="button" key={item.id} onClick={() => { onSelectProject(item.id); setProjectsOpen(false); }}><span><strong>{item.name}</strong><small>{item.sceneCount} 个场景 · {item.genre || '未分类'}</small></span>{item.id === project?.id ? <Check size={14} /> : null}</button>)}<button className="new-project-menu-item" type="button" onClick={() => { onCreateProject(); setProjectsOpen(false); }}><FolderPlus size={15} />新建作品</button></div> : null}
+      {projectsOpen ? <div className="project-menu"><div className="project-menu-title">本地作品</div>{projects.map((item) => <button type="button" key={item.id} onClick={() => { onSelectProject(item.id); setProjectsOpen(false); }}><span><strong>{item.name}</strong><small>{item.sceneCount} 个场景 · {item.genre || '未分类'}</small></span>{item.id === project?.id ? <Check size={14} /> : null}</button>)}<button className="new-project-menu-item" type="button" onClick={() => { onCreateProject(); setProjectsOpen(false); }}><FolderPlus size={15} />新建作品</button>{project ? <button className="new-project-menu-item is-danger" type="button" onClick={() => { onArchiveProject(project); setProjectsOpen(false); }}><Archive size={15} />归档当前作品</button> : null}</div> : null}
       <span className="crumb-separator">/</span>
       <span className="top-crumb">{group}</span>
       <span className="crumb-separator">/</span>

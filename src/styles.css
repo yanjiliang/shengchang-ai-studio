@@ -572,7 +572,7 @@ button { cursor: pointer; }
   .top-crumb, .crumb-separator, .save-state, .command-button span, .command-button kbd, .history-actions { display: none; }
   .scene-header { grid-template-columns: minmax(0, 1fr) 190px; }
   .player-bar { grid-template-columns: 170px minmax(260px, 1fr) 100px; }
-  .player-tools .mix-tag, .player-tools button:nth-of-type(2) { display: none; }
+  .player-tools .volume-group { display: none; }
   .voice-workspace { grid-template-columns: minmax(0, 1fr); }
   .voice-detail { display: none; }
   .sound-layout { grid-template-columns: 150px minmax(0, 1fr); }
@@ -728,3 +728,16 @@ button { cursor: pointer; }
 /* Demo-provider banner (Settings): the zero-key engine is a placeholder. */
 .demo-provider-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; padding: 11px 13px; border: 1px solid var(--color-gold, #d9a441); border-radius: var(--radius-sm); background: var(--color-paper-2); color: var(--color-text-soft); font-size: 10px; line-height: 1.6; }
 .demo-provider-banner button { height: 24px; padding: 0 10px; border: 1px solid var(--color-line-strong); border-radius: var(--radius-sm); background: var(--color-paper-3); color: var(--color-text); font-size: 9px; cursor: pointer; white-space: nowrap; }
+
+/* Real-data surfaces */
+.mini-wave.is-empty { opacity: 0.32; }
+.meta-input { width: auto; max-width: 100%; padding: 2px 4px; margin: -2px -4px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: inherit; font: inherit; }
+.meta-input:hover, .meta-input:focus { border-color: var(--color-line-strong); background: var(--color-paper-2); outline: none; }
+.meta-input.is-title { width: 100%; }
+.meta-input.is-synopsis { width: 100%; color: var(--color-muted); }
+.scene-location .meta-input { width: 170px; }
+.scene-meta-row .meta-input.is-inline { width: 110px; }
+.volume-group { display: flex; align-items: center; gap: 5px; color: var(--color-dim); }
+.volume-range { width: 66px; accent-color: var(--color-accent); }
+.project-menu > .is-danger { color: #e08573; }
+.project-menu > .is-danger:hover { background: rgb(224 133 115 / 12%); }

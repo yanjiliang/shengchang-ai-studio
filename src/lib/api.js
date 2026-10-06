@@ -18,6 +18,7 @@ export const api = {
   analyzeNovel: (projectId, input) => apiRequest(`/api/projects/${projectId}/analyze`, { method: 'POST', body: JSON.stringify(input) }),
   listTasks: (projectId) => apiRequest(`/api/projects/${projectId}/tasks`),
   getMediaReport: (projectId) => apiRequest(`/api/projects/${projectId}/media-report`),
+  mediaPeaks: (url) => apiRequest(`/api/media/peaks?url=${encodeURIComponent(url)}`),
   generate: (input) => apiRequest('/api/generate', { method: 'POST', body: JSON.stringify(input) }),
   getTask: (taskId) => apiRequest(`/api/tasks/${taskId}`),
   cancelTask: (taskId) => apiRequest(`/api/tasks/${taskId}/cancel`, { method: 'POST' }),

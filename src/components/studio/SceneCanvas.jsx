@@ -7,21 +7,34 @@ function formatMs(milliseconds) {
   return `${Math.floor(seconds / 60)}分${String(seconds % 60).padStart(2, '0')}秒`;
 }
 
-export function SceneCanvas({ scene, durationMs, sourceText, characters, selectedLineId, onSelectLine, onUpdateLine, onRegenerate, onPlayLine, onAddLine, onDeleteLine, generationProgress, generationMessage, onCancelTask }) {
+// The intensity curve is the dialogue lines' actual intensity settings in
+// script order — never a decorative canned shape. Long scenes downsample to
+// at most 24 points so the bars stay readable.
+function intensityCurve(scene) {
+  const values = (scene.lines || []).filter((line) => line.type === 'dialogue').map((line) => Math.min(100, Math.max(0, Number(line.intensity) || 40)));
+  if (!values.length) return [];
+  const step = Math.ceil(values.length / 24);
+  return values.filter((_, index) => index % step === 0);
+}
+
+export function SceneCanvas({ scene, durationMs, sourceText, characters, selectedLineId, onSelectLine, onUpdateLine, onUpdateScene, onRegenerate, onPlayLine, onAddLine, onDeleteLine, generationProgress, generationMessage, onCancelTask }) {
   const [showSource, setShowSource] = useState(false);
+  const curve = intensityCurve(scene);
+  const peak = curve.length ? Math.max(...curve) : 0;
+  const firstEmotion = (scene.lines || []).find((line) => line.type === 'dialogue')?.emotion;
   return (
     <main className="scene-canvas">
       <header className="scene-header">
         <div className="scene-heading-copy">
-          <div className="scene-location">场景 {scene.number} · {scene.location}</div>
-          <div className="scene-title-row"><h2>{scene.title}</h2></div>
-          <p>{scene.synopsis}</p>
-          <div className="scene-meta-row"><span>气氛：{scene.mood}</span><span>{durationMs ? `对白时长 ${formatMs(durationMs)}` : `预计 ${scene.duration}`}</span></div>
+          <div className="scene-location">场景 {scene.number} · <input className="meta-input" value={scene.location || ''} placeholder="地点 / 内外 / 时间" aria-label="场景地点" onChange={(event) => onUpdateScene(scene.id, { location: event.target.value })} /></div>
+          <div className="scene-title-row"><h2><input className="meta-input is-title" value={scene.title || ''} aria-label="场景标题" onChange={(event) => onUpdateScene(scene.id, { title: event.target.value })} /></h2></div>
+          <p><input className="meta-input is-synopsis" value={scene.synopsis || ''} placeholder="一句话概括本场的剧情作用" aria-label="场景概要" onChange={(event) => onUpdateScene(scene.id, { synopsis: event.target.value })} /></p>
+          <div className="scene-meta-row"><span>气氛：<input className="meta-input is-inline" value={scene.mood || ''} placeholder="待导演" aria-label="场景气氛" onChange={(event) => onUpdateScene(scene.id, { mood: event.target.value })} /></span><span>{durationMs ? `对白时长 ${formatMs(durationMs)}` : '对白时长待生成'}</span></div>
         </div>
-        <div className="emotion-arc" aria-label="场景情绪曲线">
-          <div className="arc-copy"><span>克制</span><strong>情绪曲线</strong><span>对峙</span></div>
+        <div className="emotion-arc" aria-label="情绪强度曲线">
+          <div className="arc-copy"><span>{curve.length ? `首句 ${firstEmotion || '—'}` : '暂无对白'}</span><strong>情绪强度</strong><span>{curve.length ? `峰值 ${peak}%` : '—'}</span></div>
           <div className="arc-bars">
-            {scene.arc.map((height, index) => <i key={`${height}-${index}`} className={index > scene.arc.length / 2 - 2 && index < scene.arc.length - 2 ? 'is-peak' : ''} style={{ height }} />)}
+            {(curve.length ? curve : Array.from({ length: 12 }, () => null)).map((value, index) => <i key={index} className={value !== null && peak > 0 && value >= peak * 0.85 ? 'is-peak' : ''} style={{ height: value === null ? '8%' : `${Math.max(12, Math.round((value / Math.max(1, peak)) * 100))}%` }} />)}
           </div>
         </div>
       </header>

@@ -113,6 +113,7 @@ function App() {
   // Changing the text does not delete the clip; the server flags it stale so the
   // old audio stays auditionable until it is regenerated.
   const updateLine = (lineId, patch) => persistState({ ...state, scenes: scenes.map((scene) => scene.id !== currentScene.id ? scene : { ...scene, status: 'draft', lines: scene.lines.map((line) => line.id === lineId ? { ...line, ...patch } : line) }) });
+  const updateScene = (sceneId, patch) => persistState({ ...state, scenes: scenes.map((scene) => scene.id !== sceneId ? scene : { ...scene, ...patch, status: 'draft' }) });
   const changeScene = (sceneId) => { const scene = scenes.find((item) => item.id === sceneId); setCurrentSceneId(sceneId); setSelectedLineId(scene.lines.find((line) => line.type === 'dialogue')?.id || scene.lines[0]?.id || null); };
   const selectProject = async (projectId) => { setLoading(true); try { await refreshProjects(projectId); setView('studio'); } catch (error) { setToast(error.message); } finally { setLoading(false); } };
   const createProject = async () => {
@@ -228,13 +229,10 @@ function App() {
     return result;
   };
   const setVoice = (characterId, voiceId) => persistState({ ...state, voiceMap: { ...(state.voiceMap || {}), [characterId]: voiceId } });
-  const saveVoiceDesignConfig = async (patch) => {
-    const saved = await api.saveConfig({ ...config, ...patch });
-    setConfig(saved);
-    return saved;
-  };
   const updateDictionary = (pronunciationDictionary) => persistState({ ...state, pronunciationDictionary });
-  const uploadAsset = async (file) => { const uploaded = await api.uploadAsset(file); const asset = { ...uploaded, category: '音乐', tags: ['本地导入'], color: '#7ed6b2', duration: '—' }; persistState({ ...state, assets: [asset, ...(state.assets || [])] }); return asset; };
+  // The server probes the uploaded file with ffprobe; a null duration means
+  // the file could not be read and the library honestly shows "—".
+  const uploadAsset = async (file) => { const uploaded = await api.uploadAsset(file); const asset = { ...uploaded, category: '音乐', tags: ['本地导入'], color: '#7ed6b2', duration: uploaded.durationMs ? formatDuration(uploaded.durationMs) : '—' }; persistState({ ...state, assets: [asset, ...(state.assets || [])] }); return asset; };
   const SOUND_EVENT_LABELS = { music: '背景音乐', ambient: '环境声', sfx: '动作音效' };
   const SOUND_EVENT_PLACEHOLDERS = { music: '描述需要的音乐氛围', ambient: '描述需要的环境声音', sfx: '描述需要的动作音效' };
   const addLine = (type) => {
@@ -261,7 +259,7 @@ function App() {
     const title = window.prompt('新场景标题');
     if (!title?.trim()) return;
     const id = crypto.randomUUID();
-    const scene = { id, number: String(scenes.length + 1).padStart(2, '0'), title: title.trim(), duration: '待生成', cast: '旁白', status: 'pending', location: '待设定', mood: '待导演', synopsis: '', arc: [12, 18, 24, 31, 38, 44, 36, 29], lines: [] };
+    const scene = { id, number: String(scenes.length + 1).padStart(2, '0'), title: title.trim(), duration: '待生成', cast: '旁白', status: 'pending', location: '', mood: '', synopsis: '', lines: [] };
     persistState({ ...state, scenes: [...scenes, scene] });
     setCurrentSceneId(id);
     setSelectedLineId(null);
@@ -304,6 +302,25 @@ function App() {
     // the server actually stops it.
     try { await api.cancelTask(active.taskId); }
     catch (error) { setToast(error.message); }
+  };
+  // Archive removes the work from the list; rows stay in the local database
+  // (soft delete), and countProjects still counts them so a reseed never
+  // duplicates the sample into an install that simply archived everything.
+  const archiveProjectById = async (target) => {
+    if (!target) return;
+    if ((analysis || generation) && target.id === project?.id) { setToast('当前作品有任务进行中，完成或取消后再归档'); return; }
+    if (!window.confirm(`归档作品「${target.name}」？它会从列表移除，数据仍保留在本地数据库。`)) return;
+    try {
+      await commitPendingSave();
+      await api.archiveProject(target.id);
+      const remaining = projects.filter((item) => item.id !== target.id);
+      setProjects(remaining);
+      if (target.id === project?.id) {
+        if (remaining.length) await refreshProjects(remaining[0].id);
+        else setProject(null);
+      }
+      setToast(`已归档「${target.name}」`);
+    } catch (error) { setToast(error.message); }
   };
   const bindAsset = (asset, line) => { updateLine(line.id, { assetUrl: asset.url, assetName: asset.name, assetId: asset.id }); setToast(`已将「${asset.name}」绑定到「${line.text?.slice(0, 18) || line.label}」`); };
   const exportSceneById = async (sceneId = currentScene?.id) => {
@@ -392,26 +409,31 @@ function App() {
     if (stale.length) issues.push({ id: 'stale', level: 'warning', title: '台词改动后音频未重新生成', scope: `${stale.length} 句`, detail: '这些句子会用旧音频进入成片，与当前台词不一致。', action: '重新生成', actionMessage: '请重新生成这些对白', locate: stale[0]?.id });
     const passed = []; if (metrics.coverage === 100 && !stale.length) passed.push({ id: 'coverage-ok', level: 'passed', title: '对白音频覆盖完整', scope: `${dialogue.length} 句`, detail: '每条对白均已关联与当前台词一致的音频。', action: '查看场景', actionMessage: '检查通过' }); if (metrics.text === 100) passed.push({ id: 'text-ok', level: 'passed', title: '文本可合成性通过', scope: '当前场景', detail: '没有空白台词。', action: '查看报告', actionMessage: '检查通过' }); if (metrics.media === 100 && voiced.length) passed.push({ id: 'media-ok', level: 'passed', title: '音频文件健康', scope: `${healthy} 个文件`, detail: sceneMedia ? `可解码，合计 ${formatDuration(sceneMedia.durationMs)}。` : '音频文件可正常读取。', action: '查看制作', actionMessage: '检查通过' });
     return { metrics, issues, passed, score: Math.round(metrics.coverage * .35 + metrics.voices * .22 + metrics.soundWorld * .18 + metrics.text * .1 + metrics.media * .15), canExport: voiced.length > 0 && invalid === 0 };
-  }, [currentScene, state.voiceMap, config, mediaReport]);
+  }, [currentScene, state.voiceMap, mediaReport]);
 
-  if (loading || !project) {
-    // A finished load with zero projects must not sit on the "opening
-    // database" screen forever — offer the two first-run paths instead.
-    if (!loading && !project && projects.length === 0) {
+  if (!project) {
+    // Three dead-ends used to share one screen; the worst was a finished
+    // load with projects present but none openable, which sat on the loading
+    // screen forever. Give each its own exit.
+    if (!loading && projects.length === 0) {
       return <div className="app-shell is-welcome"><AppRail view={view} onViewChange={setView} /><div className="app-content"><main className="empty-project"><BrandSignature /><h2>让故事，有声有场。</h2><p>还没有作品。创建一部，或运行 <code>npm run seed</code> 导入《西游记 · 三打白骨精》示例，离线体验一键成片。</p><div className="empty-project-actions"><button className="button primary-button" type="button" onClick={createProject}>创建第一部作品</button></div></main></div><Toast message={toast} /></div>;
+    }
+    if (!loading && projects.length > 0) {
+      const retry = () => refreshProjects(projects[0].id).catch((error) => setToast(error.message));
+      return <div className="app-shell is-welcome"><AppRail view={view} onViewChange={setView} /><div className="app-content"><main className="empty-project"><BrandSignature /><h2>作品加载失败</h2><p>没有打开任何作品：读取失败，或所选作品已不存在。可重试，或从顶部切换其他作品。</p><div className="empty-project-actions"><button className="button primary-button" type="button" onClick={retry}>重试加载</button><button className="button secondary-button" type="button" onClick={createProject}>新建作品</button></div></main></div><Toast message={toast} /></div>;
     }
     return <div className="app-shell is-welcome"><AppRail view={view} onViewChange={setView} /><div className="app-content"><div className="app-loading" role="status"><BrandSignature /><span>正在打开本地项目数据库</span></div></div><Toast message={toast} /></div>;
   }
   const activeProgress = analysis || generation;
   let content;
-  if (view === 'studio') content = currentScene ? <div className="studio-layout"><SceneSidebar project={project} scenes={scenes} currentSceneId={currentSceneId} mediaReport={mediaReport} onSceneChange={changeScene} onImportNovel={importNovel} onAddScene={addScene} onDeleteScene={deleteScene} /><SceneCanvas scene={currentScene} durationMs={mediaReport?.scenes?.find((item) => item.sceneId === currentScene.id)?.durationMs} sourceText={project.sourceText} characters={state.characters || []} selectedLineId={selectedLineId} onSelectLine={setSelectedLineId} onUpdateLine={updateLine} onRegenerate={regenerateLine} onPlayLine={playLine} onAddLine={addLine} onDeleteLine={deleteLine} generationProgress={activeProgress?.progress ?? null} generationMessage={activeProgress?.message} onCancelTask={cancelActiveTask} /><Inspector line={selectedLine} characters={state.characters || []} voiceMap={state.voiceMap || {}} provider={config?.provider} onUpdate={(patch) => updateLine(selectedLine.id, patch)} onOpenVoices={() => setView('voices')} onLabGenerate={runDirectionLab} lab={labResult} labGenerating={Boolean(generation)} /></div> : <div className="empty-project"><BrandSignature /><h2>{project.name}</h2><p>{analysis ? `${analysis.message} · ${analysis.progress}%` : '还没有场景。导入 TXT 小说后，文本模型会识别角色、对白、旁白、声音事件和场景结构。'}</p>{analysis ? <button className="button secondary-button" type="button" onClick={cancelActiveTask}>取消拆解</button> : <><button className="button primary-button" type="button" onClick={importNovel}>导入小说并拆解</button><button className="button secondary-button" type="button" onClick={addScene}>手动新建场景</button></>}</div>;
+  if (view === 'studio') content = currentScene ? <div className="studio-layout"><SceneSidebar project={project} scenes={scenes} currentSceneId={currentSceneId} mediaReport={mediaReport} onSceneChange={changeScene} onImportNovel={importNovel} onAddScene={addScene} onDeleteScene={deleteScene} /><SceneCanvas scene={currentScene} durationMs={mediaReport?.scenes?.find((item) => item.sceneId === currentScene.id)?.durationMs} sourceText={project.sourceText} characters={state.characters || []} selectedLineId={selectedLineId} onSelectLine={setSelectedLineId} onUpdateLine={updateLine} onUpdateScene={updateScene} onRegenerate={regenerateLine} onPlayLine={playLine} onAddLine={addLine} onDeleteLine={deleteLine} generationProgress={activeProgress?.progress ?? null} generationMessage={activeProgress?.message} onCancelTask={cancelActiveTask} /><Inspector line={selectedLine} characters={state.characters || []} voiceMap={state.voiceMap || {}} provider={config?.provider} onUpdate={(patch) => updateLine(selectedLine.id, patch)} onOpenVoices={() => setView('voices')} onLabGenerate={runDirectionLab} lab={labResult} labGenerating={Boolean(generation)} /></div> : <div className="empty-project"><BrandSignature /><h2>{project.name}</h2><p>{analysis ? `${analysis.message} · ${analysis.progress}%` : '还没有场景。导入 TXT 小说后，文本模型会识别角色、对白、旁白、声音事件和场景结构。'}</p>{analysis ? <button className="button secondary-button" type="button" onClick={cancelActiveTask}>取消拆解</button> : <><button className="button primary-button" type="button" onClick={importNovel}>导入小说并拆解</button><button className="button secondary-button" type="button" onClick={addScene}>手动新建场景</button></>}</div>;
   else if (view === 'voices') content = <VoicesView characters={state.characters || []} voiceMap={state.voiceMap || {}} voiceDesignConfig={config} onDesignVoice={designVoice} onSetVoice={setVoice} onToast={setToast} />;
   else if (view === 'sounds') content = <SoundsView assets={state.assets || []} sceneUsage={assetUsage} sceneEvents={(currentScene?.lines || []).filter((line) => line.type !== 'dialogue')} sceneTitle={currentScene?.title || ''} onUpload={uploadAsset} onBindAsset={bindAsset} onDeleteAsset={deleteAsset} onUpdateAsset={updateAsset} onToast={setToast} />;
   else if (view === 'production') content = <ProductionView project={project} mediaReport={mediaReport} currentSceneId={currentSceneId} onSceneChange={changeScene} onUpdateLine={updateLine} onUpdateDictionary={updateDictionary} onExportScene={exportSceneById} onExportEpisode={exportEpisode} onOneClick={oneClick} oneClickToken={oneClickToken} onGenerateMissing={generateMissingDialogue} generating={Boolean(generation)} exporting={exporting} taskRefreshToken={taskRefreshToken} onToast={setToast} />;
   else if (view === 'quality') content = <QualityView report={qualityReport} stages={stageProgress} onToast={setToast} onExport={() => exportSceneById(currentScene?.id)} onOpenProduction={() => setView('production')} onOpenView={setView} onLocateLine={locateLine} onOpenVoices={() => setView('voices')} onOpenSounds={() => setView('sounds')} onGenerateMissing={() => generateMissingDialogue([currentScene?.id])} onRegenerateStale={() => regenerateStaleDialogue([currentScene?.id])} generating={Boolean(generation)} exporting={exporting} />;
   else content = <SettingsView config={config} loading={false} onSave={saveConfig} onTestLlm={api.testLlm} onToast={setToast} />;
 
-  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} /><div className="app-content">{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} /> : null}<Toast message={toast} /></div>;
+  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} /><div className="app-content">{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} /> : null}<Toast message={toast} /></div>;
 }
 
 function formatDuration(milliseconds) {

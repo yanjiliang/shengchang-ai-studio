@@ -38,6 +38,44 @@ function defaultMix(line) {
   };
 }
 
+// Display-only twin of the server's resolveSceneTimeline (media-store.js):
+// dialogue auto-sequences with its gap, beds enter at their explicit start
+// (else 0), explicit duration/trim win over the probed length, and looped
+// beds stretch to the scene end. The server stays the render source of truth.
+function timelinePreview(scene, durationByLine) {
+  if (!scene) return { tracks: [], totalMs: 0 };
+  const tracks = [];
+  let cursorMs = 0;
+  for (const line of scene.lines || []) {
+    const mix = defaultMix(line);
+    const isDialogue = line.type === 'dialogue';
+    const hasAudio = Boolean(line.audioUrl || line.assetUrl);
+    const probeMs = durationByLine.get(line.id) || 0;
+    const trimStartMs = Math.max(0, Math.min(numberValue(mix.trimStartMs, 0), Math.max(0, probeMs - 20)));
+    const trimEndMs = mix.trimEndMs === '' ? probeMs : Math.min(Math.max(numberValue(mix.trimEndMs, probeMs), trimStartMs + 20), Math.max(trimStartMs + 20, probeMs));
+    const trimmedMs = Math.max(50, trimEndMs - trimStartMs);
+    const explicitDurationMs = mix.durationMs === '' ? null : Math.max(50, numberValue(mix.durationMs, 50));
+    const durationMs = hasAudio ? (explicitDurationMs ?? trimmedMs) : (explicitDurationMs ?? 0);
+    const explicitStartMs = mix.startMs === '' ? null : Math.max(0, numberValue(mix.startMs, 0));
+    const startMs = explicitStartMs ?? (isDialogue ? cursorMs : 0);
+    if (isDialogue) cursorMs = Math.max(cursorMs, startMs + durationMs + Math.max(0, Math.min(10_000, numberValue(mix.gapAfterMs, 320))));
+    tracks.push({ line, startMs, durationMs, loop: !isDialogue && mix.loop, hasAudio, explicitDuration: explicitDurationMs !== null });
+  }
+  let totalMs = Math.max(cursorMs, ...tracks.map((track) => track.startMs + track.durationMs), 0);
+  for (const track of tracks) if (track.loop && track.hasAudio && !track.explicitDuration) track.durationMs = Math.max(100, totalMs - track.startMs);
+  totalMs = Math.max(cursorMs, ...tracks.map((track) => track.startMs + track.durationMs), 0);
+  return { tracks, totalMs };
+}
+
+const RULER_STEPS = [5, 10, 15, 30, 60, 120, 300, 600, 1200];
+function rulerTicks(totalMs) {
+  const totalSeconds = totalMs / 1000;
+  const step = RULER_STEPS.find((candidate) => totalSeconds / candidate <= 6) || 2400;
+  const ticks = [];
+  for (let second = 0; second <= totalSeconds + 0.001; second += step) ticks.push(second);
+  return ticks;
+}
+
 function MixInspector({ line, media, onUpdate }) {
   const audioRef = useRef(null);
   const [playing, setPlaying] = useState(false);
@@ -101,6 +139,8 @@ function MixWorkspace({ project, mediaReport, currentSceneId, onSceneChange, onU
   const voicedScenes = scenes.filter((item) => item.lines?.some((line) => line.type === 'dialogue' && line.audioUrl)).length;
   const missingDialogue = scene?.lines?.filter((line) => line.type === 'dialogue' && !line.audioUrl).length || 0;
   const invalidFileCount = sceneMedia?.invalidFileCount || 0;
+  const durationByLine = useMemo(() => new Map((sceneMedia?.files || []).map((file) => [file.lineId, file.durationMs || 0])), [sceneMedia]);
+  const timeline = useMemo(() => timelinePreview(scene, durationByLine), [scene, durationByLine]);
   const missingLabel = (line) => line.type === 'dialogue' ? '待生成语音' : '待绑定素材';
   const previewScene = async () => {
     if (!scene || previewLoading) return;
@@ -124,8 +164,8 @@ function MixWorkspace({ project, mediaReport, currentSceneId, onSceneChange, onU
       <aside className="mix-scenes"><div className="section-caption">场景顺序</div>{scenes.map((item) => <button className={item.id === scene?.id ? 'is-active' : ''} type="button" key={item.id} onClick={() => onSceneChange(item.id)}><span>{item.number}</span><div><strong>{item.title}</strong><small>{item.lines?.filter((line) => line.audioUrl || line.assetUrl).length || 0} 条可渲染轨道</small></div></button>)}</aside>
       <section className="mix-timeline">
         <header><div><span>当前时间轴</span><h3>{scene?.title || '没有场景'}</h3><p>对白默认按顺序排列；填写入点后可精确覆盖。声音素材按事件入点进入。</p>{missingDialogue || invalidFileCount ? <div className="mix-readiness">{missingDialogue ? <span>{missingDialogue} 句待生成</span> : null}{invalidFileCount ? <span className="is-warning">{invalidFileCount} 个文件无法读取</span> : null}</div> : null}</div><div className="header-actions"><audio ref={previewRef} preload="none" onPlay={() => setPreviewPlaying(true)} onEnded={() => setPreviewPlaying(false)} onPause={() => setPreviewPlaying(false)} /><button className="button secondary-button" type="button" disabled={!renderable || invalidFileCount || previewLoading} onClick={toggleScenePreview}>{previewLoading ? <LoaderCircle size={14} className="spin" /> : previewPlaying ? <PauseCircle size={14} /> : <PlayCircle size={14} />}{previewLoading ? '正在预混' : previewPlaying ? '暂停试听' : '试听本场'}</button>{missingDialogue ? <button className="button secondary-button" type="button" disabled={generating} onClick={() => onGenerateMissing([scene.id])}>{generating ? <LoaderCircle size={14} className="spin" /> : <WandSparkles size={14} />}{generating ? '正在补全' : `补全对白 · ${missingDialogue}`}</button> : null}<button className="button secondary-button" type="button" disabled={!renderable || invalidFileCount || exporting} onClick={() => onExportScene(scene.id)}><Download size={14} />导出本场</button><button className="button secondary-button" type="button" disabled={!voicedScenes || exporting} onClick={onExportEpisode}>{exporting ? <LoaderCircle size={14} className="spin" /> : <Download size={14} />}{exporting ? '正在渲染' : `导出整集 · ${voicedScenes} 场`}</button><button className="button primary-button" type="button" disabled={exporting} onClick={onOneClick} title="自动拆解、配音色、生成、体检并导出整集"><WandSparkles size={14} />一键成片</button></div></header>
-        <div className="timeline-ruler"><span>00:00</span><span>00:15</span><span>00:30</span><span>00:45</span><span>01:00</span></div>
-        <div className="timeline-tracks">{scene?.lines?.map((line, index) => { const Icon = typeIcons[line.type] || Volume2; const mix = defaultMix(line); const ready = Boolean(line.audioUrl || line.assetUrl); const left = Math.min(72, mix.startMs === '' ? index * 5 : Number(mix.startMs) / 1000 * 1.15); const width = Math.max(12, Math.min(76 - left, mix.durationMs ? Number(mix.durationMs) / 1000 * 1.15 : line.type === 'dialogue' ? 18 : 34)); return <button className={`timeline-track is-${line.type} ${selectedId === line.id ? 'is-selected' : ''} ${ready ? '' : 'is-missing'}`} type="button" key={line.id} onClick={() => setSelectedId(line.id)}><span className="track-label"><Icon size={13} /><strong>{line.speaker || line.label || typeNames[line.type]}</strong><small>{ready ? `${mix.gainDb} dB` : missingLabel(line)}</small></span><span className="track-lane"><i style={{ left: `${left}%`, width: `${width}%` }}><b>{ready ? line.text : missingLabel(line)}</b></i></span></button>; })}</div>
+        <div className="timeline-ruler">{rulerTicks(timeline.totalMs).map((second) => <span key={second}>{formatDuration(second * 1000)}</span>)}</div>
+        <div className="timeline-tracks">{timeline.tracks.map(({ line, startMs, durationMs, hasAudio }) => { const Icon = typeIcons[line.type] || Volume2; const mix = defaultMix(line); const span = Math.max(1, timeline.totalMs); return <button className={`timeline-track is-${line.type} ${selectedId === line.id ? 'is-selected' : ''} ${hasAudio ? '' : 'is-missing'}`} type="button" key={line.id} onClick={() => setSelectedId(line.id)}><span className="track-label"><Icon size={13} /><strong>{line.speaker || line.label || typeNames[line.type]}</strong><small>{hasAudio ? `${mix.gainDb} dB` : missingLabel(line)}</small></span><span className="track-lane"><i style={{ left: `${(startMs / span) * 100}%`, width: `${Math.max(1.5, (durationMs / span) * 100)}%` }}><b>{hasAudio ? line.text : missingLabel(line)}</b></i></span></button>; })}</div>
       </section>
       <MixInspector line={selected} media={selectedMedia} onUpdate={onUpdateLine} />
     </div>

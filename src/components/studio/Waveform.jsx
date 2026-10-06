@@ -1,9 +1,19 @@
-const bars = [8, 15, 10, 19, 7, 13, 21, 9, 17, 6, 12, 18, 8, 16, 22, 11, 14, 7, 18, 10, 20, 8, 13, 17, 9, 15, 21, 7, 12, 19, 10, 16, 8, 14, 20, 9, 17, 11, 18, 7, 13, 20, 8, 16, 11, 19, 7, 14];
+import { useEffect, useState } from 'react';
+import { api } from '../../lib/api';
 
-export function Waveform({ color = 'var(--color-mint)' }) {
+// Real peaks extracted server-side by ffmpeg. Flat bars mean "no data yet"
+// (loading, unreadable file, or nothing bound) — never a decorative fake shape.
+export function Waveform({ color = 'var(--color-mint)', url }) {
+  const [peaks, setPeaks] = useState(null);
+  useEffect(() => {
+    if (!url) { setPeaks(null); return undefined; }
+    let active = true;
+    api.mediaPeaks(url).then((payload) => { if (active) setPeaks(payload.peaks); }).catch(() => { if (active) setPeaks(null); });
+    return () => { active = false; };
+  }, [url]);
   return (
-    <span className="mini-wave" aria-hidden="true">
-      {bars.map((height, index) => <i key={`${height}-${index}`} style={{ height, backgroundColor: color }} />)}
+    <span className={`mini-wave${peaks ? '' : ' is-empty'}`} aria-hidden="true">
+      {Array.from({ length: 48 }, (_, index) => <i key={index} style={{ height: peaks ? `${Math.max(12, Math.round((peaks[index] || 0) * 100))}%` : '6%', backgroundColor: color }} />)}
     </span>
   );
 }

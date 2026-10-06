@@ -1,4 +1,4 @@
-import { Download, ListMusic, Pause, Play, RotateCcw, RotateCw, SlidersHorizontal, Volume2 } from 'lucide-react';
+import { Download, Pause, Play, RotateCcw, RotateCw, SlidersHorizontal, Volume2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 function formatTime(seconds) {
@@ -12,9 +12,12 @@ export function PlayerBar({ scene, requestedLineId, reviewToken, onOpenMix, onEx
   const clips = useMemo(() => scene.lines.filter((line) => line.audioUrl), [scene.lines]);
   const [clipIndex, setClipIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [volume, setVolume] = useState(1);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const activeClip = clips[clipIndex];
+
+  useEffect(() => { if (audioRef.current) audioRef.current.volume = volume; }, [volume, activeClip?.audioUrl]);
 
   useEffect(() => { setClipIndex(0); setPlaying(false); setCurrentTime(0); }, [scene.id]);
   useEffect(() => {
@@ -62,7 +65,7 @@ export function PlayerBar({ scene, requestedLineId, reviewToken, onOpenMix, onEx
         <button className="progress-track" type="button" aria-label="播放进度" disabled={!activeClip} onClick={(event) => { const audio = audioRef.current; if (!audio || !Number.isFinite(audio.duration) || audio.duration <= 0) return; const rect = event.currentTarget.getBoundingClientRect(); const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)); audio.currentTime = ratio * audio.duration; }}><span style={{ width: `${duration ? (currentTime / duration) * 100 : 0}%` }} /></button>
         <span className="player-time">{formatTime(duration)}</span>
       </div>
-      <div className="player-tools"><span className="mix-tag">-16 LUFS</span><button type="button" aria-label="音量" title="音量"><Volume2 size={17} /></button><button type="button" aria-label="播放队列" title="播放队列"><ListMusic size={17} /></button><button type="button" aria-label="混音设置" title="混音设置" onClick={onOpenMix}><SlidersHorizontal size={17} /></button><button type="button" aria-label="导出本场" title="导出本场" disabled={!clips.length || exporting} onClick={onExport}><Download size={17} /></button></div>
+      <div className="player-tools"><span className="volume-group"><Volume2 size={16} aria-hidden="true" /><input className="volume-range" type="range" min="0" max="1" step="0.05" value={volume} aria-label="音量" title="音量" onChange={(event) => setVolume(Number(event.target.value))} /></span><button type="button" aria-label="混音设置" title="混音设置" onClick={onOpenMix}><SlidersHorizontal size={17} /></button><button type="button" aria-label="导出本场" title="导出本场" disabled={!clips.length || exporting} onClick={onExport}><Download size={17} /></button></div>
     </footer>
   );
 }

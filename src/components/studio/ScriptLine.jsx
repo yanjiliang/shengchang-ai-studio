@@ -14,7 +14,7 @@ export function ScriptLine({ line, character, selected, onSelect, onTextChange, 
         <button className="sound-event-main" type="button" onClick={() => { onSelect(); if (line.assetUrl) onPlay(); }}>
           <span className="event-grip"><GripVertical size={14} /></span>
           <span className="event-type">{line.label}</span>
-          {line.type === 'ambient' ? <Waveform color={typeColors[line.type]} /> : <span className="event-copy">{line.assetName ? `${line.text} · ${line.assetName}` : line.text}</span>}
+          {line.type === 'ambient' ? <Waveform color={typeColors[line.type]} url={line.assetUrl} /> : <span className="event-copy">{line.assetName ? `${line.text} · ${line.assetName}` : line.text}</span>}
           <span className="event-time">{line.time}</span>
           <Play size={13} className="event-play" fill="currentColor" />
         </button>

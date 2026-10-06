@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppRail } from './components/AppRail';
 import { BrandSignature } from './components/BrandSignature';
+import { Dialog } from './components/Dialog';
 import { PlayerBar } from './components/PlayerBar';
 import { Toast } from './components/Toast';
 import { TopBar } from './components/TopBar';
@@ -13,6 +14,7 @@ import { SoundsView } from './components/views/SoundsView';
 import { VoicesView } from './components/views/VoicesView';
 import { ProductionView } from './components/views/ProductionView';
 import { api, waitForTask } from './lib/api';
+import { formatDuration, qualityReport as buildQualityReport, stageProgress as buildStageProgress } from './lib/quality';
 import { buildGenerationRequest } from '../shared/generation-requests.mjs';
 
 const EMPTY_STATE = { scenes: [], assets: [], characters: [], voiceMap: {} };
@@ -47,6 +49,11 @@ function App() {
   const [saveState, setSaveState] = useState('saved');
   const saveTimer = useRef(null);
   const pendingSave = useRef(null);
+  // Promise-based prompt/confirm: replaces every window.prompt / window.confirm
+  // call site; resolving (or dismissing) the dialog settles the awaiting flow.
+  const [dialog, setDialog] = useState(null);
+  const openDialog = (request) => new Promise((resolve) => setDialog({ ...request, resolve }));
+  const closeDialog = (value) => { dialog?.resolve(value); setDialog(null); };
 
   const commitPendingSave = async () => {
     window.clearTimeout(saveTimer.current);
@@ -70,7 +77,6 @@ function App() {
   const state = project?.state || EMPTY_STATE;
   const scenes = state.scenes || [];
   const currentScene = useMemo(() => scenes.find((scene) => scene.id === currentSceneId) || scenes[0] || null, [scenes, currentSceneId]);
-  const selectedLine = useMemo(() => currentScene?.lines.find((line) => line.id === selectedLineId) || currentScene?.lines[0] || null, [currentScene, selectedLineId]);
   const generatedClips = useMemo(() => currentScene?.lines.filter((line) => line.audioUrl) || [], [currentScene]);
 
   const refreshProjects = async (preferredId) => {
@@ -130,7 +136,7 @@ function App() {
   const changeScene = (sceneId) => { const scene = scenes.find((item) => item.id === sceneId); setCurrentSceneId(sceneId); setSelectedLineId(scene.lines.find((line) => line.type === 'dialogue')?.id || scene.lines[0]?.id || null); };
   const selectProject = async (projectId) => { setLoading(true); try { await refreshProjects(projectId); setView('studio'); } catch (error) { setToast(error.message); } finally { setLoading(false); } };
   const createProject = async () => {
-    const name = window.prompt('作品名称');
+    const name = await openDialog({ type: 'prompt', message: '作品名称' });
     if (!name?.trim()) return;
     try { const created = await api.createProject({ name: name.trim() }); await refreshProjects(created.id); setView('studio'); setToast(`已创建作品：${created.name}`); }
     catch (error) { setToast(error.message); }
@@ -258,19 +264,19 @@ function App() {
     persistState({ ...state, scenes: scenes.map((scene) => scene.id === currentScene.id ? { ...scene, status: 'draft', lines: [...scene.lines, line] } : scene) });
     setSelectedLineId(id);
   };
-  const deleteLine = (lineId) => {
+  const deleteLine = async (lineId) => {
     if (!currentScene) return;
     const line = currentScene.lines.find((item) => item.id === lineId);
     if (!line) return;
     // Losing generated audio is the expensive part, so only confirm when there is
     // some. Plain text lines delete immediately and stay undoable by re-adding.
-    if ((line.audioUrl || line.assetUrl) && !window.confirm(`删除「${line.speaker || line.label || '这条事件'}」？已生成的音频会一并移除。`)) return;
+    if ((line.audioUrl || line.assetUrl) && !(await openDialog({ type: 'confirm', message: `删除「${line.speaker || line.label || '这条事件'}」？`, detail: '已生成的音频会一并移除。', confirmLabel: '删除' }))) return;
     const remaining = currentScene.lines.filter((item) => item.id !== lineId);
     persistState({ ...state, scenes: scenes.map((scene) => scene.id === currentScene.id ? { ...scene, status: 'draft', lines: remaining } : scene) });
     if (selectedLineId === lineId) setSelectedLineId(remaining.find((item) => item.type === 'dialogue')?.id || remaining[0]?.id || null);
   };
-  const addScene = () => {
-    const title = window.prompt('新场景标题');
+  const addScene = async () => {
+    const title = await openDialog({ type: 'prompt', message: '新场景标题' });
     if (!title?.trim()) return;
     const id = crypto.randomUUID();
     const scene = { id, number: String(scenes.length + 1).padStart(2, '0'), title: title.trim(), duration: '待生成', cast: '旁白', status: 'pending', location: '', mood: '', synopsis: '', lines: [] };
@@ -278,11 +284,11 @@ function App() {
     setCurrentSceneId(id);
     setSelectedLineId(null);
   };
-  const deleteScene = (sceneId) => {
+  const deleteScene = async (sceneId) => {
     const scene = scenes.find((item) => item.id === sceneId);
     if (!scene) return;
     const voiced = scene.lines.filter((line) => line.audioUrl).length;
-    if (!window.confirm(`删除场景「${scene.title}」？${voiced ? `其中 ${voiced} 句已生成的音频会一并移除。` : ''}此操作不可撤销。`)) return;
+    if (!(await openDialog({ type: 'confirm', message: `删除场景「${scene.title}」？`, detail: `${voiced ? `其中 ${voiced} 句已生成的音频会一并移除。` : ''}此操作不可撤销。`, confirmLabel: '删除' }))) return;
     const remaining = scenes.filter((item) => item.id !== sceneId).map((item, index) => ({ ...item, number: String(index + 1).padStart(2, '0') }));
     persistState({ ...state, scenes: remaining });
     if (currentSceneId === sceneId) { setCurrentSceneId(remaining[0]?.id || null); setSelectedLineId(null); }
@@ -292,7 +298,7 @@ function App() {
   // if nothing still references it (another project may).
   const deleteAsset = async (asset) => {
     const usedBy = scenes.flatMap((scene) => scene.lines.filter((line) => line.assetId === asset.id).map((line) => scene.title));
-    if (!window.confirm(usedBy.length ? `「${asset.name}」正被 ${usedBy.length} 个声音事件使用，删除后这些事件会失去绑定。继续？` : `删除素材「${asset.name}」？`)) return;
+    if (!(await openDialog({ type: 'confirm', message: usedBy.length ? `「${asset.name}」正被 ${usedBy.length} 个声音事件使用` : `删除素材「${asset.name}」？`, detail: usedBy.length ? '删除后这些事件会失去绑定。' : '', confirmLabel: usedBy.length ? '继续删除' : '删除' }))) return;
     persistState({
       ...state,
       assets: (state.assets || []).filter((item) => item.id !== asset.id),
@@ -323,7 +329,7 @@ function App() {
   const archiveProjectById = async (target) => {
     if (!target) return;
     if ((analysis || generation) && target.id === project?.id) { setToast('当前作品有任务进行中，完成或取消后再归档'); return; }
-    if (!window.confirm(`归档作品「${target.name}」？它会从列表移除，数据仍保留在本地数据库。`)) return;
+    if (!(await openDialog({ type: 'confirm', message: `归档作品「${target.name}」？`, detail: '它会从列表移除，数据仍保留在本地数据库。', confirmLabel: '归档' }))) return;
     try {
       await commitPendingSave();
       await api.archiveProject(target.id);
@@ -363,22 +369,7 @@ function App() {
   // §8 stage-checklist follow-up, adapted to the manual workbench (there is no
   // one-click orchestrator in this repo): project-wide readiness stages, each
   // deep-linking to the surface where it gets fixed.
-  const stageProgress = useMemo(() => {
-    const dialogue = scenes.flatMap((scene) => (scene.lines || []).filter((line) => line.type === 'dialogue'));
-    const voiced = dialogue.filter((line) => line.audioUrl);
-    const speakers = [...new Set(dialogue.map((line) => line.speakerId))];
-    const mapped = speakers.filter((id) => state.voiceMap?.[id]);
-    const sounds = scenes.flatMap((scene) => (scene.lines || []).filter((line) => line.type !== 'dialogue'));
-    const bound = sounds.filter((line) => line.assetUrl);
-    const pct = (done, total) => total ? Math.round((done / total) * 100) : 100;
-    return [
-      { id: 'breakdown', label: '剧本拆解', detail: `${scenes.length} 个场景`, progress: scenes.length ? 100 : 0, view: 'studio' },
-      { id: 'voices', label: '角色音色', detail: `${mapped.length} / ${speakers.length} 个角色已绑定`, progress: pct(mapped.length, speakers.length), view: 'voices' },
-      { id: 'dialogue', label: '对白生成', detail: `${voiced.length} / ${dialogue.length} 句已生成`, progress: pct(voiced.length, dialogue.length), view: 'studio' },
-      { id: 'sounds', label: '声音世界', detail: `${bound.length} / ${sounds.length} 个事件已绑定`, progress: pct(bound.length, sounds.length), view: 'sounds' },
-      { id: 'mix', label: '混音导出', detail: voiced.length ? '可进入制作中心导出' : '还没有可导出的对白', progress: voiced.length ? 100 : 0, view: 'production' },
-    ];
-  }, [scenes, state.voiceMap]);
+  const stages = useMemo(() => buildStageProgress(scenes, state.voiceMap), [scenes, state.voiceMap]);
 
   // §8 attention-list deep links: jump from a quality issue straight to the
   // offending line in the studio.
@@ -402,7 +393,7 @@ function App() {
       if (estimate.cacheHits) parts.push(`预计缓存命中 ${estimate.cacheHits} 句`);
       const cost = estimate.provider === 'demo' ? '离线演示引擎 · 免费' : `真实语音 · 约 ${estimate.characters} 字`;
       const llmNote = estimate.needsLlm ? '\n项目还没有场景，将先拆解原文（未配置文本模型时使用规则拆解）。' : '';
-      if (!window.confirm(`一键成片\n${parts.join(' · ')} · ${cost}${llmNote}\n\n开始后自动执行：拆解 → 配音色 → 生成 → 体检 → 导出整集。`)) return;
+      if (!(await openDialog({ type: 'confirm', message: '一键成片', detail: `${parts.join(' · ')} · ${cost}${llmNote}\n\n开始后自动执行：拆解 → 配音色 → 生成 → 体检 → 导出整集。`, confirmLabel: '开始' }))) return;
       await commitPendingSave();
       await api.oneClick(project.id);
       setOneClickToken((value) => value + 1);
@@ -411,49 +402,62 @@ function App() {
     } catch (error) { setToast(error.message); }
   };
 
-  const qualityReport = useMemo(() => {
-    if (!currentScene) return { score: 0, metrics: { coverage: 0, voices: 0, soundWorld: 0, text: 0 }, issues: [], passed: [], canExport: false };
-    const dialogue = currentScene.lines.filter((line) => line.type === 'dialogue'); const voiced = dialogue.filter((line) => line.audioUrl); const speakers = [...new Set(dialogue.map((line) => line.speakerId))]; const mapped = speakers.filter((id) => state.voiceMap?.[id]); const sounds = currentScene.lines.filter((line) => line.type !== 'dialogue'); const bound = sounds.filter((line) => line.assetUrl);
-    const sceneMedia = mediaReport?.scenes?.find((item) => item.sceneId === currentScene.id);
-    const stale = voiced.filter((line) => line.audioStale);
-    const healthy = sceneMedia?.healthyDialogueCount ?? voiced.length;
-    const invalid = sceneMedia?.invalidFileCount ?? 0;
-    const metrics = { coverage: dialogue.length ? Math.round(voiced.length / dialogue.length * 100) : 0, voices: speakers.length ? Math.round(mapped.length / speakers.length * 100) : 100, soundWorld: sounds.length ? Math.round(bound.length / sounds.length * 100) : 100, text: dialogue.every((line) => line.text?.trim()) ? 100 : 0, media: voiced.length ? Math.min(100, Math.max(0, Math.round((healthy - stale.length) / voiced.length * 100))) : 100 };
-    const issues = []; if (metrics.coverage < 100) issues.push({ id: 'coverage', level: 'warning', title: '存在未生成的对白', scope: `${voiced.length} / ${dialogue.length} 句`, detail: '未生成的对白不会进入成片。', action: '返回生成', actionMessage: '请在场景导演生成对白', locate: dialogue.find((line) => !line.audioUrl)?.id }); if (metrics.voices < 100) issues.push({ id: 'voices', level: 'warning', title: '角色未绑定真实音色', scope: `${mapped.length} / ${speakers.length} 个角色`, detail: '缺少 voice_id 会破坏人物一致性。', action: '配置音色', actionMessage: '请到角色音色页配置' }); if (metrics.soundWorld < 100) issues.push({ id: 'sounds', level: 'info', title: '声音事件尚未绑定素材', scope: `${bound.length} / ${sounds.length} 个事件`, detail: '未绑定的声音事件不会进入混音。', action: '绑定素材', actionMessage: '请到声音素材页处理' });
-    if (invalid) issues.push({ id: 'media', level: 'warning', title: '存在无法解码的音频文件', scope: `${invalid} 个文件`, detail: '请重新生成对白或重新导入声音素材后再导出。', action: '查看制作', actionMessage: '制作中心已标出异常文件', locate: sceneMedia?.files?.find((file) => !file.ok)?.lineId });
-    if (stale.length) issues.push({ id: 'stale', level: 'warning', title: '台词改动后音频未重新生成', scope: `${stale.length} 句`, detail: '这些句子会用旧音频进入成片，与当前台词不一致。', action: '重新生成', actionMessage: '请重新生成这些对白', locate: stale[0]?.id });
-    const passed = []; if (metrics.coverage === 100 && !stale.length) passed.push({ id: 'coverage-ok', level: 'passed', title: '对白音频覆盖完整', scope: `${dialogue.length} 句`, detail: '每条对白均已关联与当前台词一致的音频。', action: '查看场景', actionMessage: '检查通过' }); if (metrics.text === 100) passed.push({ id: 'text-ok', level: 'passed', title: '文本可合成性通过', scope: '当前场景', detail: '没有空白台词。', action: '查看报告', actionMessage: '检查通过' }); if (metrics.media === 100 && voiced.length) passed.push({ id: 'media-ok', level: 'passed', title: '音频文件健康', scope: `${healthy} 个文件`, detail: sceneMedia ? `可解码，合计 ${formatDuration(sceneMedia.durationMs)}。` : '音频文件可正常读取。', action: '查看制作', actionMessage: '检查通过' });
-    return { metrics, issues, passed, score: Math.round(metrics.coverage * .35 + metrics.voices * .22 + metrics.soundWorld * .18 + metrics.text * .1 + metrics.media * .15), canExport: voiced.length > 0 && invalid === 0 };
-  }, [currentScene, state.voiceMap, mediaReport]);
+  // §8 attention-list deep links: jump from a quality issue straight to the
+  // offending line in the studio. The weighting math lives in lib/quality.js.
+  const qualityReport = useMemo(() => buildQualityReport(currentScene, state.voiceMap, mediaReport), [currentScene, state.voiceMap, mediaReport]);
 
   if (!project) {
-    // Three dead-ends used to share one screen; the worst was a finished
-    // load with projects present but none openable, which sat on the loading
-    // screen forever. Give each its own exit.
+    // Three dead-ends each with their own exit; the worst used to be a
+    // finished load with projects present but none openable, which sat on
+    // the loading screen forever.
     if (!loading && projects.length === 0) {
-      return <div className="app-shell is-welcome"><AppRail view={view} onViewChange={setView} /><div className="app-content"><main className="empty-project"><BrandSignature /><h2>让故事，有声有场。</h2><p>还没有作品。创建一部，或运行 <code>npm run seed</code> 导入《西游记 · 三打白骨精》示例，离线体验一键成片。</p><div className="empty-project-actions"><button className="button primary-button" type="button" onClick={createProject}>创建第一部作品</button></div></main></div><Toast message={toast} /></div>;
+      return <BootShell view={view} onViewChange={setView}><WelcomeScreen onCreate={createProject} /><Toast message={toast} />{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}</BootShell>;
     }
     if (!loading && projects.length > 0) {
       const retry = () => refreshProjects(projects[0].id).catch((error) => setToast(error.message));
-      return <div className="app-shell is-welcome"><AppRail view={view} onViewChange={setView} /><div className="app-content"><main className="empty-project"><BrandSignature /><h2>作品加载失败</h2><p>没有打开任何作品：读取失败，或所选作品已不存在。可重试，或从顶部切换其他作品。</p><div className="empty-project-actions"><button className="button primary-button" type="button" onClick={retry}>重试加载</button><button className="button secondary-button" type="button" onClick={createProject}>新建作品</button></div></main></div><Toast message={toast} /></div>;
+      return <BootShell view={view} onViewChange={setView}><LoadErrorScreen onRetry={retry} onCreate={createProject} /><Toast message={toast} />{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}</BootShell>;
     }
-    return <div className="app-shell is-welcome"><AppRail view={view} onViewChange={setView} /><div className="app-content"><div className="app-loading" role="status"><BrandSignature /><span>正在打开本地项目数据库</span></div></div><Toast message={toast} /></div>;
+    return <BootShell view={view} onViewChange={setView}><LoadingScreen /><Toast message={toast} />{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}</BootShell>;
   }
   const activeProgress = analysis || generation;
   let content;
-  if (view === 'studio') content = currentScene ? <div className="studio-layout"><SceneSidebar project={project} scenes={scenes} currentSceneId={currentSceneId} mediaReport={mediaReport} onSceneChange={changeScene} onImportNovel={importNovel} onAddScene={addScene} onDeleteScene={deleteScene} /><SceneCanvas scene={currentScene} durationMs={mediaReport?.scenes?.find((item) => item.sceneId === currentScene.id)?.durationMs} sourceText={project.sourceText} characters={state.characters || []} selectedLineId={selectedLineId} onSelectLine={setSelectedLineId} onUpdateLine={updateLine} onUpdateScene={updateScene} onRegenerate={regenerateLine} onPlayLine={playLine} onAddLine={addLine} onDeleteLine={deleteLine} generationProgress={activeProgress?.progress ?? null} generationMessage={activeProgress?.message} onCancelTask={cancelActiveTask} /><Inspector line={selectedLine} characters={state.characters || []} voiceMap={state.voiceMap || {}} provider={config?.provider} onUpdate={(patch) => updateLine(selectedLine.id, patch)} onOpenVoices={() => setView('voices')} onLabGenerate={runDirectionLab} lab={labResult} labGenerating={Boolean(generation)} /></div> : <div className="empty-project"><BrandSignature /><h2>{project.name}</h2><p>{analysis ? `${analysis.message} · ${analysis.progress}%` : '还没有场景。导入 TXT 小说后，文本模型会识别角色、对白、旁白、声音事件和场景结构。'}</p>{analysis ? <button className="button secondary-button" type="button" onClick={cancelActiveTask}>取消拆解</button> : <><button className="button primary-button" type="button" onClick={importNovel}>导入小说并拆解</button><button className="button secondary-button" type="button" onClick={addScene}>手动新建场景</button></>}</div>;
+  if (view === 'studio') content = currentScene ? <StudioLayout project={project} scenes={scenes} currentScene={currentScene} mediaReport={mediaReport} characters={state.characters || []} selectedLineId={selectedLineId} onSelectLine={setSelectedLineId} onUpdateLine={updateLine} onUpdateScene={updateScene} onSceneChange={changeScene} onImportNovel={importNovel} onAddScene={addScene} onDeleteScene={deleteScene} onRegenerate={regenerateLine} onPlayLine={playLine} onAddLine={addLine} onDeleteLine={deleteLine} activeProgress={activeProgress} onCancelTask={cancelActiveTask} voiceMap={state.voiceMap || {}} configProvider={config?.provider} onOpenVoices={() => setView('voices')} onLabGenerate={runDirectionLab} labResult={labResult} labGenerating={Boolean(generation)} /> : <div className="empty-project"><BrandSignature /><h2>{project.name}</h2><p>{analysis ? `${analysis.message} · ${analysis.progress}%` : '还没有场景。导入 TXT 小说后，文本模型会识别角色、对白、旁白、声音事件和场景结构。'}</p>{analysis ? <button className="button secondary-button" type="button" onClick={cancelActiveTask}>取消拆解</button> : <><button className="button primary-button" type="button" onClick={importNovel}>导入小说并拆解</button><button className="button secondary-button" type="button" onClick={addScene}>手动新建场景</button></>}</div>;
   else if (view === 'voices') content = <VoicesView characters={state.characters || []} voiceMap={state.voiceMap || {}} voiceDesignConfig={config} onDesignVoice={designVoice} onSetVoice={setVoice} onToast={setToast} />;
   else if (view === 'sounds') content = <SoundsView assets={state.assets || []} sceneUsage={assetUsage} sceneEvents={(currentScene?.lines || []).filter((line) => line.type !== 'dialogue')} sceneTitle={currentScene?.title || ''} onUpload={uploadAsset} onBindAsset={bindAsset} onDeleteAsset={deleteAsset} onUpdateAsset={updateAsset} onToast={setToast} />;
   else if (view === 'production') content = <ProductionView project={project} mediaReport={mediaReport} currentSceneId={currentSceneId} onSceneChange={changeScene} onUpdateLine={updateLine} onUpdateDictionary={updateDictionary} onExportScene={exportSceneById} onExportEpisode={exportEpisode} onOneClick={oneClick} oneClickToken={oneClickToken} onGenerateMissing={generateMissingDialogue} generating={Boolean(generation)} exporting={exporting} taskRefreshToken={taskRefreshToken} onToast={setToast} />;
-  else if (view === 'quality') content = <QualityView report={qualityReport} stages={stageProgress} onToast={setToast} onExport={() => exportSceneById(currentScene?.id)} onOpenProduction={() => setView('production')} onOpenView={setView} onLocateLine={locateLine} onOpenVoices={() => setView('voices')} onOpenSounds={() => setView('sounds')} onGenerateMissing={() => generateMissingDialogue([currentScene?.id])} onRegenerateStale={() => regenerateStaleDialogue([currentScene?.id])} generating={Boolean(generation)} exporting={exporting} />;
+  else if (view === 'quality') content = <QualityView report={qualityReport} stages={stages} onToast={setToast} onExport={() => exportSceneById(currentScene?.id)} onOpenProduction={() => setView('production')} onOpenView={setView} onLocateLine={locateLine} onOpenVoices={() => setView('voices')} onOpenSounds={() => setView('sounds')} onGenerateMissing={() => generateMissingDialogue([currentScene?.id])} onRegenerateStale={() => regenerateStaleDialogue([currentScene?.id])} generating={Boolean(generation)} exporting={exporting} />;
   else content = <SettingsView config={config} onSave={saveConfig} onTestLlm={api.testLlm} onToast={setToast} onReload={reloadConfig} />;
 
-  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} /> : null}<Toast message={toast} /></div>;
+  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} /> : null}{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}<Toast message={toast} /></div>;
 }
 
-function formatDuration(milliseconds) {
-  const seconds = Math.max(0, Math.round((milliseconds || 0) / 1000));
-  return `${Math.floor(seconds / 60)}分${String(seconds % 60).padStart(2, '0')}秒`;
+// --- Local composition helpers (props-only, no state of their own) --------
+
+function BootShell({ view, onViewChange, children }) {
+  return <div className="app-shell is-welcome"><AppRail view={view} onViewChange={onViewChange} /><div className="app-content">{children}</div></div>;
+}
+
+function WelcomeScreen({ onCreate }) {
+  return <main className="empty-project"><BrandSignature /><h2>让故事，有声有场。</h2><p>还没有作品。创建一部，或运行 <code>npm run seed</code> 导入《西游记 · 三打白骨精》示例，离线体验一键成片。</p><div className="empty-project-actions"><button className="button primary-button" type="button" onClick={onCreate}>创建第一部作品</button></div></main>;
+}
+
+function LoadErrorScreen({ onRetry, onCreate }) {
+  return <main className="empty-project"><BrandSignature /><h2>作品加载失败</h2><p>没有打开任何作品：读取失败，或所选作品已不存在。可重试，或从顶部切换其他作品。</p><div className="empty-project-actions"><button className="button primary-button" type="button" onClick={onRetry}>重试加载</button><button className="button secondary-button" type="button" onClick={onCreate}>新建作品</button></div></main>;
+}
+
+function LoadingScreen() {
+  return <div className="app-loading" role="status"><BrandSignature /><span>正在打开本地项目数据库</span></div>;
+}
+
+function StudioLayout({ project, scenes, currentScene, mediaReport, characters, selectedLineId, onSelectLine, onUpdateLine, onUpdateScene, onSceneChange, onImportNovel, onAddScene, onDeleteScene, onRegenerate, onPlayLine, onAddLine, onDeleteLine, activeProgress, onCancelTask, voiceMap, configProvider, onOpenVoices, onLabGenerate, labResult, labGenerating }) {
+  const selectedLine = currentScene?.lines.find((line) => line.id === selectedLineId) || currentScene?.lines[0] || null;
+  return (
+    <div className="studio-layout">
+      <SceneSidebar project={project} scenes={scenes} currentSceneId={currentScene.id} mediaReport={mediaReport} onSceneChange={onSceneChange} onImportNovel={onImportNovel} onAddScene={onAddScene} onDeleteScene={onDeleteScene} />
+      <SceneCanvas scene={currentScene} durationMs={mediaReport?.scenes?.find((item) => item.sceneId === currentScene.id)?.durationMs} sourceText={project.sourceText} characters={characters} selectedLineId={selectedLineId} onSelectLine={onSelectLine} onUpdateLine={onUpdateLine} onUpdateScene={onUpdateScene} onRegenerate={onRegenerate} onPlayLine={onPlayLine} onAddLine={onAddLine} onDeleteLine={onDeleteLine} generationProgress={activeProgress?.progress ?? null} generationMessage={activeProgress?.message} onCancelTask={onCancelTask} />
+      <Inspector line={selectedLine} characters={characters} voiceMap={voiceMap} provider={configProvider} onUpdate={(patch) => onUpdateLine(selectedLine.id, patch)} onOpenVoices={onOpenVoices} onLabGenerate={onLabGenerate} lab={labResult} labGenerating={labGenerating} />
+    </div>
+  );
 }
 
 export default App;

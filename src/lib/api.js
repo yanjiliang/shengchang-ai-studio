@@ -40,17 +40,18 @@ export const api = {
 
 // Poll with backoff (350ms → 2s cap) and an overall deadline so a stuck
 // server-side task surfaces as an error instead of spinning forever.
-export async function waitForTask(taskId, onProgress, { timeoutMs = 30 * 60 * 1000 } = {}) {
+// getTask/sleep are injectable so node:test can drive the state machine.
+export async function waitForTask(taskId, onProgress, { timeoutMs = 30 * 60 * 1000, getTask = () => api.getTask(taskId), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
   const deadline = Date.now() + timeoutMs;
   let delay = 350;
   for (;;) {
-    const task = await api.getTask(taskId);
+    const task = await getTask();
     onProgress?.(task);
     if (task.status === 'completed') return task;
     if (task.status === 'failed') throw new Error(task.error || '生成失败');
     if (task.status === 'cancelled') throw new Error('任务已取消');
     if (Date.now() > deadline) throw new Error('等待任务超时，请在任务列表中查看状态或重试');
-    await new Promise((resolve) => window.setTimeout(resolve, delay));
+    await sleep(delay);
     delay = Math.min(2000, Math.round(delay * 1.5));
   }
 }

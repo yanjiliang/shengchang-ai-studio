@@ -746,3 +746,9 @@ button { cursor: pointer; }
 .save-state.is-pending { color: var(--color-dim); }
 .save-state.is-error { color: #e08573; }
 button.issue-copy { padding: 0; border: 0; background: transparent; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+
+/* Promise-based prompt/confirm dialog */
+.app-dialog .dialog-input { width: 100%; margin: 14px 0 0; padding: 9px 11px; border: 1px solid var(--color-line-strong); border-radius: var(--radius-sm); background: var(--color-paper-deep); color: var(--color-text); font-size: 12px; }
+.app-dialog .dialog-input:focus { border-color: var(--color-accent); outline: none; }
+.app-dialog .dialog-detail { margin: 10px 0 0; color: var(--color-muted); font-size: 10px; line-height: 1.8; white-space: pre-line; }
+.app-dialog .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; padding: 0 18px 16px; }

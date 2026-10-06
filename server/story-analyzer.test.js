@@ -104,3 +104,34 @@ test('分块：换行结构在块内保留', () => {
   const chunks = splitNovel('第一段。\n\n第二段。', 1000);
   assert.deepEqual(chunks, ['第一段。\n\n第二段。']);
 });
+
+test('拆解断点续跑：失败后从已完成分块继续，不重付前段', async () => {
+  const config = { llmEndpoint: 'http://llm.local', llmApiKey: 'k', llmModel: 'm' };
+  const text = Array.from({ length: 300 }, (_, index) => `第${index}段。林深说：「风向变了。」`).join('\n');
+  const totalChunks = splitNovel(text, 500).length;
+  assert.ok(totalChunks >= 4, '测试文本应至少切出 4 个分块');
+  const sceneOf = (index) => ({ project: { genre: '悬疑' }, characters: [], scenes: [{ title: `场景${index}`, lines: [{ type: 'dialogue', speaker: '旁白', speakerId: 'narrator', text: `第${index}段台词` }] }] });
+  let checkpoint = null;
+  const firstRunCalls = [];
+  await assert.rejects(
+    analyzeNovel(config, { text, filename: 'n.txt', name: '作品' }, {
+      chunkChars: 500,
+      call: async (_config, source) => { firstRunCalls.push(source); if (firstRunCalls.length === 2) throw new Error('第二段失败'); return sceneOf(firstRunCalls.length - 1); },
+      onCheckpoint: (value) => { checkpoint = value; },
+    }),
+    /第二段失败/,
+  );
+  assert.equal(firstRunCalls.length, 2);
+  assert.equal(checkpoint.chunksDone, 1);
+  assert.equal(checkpoint.merged.scenes.length, 1);
+
+  const resumeCalls = [];
+  const resumed = await analyzeNovel(config, { text, filename: 'n.txt', name: '作品' }, {
+    chunkChars: 500,
+    resume: checkpoint,
+    call: async (_config, source) => { resumeCalls.push(source); return sceneOf(resumeCalls.length + 1); },
+  });
+  assert.equal(resumeCalls.length, totalChunks - 1, '只应重打未完成的分块');
+  assert.equal(resumed.breakdown, 'llm');
+  assert.equal(resumed.scenes.length, totalChunks, '断点前的场景与续跑场景全部保留');
+});

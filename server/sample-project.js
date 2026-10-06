@@ -100,7 +100,6 @@ export function buildSampleState() {
       location: scene.location,
       mood: scene.mood,
       synopsis: scene.synopsis,
-      arc: [12, 18, 24, 31, 38, 44, 36, 29],
       lines: scene.lines.map((line) => line.type === 'dialogue' ? { ...line, delivery: deliveryOf(line) } : line),
     })),
     assets: [],

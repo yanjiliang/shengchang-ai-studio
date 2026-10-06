@@ -31,7 +31,7 @@ function normalizeResult(result, fallbackName) {
   const characterIds = new Set(characters.map((item) => item.id));
   const scenes = result.scenes.map((scene, index) => {
     const lines = (scene.lines || []).map((line) => normalizeLine(line, characterIds)).filter((line) => line.text);
-    return { id: randomUUID(), number: String(index + 1).padStart(2, '0'), title: String(scene.title || `场景 ${index + 1}`), duration: '待生成', cast: [...new Set(lines.filter((line) => line.type === 'dialogue').map((line) => line.speaker))].join(' · ') || '旁白', status: 'pending', location: String(scene.location || '待设定'), mood: String(scene.mood || '待导演'), synopsis: String(scene.synopsis || ''), arc: [12, 18, 24, 31, 38, 44, 36, 29], lines };
+    return { id: randomUUID(), number: String(index + 1).padStart(2, '0'), title: String(scene.title || `场景 ${index + 1}`), duration: '待生成', cast: [...new Set(lines.filter((line) => line.type === 'dialogue').map((line) => line.speaker))].join(' · ') || '旁白', status: 'pending', location: String(scene.location || '待设定'), mood: String(scene.mood || '待导演'), synopsis: String(scene.synopsis || ''), lines };
   }).filter((scene) => scene.lines.length);
   return { name: String(result.project?.name || fallbackName || '未命名作品'), genre: String(result.project?.genre || ''), characters, scenes };
 }
@@ -234,7 +234,7 @@ async function callLlm(config, sourceText) {
   } finally { clearTimeout(timer); }
 }
 
-export async function analyzeNovel(config, { text, filename, name }, { onProgress, shouldCancel } = {}) {
+export async function analyzeNovel(config, { text, filename, name }, { onProgress, shouldCancel, resume, onCheckpoint, call = callLlm, chunkChars = 24_000 } = {}) {
   if (!text.trim()) throw new Error('小说文本为空');
   const fallbackName = name || filename.replace(/\.[^.]+$/, '');
   // Zero-key fallback (TODO-1): when no LLM is configured, break the novel
@@ -246,9 +246,13 @@ export async function analyzeNovel(config, { text, filename, name }, { onProgres
     onProgress?.({ current: 1, total: 1, progress: 60 });
     return { ...normalizeResult(heuristicAnalysis(text, fallbackName), fallbackName), breakdown: 'heuristic' };
   }
-  const chunks = splitNovel(text);
-  const merged = { project: { name: fallbackName, genre: '' }, characters: [], scenes: [] };
-  for (let index = 0; index < chunks.length; index += 1) {
+  const chunks = splitNovel(text, chunkChars);
+  // Chunk-level resume: a failed multi-chunk run checkpoints its merged
+  // analysis after every completed chunk; retryTask copies the task payload,
+  // so the retry only pays for the chunks it never finished.
+  const chunksDone = Math.max(0, Math.min(Number(resume?.chunksDone) || 0, chunks.length - 1));
+  const merged = resume?.merged && chunksDone > 0 ? resume.merged : { project: { name: fallbackName, genre: '' }, characters: [], scenes: [] };
+  for (let index = chunksDone; index < chunks.length; index += 1) {
     if (shouldCancel?.()) {
       const error = new Error('小说拆解任务已取消');
       error.code = 'TASK_CANCELLED';
@@ -256,10 +260,11 @@ export async function analyzeNovel(config, { text, filename, name }, { onProgres
     }
     onProgress?.({ current: index + 1, total: chunks.length, progress: 8 + Math.round((index / chunks.length) * 82) });
     const roster = merged.characters.length ? `\n\n已确认角色表（后续必须沿用这些 id，同名人物不可新建 id）：\n${JSON.stringify(merged.characters)}` : '';
-    const result = await callLlm(config, `作品名：${fallbackName}\n这是第 ${index + 1} / ${chunks.length} 段，请只拆解本段，不重复前文场景。${roster}\n\n小说原文：\n${chunks[index]}`);
+    const result = await call(config, `作品名：${fallbackName}\n这是第 ${index + 1} / ${chunks.length} 段，请只拆解本段，不重复前文场景。${roster}\n\n小说原文：\n${chunks[index]}`);
     if (index === 0) merged.project = { ...merged.project, ...result.project };
     else if (!merged.project.genre && result.project?.genre) merged.project.genre = result.project.genre;
     mergeAnalysis(merged, result);
+    onCheckpoint?.({ chunksDone: index + 1, merged });
   }
   onProgress?.({ current: chunks.length, total: chunks.length, progress: 94 });
   return { ...normalizeResult(merged, fallbackName), breakdown: 'llm' };

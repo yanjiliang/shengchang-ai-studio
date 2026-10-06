@@ -47,6 +47,19 @@ function runWithOutput(command, args) {
   });
 }
 
+// Binary stdout variant, for piping raw PCM out of ffmpeg.
+function runBinary(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const chunks = [];
+    let stderr = '';
+    child.stdout.on('data', (chunk) => chunks.push(chunk));
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', reject);
+    child.on('close', (code) => (code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(stderr.slice(-1200) || `${command}执行失败`))));
+  });
+}
+
 function clamp(value, min, max, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback;
@@ -86,7 +99,39 @@ function mediaPath(url) {
   return path.join(MEDIA_DIR, path.basename(url));
 }
 
-async function probeDuration(source) {
+// Real waveform peaks for the UI: decode to mono 8 kHz PCM and keep the max
+// amplitude per bucket, so what the browser draws is the actual file — never
+// a decorative canned shape. Cached by url + size + mtime: generated clips
+// are content-addressed (new file per change), but preview renders overwrite
+// in place and must not serve a stale shape.
+const PEAKS_CACHE_LIMIT = 400;
+const peaksCache = new Map();
+
+export async function extractPeaks(url, buckets = 48) {
+  const source = mediaPath(url);
+  if (!source || !path.basename(url).includes('.')) throw new Error('无效的音频地址');
+  const info = await stat(source);
+  const cached = peaksCache.get(url);
+  if (cached && cached.size === info.size && cached.mtimeMs === info.mtimeMs) return cached.peaks;
+  const pcm = await runBinary('ffmpeg', ['-i', source, '-map', '0:a:0', '-ac', '1', '-ar', '8000', '-f', 's16le', 'pipe:1']);
+  const samples = new Int16Array(pcm.buffer, pcm.byteOffset, pcm.length >> 1);
+  const perBucket = Math.max(1, Math.ceil(samples.length / buckets));
+  const peaks = new Array(buckets).fill(0);
+  for (let bucket = 0; bucket < buckets; bucket += 1) {
+    const end = Math.min(samples.length, (bucket + 1) * perBucket);
+    for (let index = bucket * perBucket; index < end; index += 1) {
+      const magnitude = Math.abs(samples[index]);
+      if (magnitude > peaks[bucket]) peaks[bucket] = magnitude;
+    }
+  }
+  const loudest = Math.max(...peaks);
+  const normalized = loudest > 0 ? peaks.map((peak) => peak / loudest) : peaks;
+  if (peaksCache.size >= PEAKS_CACHE_LIMIT) peaksCache.delete(peaksCache.keys().next().value);
+  peaksCache.set(url, { size: info.size, mtimeMs: info.mtimeMs, peaks: normalized });
+  return normalized;
+}
+
+export async function probeDuration(source) {
   const output = await runWithOutput('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', source]);
   const seconds = Number(output.trim());
   if (!Number.isFinite(seconds) || seconds <= 0) throw new Error(`无法读取音频时长：${path.basename(source)}`);

@@ -7,7 +7,7 @@ import { buildGenerationRequests } from '../shared/generation-requests.mjs';
 import { publicConfig, readConfig, writeConfig } from './config-store.js';
 import { archiveProject, createProject, getProject, listPersistentTasks, listProjects, updateProject } from './database.js';
 import { designVoice, validateProviderConfig } from './model-adapters.js';
-import { ensureRuntime, exportSceneTimeline, inspectProjectMedia, probeFfmpeg, renderScenePreview, runtimePaths, saveUploadedAsset } from './media-store.js';
+import { ensureRuntime, exportSceneTimeline, extractPeaks, inspectProjectMedia, probeDuration, probeFfmpeg, renderScenePreview, runtimePaths, saveUploadedAsset } from './media-store.js';
 import { cancelTask, enqueueGeneration, enqueueNovelAnalysis, enqueueOneClick, enqueueProjectExport, estimateGeneration, getTask, retryTask } from './task-manager.js';
 import { seedSampleProject } from './sample-project.js';
 import { testLlm, validateLlmConfig } from './story-analyzer.js';
@@ -247,7 +247,20 @@ app.post('/api/assets/upload', express.raw({ type: 'audio/*', limit: '100mb' }),
     const extension = path.extname(originalName).slice(1) || 'wav';
     const id = randomUUID();
     const saved = await saveUploadedAsset(id, extension, request.body);
-    response.json({ id: `asset-${id}`, name: originalName.replace(/\.[^.]+$/, ''), url: saved.url, mime: request.header('content-type'), size: request.body.length });
+    // Best-effort duration probe so the library shows a real length from the
+    // start; a file ffprobe cannot read still uploads (the report flags it).
+    let durationMs = null;
+    try { durationMs = Math.round((await probeDuration(saved.target)) * 1000); } catch { durationMs = null; }
+    response.json({ id: `asset-${id}`, name: originalName.replace(/\.[^.]+$/, ''), url: saved.url, mime: request.header('content-type'), size: request.body.length, durationMs });
+  } catch (error) { next(error); }
+});
+// Real waveform peaks for UI drawing; same path policy as asset deletion.
+app.get('/api/media/peaks', async (request, response, next) => {
+  try {
+    const url = String(request.query.url || '');
+    const filename = path.basename(url);
+    if (!url.startsWith('/media/') || !filename || filename.includes('..')) throw new Error('无效的音频地址');
+    response.json({ peaks: await extractPeaks(url) });
   } catch (error) { next(error); }
 });
 // Asset-file deletion policy (§8): a file leaves disk only once nothing

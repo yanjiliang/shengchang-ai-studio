@@ -236,6 +236,11 @@ async function runTask(task) {
       const analyzed = await analyzeNovel(config, task.payload, {
         shouldCancel: () => Boolean(getPersistentTask(task.id)?.cancelRequested),
         onProgress: ({ current, total, progress }) => updatePersistentTask(task.id, { progress, message: `正在拆解原文 ${current} / ${total} 段` }),
+        // Chunk checkpoints land in the task payload; retryTask copies the
+        // payload, so a failed multi-chunk run resumes from the last completed
+        // chunk instead of re-paying for every LLM call.
+        resume: task.payload.resume,
+        onCheckpoint: (checkpoint) => updatePersistentTask(task.id, { payload: { resume: checkpoint } }),
       });
       const project = getProject(task.projectId);
       if (!project) throw new Error('分析目标项目不存在');

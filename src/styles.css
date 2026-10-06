@@ -741,3 +741,8 @@ button { cursor: pointer; }
 .volume-range { width: 66px; accent-color: var(--color-accent); }
 .project-menu > .is-danger { color: #e08573; }
 .project-menu > .is-danger:hover { background: rgb(224 133 115 / 12%); }
+
+/* Interaction-debt fixes */
+.save-state.is-pending { color: var(--color-dim); }
+.save-state.is-error { color: #e08573; }
+button.issue-copy { padding: 0; border: 0; background: transparent; font: inherit; color: inherit; text-align: left; cursor: pointer; }

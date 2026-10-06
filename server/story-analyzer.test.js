@@ -112,26 +112,47 @@ test('拆解断点续跑：失败后从已完成分块继续，不重付前段',
   assert.ok(totalChunks >= 4, '测试文本应至少切出 4 个分块');
   const sceneOf = (index) => ({ project: { genre: '悬疑' }, characters: [], scenes: [{ title: `场景${index}`, lines: [{ type: 'dialogue', speaker: '旁白', speakerId: 'narrator', text: `第${index}段台词` }] }] });
   let checkpoint = null;
+  let brokenChunk = true;
   const firstRunCalls = [];
   await assert.rejects(
     analyzeNovel(config, { text, filename: 'n.txt', name: '作品' }, {
-      chunkChars: 500,
-      call: async (_config, source) => { firstRunCalls.push(source); if (firstRunCalls.length === 2) throw new Error('第二段失败'); return sceneOf(firstRunCalls.length - 1); },
+      chunkChars: 500, retryDelayMs: 10,
+      call: async (_config, source) => { firstRunCalls.push(source); if (brokenChunk && firstRunCalls.length >= 2) throw new Error('第二段失败'); return sceneOf(firstRunCalls.length - 1); },
       onCheckpoint: (value) => { checkpoint = value; },
     }),
     /第二段失败/,
   );
-  assert.equal(firstRunCalls.length, 2);
+  assert.ok(firstRunCalls.length >= 3, '失败分块应先经历一次自动重试');
+  brokenChunk = false;
   assert.equal(checkpoint.chunksDone, 1);
   assert.equal(checkpoint.merged.scenes.length, 1);
 
   const resumeCalls = [];
   const resumed = await analyzeNovel(config, { text, filename: 'n.txt', name: '作品' }, {
-    chunkChars: 500,
+    chunkChars: 500, retryDelayMs: 10,
     resume: checkpoint,
     call: async (_config, source) => { resumeCalls.push(source); return sceneOf(resumeCalls.length + 1); },
   });
   assert.equal(resumeCalls.length, totalChunks - 1, '只应重打未完成的分块');
   assert.equal(resumed.breakdown, 'llm');
   assert.equal(resumed.scenes.length, totalChunks, '断点前的场景与续跑场景全部保留');
+});
+
+test('拆解分块自动重试：瞬时失败重打一次后成功', async () => {
+  const config = { llmEndpoint: 'http://llm.local', llmApiKey: 'k', llmModel: 'm' };
+  const text = Array.from({ length: 80 }, (_, index) => `第${index}段。她说：「再来一次。」`).join('\n');
+  let failures = 0;
+  const calls = [];
+  const result = await analyzeNovel(config, { text, filename: 'n.txt', name: '作品' }, {
+    chunkChars: 500,
+    retryDelayMs: 10,
+    call: async (_config, source) => {
+      calls.push(source);
+      if (calls.length === 1) { failures += 1; throw new Error('网络抖动'); }
+      return { project: { genre: '' }, characters: [], scenes: [{ title: '场景', lines: [{ type: 'dialogue', speaker: '旁白', speakerId: 'narrator', text: '台词' }] }] };
+    },
+  });
+  assert.equal(failures, 1);
+  assert.equal(calls.length, splitNovel(text, 500).length + 1, '第一分块重打了一次');
+  assert.equal(result.breakdown, 'llm');
 });

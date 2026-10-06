@@ -35,7 +35,7 @@ export function Inspector({ line, characters = [], voiceMap = {}, provider, onUp
   if (!line || line.type !== 'dialogue') {
     return (
       <aside className="inspector">
-        <div className="inspector-title"><strong>声音事件</strong><span><Check size={12} />已保存</span></div>
+        <div className="inspector-title"><strong>声音事件</strong></div>
         <div className="event-inspector-empty"><CircleDot size={28} /><h3>{line?.label || '选择一个事件'}</h3>{line ? <textarea className="intent-editor" rows="6" value={line.text || ''} onChange={(event) => onUpdate({ text: event.target.value })} /> : <p>选择对白或声音事件，在这里调整生成参数。</p>}</div>
       </aside>
     );
@@ -45,11 +45,11 @@ export function Inspector({ line, characters = [], voiceMap = {}, provider, onUp
   const voiceId = voiceMap?.[line.speakerId] || '';
   return (
     <aside className="inspector">
-      <div className="inspector-title"><strong>导演检查器</strong><span><Check size={12} />已保存</span></div>
+      <div className="inspector-title"><strong>导演检查器</strong></div>
       <div className="inspector-tabs" role="tablist">
-        <button className={tab === 'performance' ? 'is-active' : ''} type="button" onClick={() => setTab('performance')}>表演</button>
-        <button className={tab === 'voice' ? 'is-active' : ''} type="button" onClick={() => setTab('voice')}>声音</button>
-        <button className={tab === 'space' ? 'is-active' : ''} type="button" onClick={() => setTab('space')}>空间</button>
+        <button className={tab === 'performance' ? 'is-active' : ''} type="button" role="tab" aria-selected={tab === 'performance'} onClick={() => setTab('performance')}>表演</button>
+        <button className={tab === 'voice' ? 'is-active' : ''} type="button" role="tab" aria-selected={tab === 'voice'} onClick={() => setTab('voice')}>声音</button>
+        <button className={tab === 'space' ? 'is-active' : ''} type="button" role="tab" aria-selected={tab === 'space'} onClick={() => setTab('space')}>空间</button>
       </div>
       {tab === 'performance' ? (
         <>

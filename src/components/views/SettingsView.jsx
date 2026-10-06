@@ -7,7 +7,7 @@ const providerPresets = {
   custom: { endpoint: '', resourceId: '', model: '', audioFormat: 'mp3' },
 };
 
-export function SettingsView({ config, loading, onSave, onTestLlm, onToast }) {
+export function SettingsView({ config, onSave, onTestLlm, onToast, onReload }) {
   const [draft, setDraft] = useState(config);
   const [saving, setSaving] = useState(false);
   const [testingLlm, setTestingLlm] = useState(false);
@@ -33,7 +33,7 @@ export function SettingsView({ config, loading, onSave, onTestLlm, onToast }) {
     finally { setTestingLlm(false); }
   };
 
-  if (loading || !draft) return <main className="asset-view settings-view"><div className="settings-loading"><LoaderCircle size={20} className="spin" />正在读取本地配置</div></main>;
+  if (!draft) return <main className="asset-view settings-view"><div className="settings-loading"><AlertCircle size={20} /><p>本地配置读取失败，无法编辑。</p><button className="button secondary-button" type="button" onClick={onReload}>重新读取</button></div></main>;
   const requiresCredential = draft.provider !== 'demo';
   return (
     <main className="asset-view settings-view">

@@ -1,5 +1,5 @@
 import { FileStack, MessageSquarePlus, Music2, Plus, Volume2, WandSparkles, X, Zap } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ScriptLine } from './ScriptLine';
 
 function formatMs(milliseconds) {
@@ -19,6 +19,12 @@ function intensityCurve(scene) {
 
 export function SceneCanvas({ scene, durationMs, sourceText, characters, selectedLineId, onSelectLine, onUpdateLine, onUpdateScene, onRegenerate, onPlayLine, onAddLine, onDeleteLine, generationProgress, generationMessage, onCancelTask }) {
   const [showSource, setShowSource] = useState(false);
+  useEffect(() => {
+    if (!showSource) return undefined;
+    const onKey = (event) => { if (event.key === 'Escape') setShowSource(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showSource]);
   const curve = intensityCurve(scene);
   const peak = curve.length ? Math.max(...curve) : 0;
   const firstEmotion = (scene.lines || []).find((line) => line.type === 'dialogue')?.emotion;

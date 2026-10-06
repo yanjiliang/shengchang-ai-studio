@@ -17,11 +17,11 @@ function extractJson(content) {
 
 function normalizeLine(line, characterIds) {
   const type = ['dialogue', 'ambient', 'sfx', 'music'].includes(line.type) ? line.type : 'dialogue';
-  if (type !== 'dialogue') return { id: randomUUID(), type, label: type === 'ambient' ? '环境声' : type === 'sfx' ? '动作音效' : '背景音乐', text: String(line.text || '').trim(), time: '待编排' };
+  if (type !== 'dialogue') return { id: randomUUID(), type, label: type === 'ambient' ? '环境声' : type === 'sfx' ? '动作音效' : '背景音乐', text: String(line.text || '').trim() };
   const speaker = String(line.speaker || '旁白').trim();
   let speakerId = String(line.speakerId || (speaker === '旁白' ? 'narrator' : speaker)).trim();
   if (!characterIds.has(speakerId)) speakerId = speaker === '旁白' ? 'narrator' : speakerId.toLowerCase().replace(/\s+/g, '-');
-  return { id: randomUUID(), type: 'dialogue', speaker, speakerId, delivery: `${line.emotion || '克制'} ${Number(line.intensity) || 40}% · 语速 ${((Number(line.pace) || 90) / 100).toFixed(2)}`, text: String(line.text || '').trim(), subtext: String(line.subtext || '按当前剧情上下文表达。'), emotion: String(line.emotion || '克制'), intensity: Math.min(100, Math.max(0, Number(line.intensity) || 40)), pace: Math.min(120, Math.max(70, Number(line.pace) || 90)), distance: String(line.distance || '近讲') };
+  return { id: randomUUID(), type: 'dialogue', speaker, speakerId, text: String(line.text || '').trim(), subtext: String(line.subtext || '按当前剧情上下文表达。'), emotion: String(line.emotion || '克制'), intensity: Math.min(100, Math.max(0, Number(line.intensity) || 40)), pace: Math.min(120, Math.max(70, Number(line.pace) || 90)), distance: String(line.distance || '近讲') };
 }
 
 function normalizeResult(result, fallbackName) {
@@ -234,7 +234,21 @@ async function callLlm(config, sourceText) {
   } finally { clearTimeout(timer); }
 }
 
-export async function analyzeNovel(config, { text, filename, name }, { onProgress, shouldCancel, resume, onCheckpoint, call = callLlm, chunkChars = 24_000 } = {}) {
+// Transient network hiccups should not kill a multi-chunk run: one automatic
+// retry with a short backoff absorbs them; persistent failures still surface
+// (and chunk-level resume covers the retry).
+async function callWithRetry(call, config, prompt, { shouldCancel, retryDelayMs }) {
+  for (let attempt = 0; ; attempt += 1) {
+    try { return await call(config, prompt); }
+    catch (error) {
+      if (attempt >= 1 || error.code === 'TASK_CANCELLED') throw error;
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      if (shouldCancel?.()) throw error;
+    }
+  }
+}
+
+export async function analyzeNovel(config, { text, filename, name }, { onProgress, shouldCancel, resume, onCheckpoint, call = callLlm, chunkChars = 24_000, retryDelayMs = 2_500 } = {}) {
   if (!text.trim()) throw new Error('小说文本为空');
   const fallbackName = name || filename.replace(/\.[^.]+$/, '');
   // Zero-key fallback (TODO-1): when no LLM is configured, break the novel
@@ -260,7 +274,7 @@ export async function analyzeNovel(config, { text, filename, name }, { onProgres
     }
     onProgress?.({ current: index + 1, total: chunks.length, progress: 8 + Math.round((index / chunks.length) * 82) });
     const roster = merged.characters.length ? `\n\n已确认角色表（后续必须沿用这些 id，同名人物不可新建 id）：\n${JSON.stringify(merged.characters)}` : '';
-    const result = await call(config, `作品名：${fallbackName}\n这是第 ${index + 1} / ${chunks.length} 段，请只拆解本段，不重复前文场景。${roster}\n\n小说原文：\n${chunks[index]}`);
+    const result = await callWithRetry(call, config, `作品名：${fallbackName}\n这是第 ${index + 1} / ${chunks.length} 段，请只拆解本段，不重复前文场景。${roster}\n\n小说原文：\n${chunks[index]}`, { shouldCancel, retryDelayMs });
     if (index === 0) merged.project = { ...merged.project, ...result.project };
     else if (!merged.project.genre && result.project?.genre) merged.project.genre = result.project.genre;
     mergeAnalysis(merged, result);

@@ -1,4 +1,4 @@
-import { Check, LoaderCircle, LockKeyhole, Plus, Save, Search, Sparkles } from 'lucide-react';
+import { Check, LoaderCircle, LockKeyhole, Save, Search, Sparkles } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 export function VoicesView({ characters, voiceMap, voiceDesignConfig, onDesignVoice, onSetVoice, onToast }) {
@@ -24,7 +24,7 @@ export function VoicesView({ characters, voiceMap, voiceDesignConfig, onDesignVo
   };
   return (
     <main className="asset-view voices-view">
-      <header className="view-header"><div><span className="view-kicker">当前作品的角色资产</span><h2>角色音色</h2><p>每个角色的 voice_id 随项目保存，不会与其他小说混用。</p></div><button className="button primary-button" type="button" onClick={design} disabled={designing || !voiceId.trim() || voiceDesignConfig?.provider !== 'volcengine-api-key'}>{designing ? <LoaderCircle size={15} className="spin" /> : <Plus size={15} />}{designing ? '正在设计' : '设计当前音色'}</button></header>
+      <header className="view-header"><div><span className="view-kicker">当前作品的角色资产</span><h2>角色音色</h2><p>每个角色的 voice_id 随项目保存，不会与其他小说混用；在右侧详情中绑定或设计音色。</p></div></header>
       <div className="asset-toolbar"><label className="search-field"><Search size={15} /><input aria-label="搜索角色" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索角色或音色 ID" /></label><div className="toolbar-summary"><span><Check size={13} />{Object.values(voiceMap || {}).filter(Boolean).length} / {characters.length} 个角色已锁定</span><span>按项目独立保存</span></div></div>
       <div className="voice-workspace">
         <section className="voice-list" aria-label="角色列表">

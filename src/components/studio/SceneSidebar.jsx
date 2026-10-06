@@ -39,7 +39,9 @@ export function SceneSidebar({ project, scenes, currentSceneId, mediaReport, onS
         <strong>{scenes.length}</strong>
       </div>
       <div className="scene-list">
-        {scenes.map((scene) => (
+        {scenes.map((scene) => {
+          const probed = probedDuration(scene.id);
+          return (
           <div className={`scene-row-wrap ${scene.id === currentSceneId ? 'is-selected' : ''}`} key={scene.id}>
             <button
               className={`scene-row ${scene.id === currentSceneId ? 'is-selected' : ''}`}
@@ -48,12 +50,13 @@ export function SceneSidebar({ project, scenes, currentSceneId, mediaReport, onS
             >
               <span className="scene-number">{scene.number}</span>
               <span className="scene-copy"><strong>{scene.title}</strong><small>{scene.cast}</small></span>
-              <span className="scene-duration">{probedDuration(scene.id) ? formatMs(probedDuration(scene.id)) : scene.duration}</span>
+              <span className="scene-duration">{probed ? formatMs(probed) : scene.duration}</span>
               <SceneState scene={scene} />
             </button>
             <button className="scene-delete" type="button" aria-label={`删除场景${scene.title}`} title="删除场景" onClick={() => onDeleteScene(scene.id)}><Trash2 size={13} /></button>
           </div>
-        ))}
+          );
+        })}
       </div>
       <button className="add-scene-button" type="button" onClick={onAddScene}><Plus size={14} />新建空场景</button>
       <button className="add-scene-button" type="button" onClick={onImportNovel}><Plus size={14} />导入或重新拆解小说</button>

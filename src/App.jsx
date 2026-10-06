@@ -42,6 +42,9 @@ function App() {
   // the Inspector. Keyed by lineId; a take's audio lives in the cache, never
   // on the line itself.
   const [labResult, setLabResult] = useState(null);
+  // Real save indicator: 'saved' | 'pending' | 'error' — the TopBar badge
+  // mirrors the 450ms debounce queue instead of claiming success forever.
+  const [saveState, setSaveState] = useState('saved');
   const saveTimer = useRef(null);
   const pendingSave = useRef(null);
 
@@ -50,9 +53,18 @@ function App() {
     const pending = pendingSave.current;
     if (!pending) return null;
     pendingSave.current = null;
-    const saved = await api.saveProject(pending.projectId, { state: pending.state });
-    setProject((current) => current?.id === saved.id ? saved : current);
-    return saved;
+    try {
+      const saved = await api.saveProject(pending.projectId, { state: pending.state });
+      setProject((current) => current?.id === saved.id ? saved : current);
+      setSaveState('saved');
+      return saved;
+    } catch (error) {
+      // Put the state back so the next flush (or any generation/export)
+      // retries instead of silently dropping the edit.
+      pendingSave.current = pending;
+      setSaveState('error');
+      throw error;
+    }
   };
 
   const state = project?.state || EMPTY_STATE;
@@ -106,6 +118,7 @@ function App() {
     if (analysis) { setToast('小说拆解完成或取消后再修改项目'); return; }
     const optimistic = { ...project, state: nextState };
     setProject(optimistic);
+    setSaveState('pending');
     pendingSave.current = { projectId: project.id, state: nextState };
     window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => commitPendingSave().catch((error) => setToast(error.message)), 450);
@@ -223,6 +236,7 @@ function App() {
     input.click();
   };
   const saveConfig = async (draft) => { const saved = await api.saveConfig(draft); setConfig(saved); return saved; };
+  const reloadConfig = async () => { try { setConfig(await api.getConfig()); } catch (error) { setToast(error.message); } };
   const designVoice = async (input) => {
     const result = await api.designVoice(input);
     persistState({ ...state, voiceMap: { ...(state.voiceMap || {}), [input.characterId]: result.voiceId } });
@@ -239,8 +253,8 @@ function App() {
     if (!currentScene) return;
     const id = crypto.randomUUID();
     const line = type === 'dialogue'
-      ? { id, type, speaker: '旁白', speakerId: 'narrator', text: '输入新的旁白或对白', subtext: '按当前剧情上下文表达。', emotion: '克制', intensity: 40, pace: 90, distance: '近讲', delivery: '克制 40% · 语速 0.90' }
-      : { id, type, label: SOUND_EVENT_LABELS[type] || '声音事件', text: SOUND_EVENT_PLACEHOLDERS[type] || '描述需要的声音', time: '待编排' };
+      ? { id, type, speaker: '旁白', speakerId: 'narrator', text: '输入新的旁白或对白', subtext: '按当前剧情上下文表达。', emotion: '克制', intensity: 40, pace: 90, distance: '近讲' }
+      : { id, type, label: SOUND_EVENT_LABELS[type] || '声音事件', text: SOUND_EVENT_PLACEHOLDERS[type] || '描述需要的声音' };
     persistState({ ...state, scenes: scenes.map((scene) => scene.id === currentScene.id ? { ...scene, status: 'draft', lines: [...scene.lines, line] } : scene) });
     setSelectedLineId(id);
   };
@@ -337,8 +351,9 @@ function App() {
       await commitPendingSave();
       const task = await api.exportEpisode(project.id);
       setTaskRefreshToken(Date.now());
-      let lastShown = -1;
-      const completed = await waitForTask(task.id, (taskState) => { if (taskState.progress !== lastShown) { lastShown = taskState.progress; setToast(`${taskState.message} · ${taskState.progress}%`); } setTaskRefreshToken(taskState.progress); });
+      // Progress renders in the tasks tab; toasts stay for terminal states
+      // only — a per-percent toast used to overwrite every other message.
+      const completed = await waitForTask(task.id, () => setTaskRefreshToken(Date.now()));
       downloadMedia(completed.result.url, completed.result.name);
       setToast(`整集已导出：${completed.result.sceneCount} 场 · ${formatDuration(completed.result.durationMs)}`);
     } catch (error) { setToast(error.message); }
@@ -431,9 +446,9 @@ function App() {
   else if (view === 'sounds') content = <SoundsView assets={state.assets || []} sceneUsage={assetUsage} sceneEvents={(currentScene?.lines || []).filter((line) => line.type !== 'dialogue')} sceneTitle={currentScene?.title || ''} onUpload={uploadAsset} onBindAsset={bindAsset} onDeleteAsset={deleteAsset} onUpdateAsset={updateAsset} onToast={setToast} />;
   else if (view === 'production') content = <ProductionView project={project} mediaReport={mediaReport} currentSceneId={currentSceneId} onSceneChange={changeScene} onUpdateLine={updateLine} onUpdateDictionary={updateDictionary} onExportScene={exportSceneById} onExportEpisode={exportEpisode} onOneClick={oneClick} oneClickToken={oneClickToken} onGenerateMissing={generateMissingDialogue} generating={Boolean(generation)} exporting={exporting} taskRefreshToken={taskRefreshToken} onToast={setToast} />;
   else if (view === 'quality') content = <QualityView report={qualityReport} stages={stageProgress} onToast={setToast} onExport={() => exportSceneById(currentScene?.id)} onOpenProduction={() => setView('production')} onOpenView={setView} onLocateLine={locateLine} onOpenVoices={() => setView('voices')} onOpenSounds={() => setView('sounds')} onGenerateMissing={() => generateMissingDialogue([currentScene?.id])} onRegenerateStale={() => regenerateStaleDialogue([currentScene?.id])} generating={Boolean(generation)} exporting={exporting} />;
-  else content = <SettingsView config={config} loading={false} onSave={saveConfig} onTestLlm={api.testLlm} onToast={setToast} />;
+  else content = <SettingsView config={config} onSave={saveConfig} onTestLlm={api.testLlm} onToast={setToast} onReload={reloadConfig} />;
 
-  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} /><div className="app-content">{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} /> : null}<Toast message={toast} /></div>;
+  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} /> : null}<Toast message={toast} /></div>;
 }
 
 function formatDuration(milliseconds) {

@@ -19,7 +19,7 @@
     "dev": "concurrently -k -n api,web -c yellow,cyan \"npm run server\" \"vite --host 127.0.0.1 --port 4173\"",
     "server": "node --watch server/index.js",
     "start": "node server/index.js",
-    "test": "node --test server/*.test.js",
+    "test": "node --test server/*.test.js src/lib/*.test.js",
     "test:e2e": "node scripts/e2e.mjs",
     "seed": "node scripts/seed-sample.mjs",
     "build": "vite build",

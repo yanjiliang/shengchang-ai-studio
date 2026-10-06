@@ -1,5 +1,5 @@
 import { Music2, Pause, Play, Search, SlidersHorizontal, Trash2, Upload, X } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Waveform } from '../studio/Waveform';
 
 const filters = ['全部', '环境', '动作', '音乐', '人物主题', '关键音效'];
@@ -13,6 +13,12 @@ export function SoundsView({ assets, sceneUsage, sceneEvents = [], sceneTitle, o
   const [query, setQuery] = useState('');
   const [playingId, setPlayingId] = useState(null);
   const [pendingBind, setPendingBind] = useState(null);
+  useEffect(() => {
+    if (!pendingBind) return undefined;
+    const onKey = (event) => { if (event.key === 'Escape') setPendingBind(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pendingBind]);
   const usageCount = (asset) => sceneUsage?.[asset.id] || 0;
   const allAssets = assets;
   const visibleAssets = useMemo(() => allAssets.filter((item) => {

@@ -1,4 +1,4 @@
-import { GripVertical, Play, RefreshCcw, Trash2 } from 'lucide-react';
+import { Play, RefreshCcw, Trash2 } from 'lucide-react';
 import { Waveform } from './Waveform';
 
 const typeColors = {
@@ -7,15 +7,31 @@ const typeColors = {
   music: 'var(--color-violet)',
 };
 
+// Derived fresh from the live fields on every render — the stored
+// line.delivery snapshot could drift after Inspector edits.
+function deliveryLabel(line) {
+  const intensity = Math.min(100, Math.max(0, Number(line.intensity) || 40));
+  const pace = (Number(line.pace) || 90) / 100;
+  return `${line.emotion || '克制'} ${intensity}% · 语速 ${pace.toFixed(2)}`;
+}
+
+// Sound events carry no schedule of their own: the real entry point lives in
+// mix.startMs (the timeline previews it); unbound events have nothing to show
+// but that fact.
+function eventTimeLabel(line) {
+  if (!line.assetUrl) return '待绑定';
+  const startMs = Number(line.mix?.startMs);
+  return Number.isFinite(startMs) && line.mix.startMs !== '' ? `入点 ${(Math.max(0, startMs) / 1000).toFixed(1)}s` : '跟随场景';
+}
+
 export function ScriptLine({ line, character, selected, onSelect, onTextChange, onRegenerate, onPlay, onDelete }) {
   if (line.type !== 'dialogue') {
     return (
       <div className={`sound-event sound-${line.type}`}>
         <button className="sound-event-main" type="button" onClick={() => { onSelect(); if (line.assetUrl) onPlay(); }}>
-          <span className="event-grip"><GripVertical size={14} /></span>
           <span className="event-type">{line.label}</span>
           {line.type === 'ambient' ? <Waveform color={typeColors[line.type]} url={line.assetUrl} /> : <span className="event-copy">{line.assetName ? `${line.text} · ${line.assetName}` : line.text}</span>}
-          <span className="event-time">{line.time}</span>
+          <span className="event-time">{eventTimeLabel(line)}</span>
           <Play size={13} className="event-play" fill="currentColor" />
         </button>
         <button className="event-delete" type="button" aria-label={`删除${line.label}`} title="删除此事件" onClick={onDelete}><Trash2 size={13} /></button>
@@ -24,11 +40,16 @@ export function ScriptLine({ line, character, selected, onSelect, onTextChange, 
   }
 
   return (
-    <article className={`dialogue-line ${selected ? 'is-selected' : ''}`} onClick={onSelect}>
+    <article
+      className={`dialogue-line ${selected ? 'is-selected' : ''}`}
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(); } }}
+    >
       <span className="line-selection" />
       <button className="speaker-button" type="button" style={{ color: character?.color }} onClick={onSelect}>{line.speaker}</button>
       <div className="dialogue-body">
-        <div className="delivery-line">{line.delivery}</div>
+        <div className="delivery-line">{deliveryLabel(line)}</div>
         <textarea
           className="dialogue-editor"
           value={line.text}

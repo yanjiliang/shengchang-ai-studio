@@ -17,13 +17,10 @@ import { createProject, getProject, listProjects, countProjects } from './databa
 export const SAMPLE_SEED = 'xiyouji-sanda-v1';
 export const SAMPLE_NAME = '西游记 · 三打白骨精';
 
-const deliveryOf = (line) => `${line.emotion} ${line.intensity}% · 语速 ${(line.pace / 100).toFixed(2)}`;
-
+const soundEvent = (id, type, label, text) => ({ id, type, label, text });
 const dialogue = (id, speaker, speakerId, text, direction) => ({
   id, type: 'dialogue', speaker, speakerId, text, ...direction,
 });
-
-const soundEvent = (id, type, label, text) => ({ id, type, label, text, time: '待编排' });
 
 const CHARACTERS = [
   { id: 'narrator', name: '旁白', role: '叙事者', description: '冷静克制，保留说书人的节奏感，不抢戏。' },
@@ -100,7 +97,7 @@ export function buildSampleState() {
       location: scene.location,
       mood: scene.mood,
       synopsis: scene.synopsis,
-      lines: scene.lines.map((line) => line.type === 'dialogue' ? { ...line, delivery: deliveryOf(line) } : line),
+      lines: scene.lines,
     })),
     assets: [],
     characters: CHARACTERS,

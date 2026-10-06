@@ -14,7 +14,6 @@ test('sample state: every dialogue line carries full direction data', () => {
     }
     assert.ok(Number(line.intensity) >= 0 && Number(line.intensity) <= 100, `line ${line.id} intensity out of range`);
     assert.ok(Number(line.pace) >= 50 && Number(line.pace) <= 150, `line ${line.id} pace out of range`);
-    assert.match(line.delivery, /%/, `line ${line.id} delivery string not rendered`);
   }
 });
 

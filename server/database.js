@@ -220,6 +220,12 @@ export function audioContentHash(config, request) {
   return createHash('sha256').update(JSON.stringify({ provider: config.provider, endpoint: config.endpoint, model: config.model, resourceId: config.resourceId, voiceId: request.voiceId, text: request.text, subtext: request.subtext, emotion: request.emotion, emotionScale: request.emotionScale, speed: request.speed, distance: request.distance, format: config.audioFormat, sampleRate: config.sampleRate })).digest('hex');
 }
 
+// Generated sound effects / beds: same content-addressed cache, different key
+// inputs (prompt instead of text + direction params).
+export function soundContentHash(config, sound) {
+  return createHash('sha256').update(JSON.stringify({ provider: config.sfxProvider, endpoint: config.sfxEndpoint, model: config.sfxModel, prompt: sound.prompt, durationMs: sound.durationMs || 0, type: sound.type })).digest('hex');
+}
+
 // Imports a pre-sqlite project-state.json once. A genuinely fresh install
 // creates nothing here — the sample seeder (sample-project.js, called from
 // index.js) owns the first-run experience.

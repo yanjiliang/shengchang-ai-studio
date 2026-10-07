@@ -8,6 +8,7 @@ import { TopBar } from './components/TopBar';
 import { Inspector } from './components/studio/Inspector';
 import { SceneCanvas } from './components/studio/SceneCanvas';
 import { SceneSidebar } from './components/studio/SceneSidebar';
+import { SoundPicker } from './components/studio/SoundPicker';
 import { QualityView } from './components/views/QualityView';
 import { SettingsView } from './components/views/SettingsView';
 import { SoundsView } from './components/views/SoundsView';
@@ -40,6 +41,10 @@ function App() {
   const [exporting, setExporting] = useState(false);
   const [taskRefreshToken, setTaskRefreshToken] = useState(0);
   const [mediaReport, setMediaReport] = useState(null);
+  // Built-in CC0 library (shared, read-only) + the sound-event picker state:
+  // one entry point for recommendations / builtin / generation / upload.
+  const [builtinAssets, setBuiltinAssets] = useState([]);
+  const [pickerLine, setPickerLine] = useState(null);
   // Direction-lab (Approach C): the latest A/B/C take results for audition in
   // the Inspector. Keyed by lineId; a take's audio lives in the cache, never
   // on the line itself.
@@ -110,6 +115,11 @@ function App() {
     api.getMediaReport(project.id).then((report) => { if (active) setMediaReport(report); }).catch((error) => { if (active) setToast(error.message); });
     return () => { active = false; };
   }, [project?.id, audioSignature]);
+  useEffect(() => {
+    // Best-effort: a missing builtin library degrades the picker's builtin
+    // tab, nothing else.
+    api.builtinAssets().then((payload) => setBuiltinAssets(payload.assets)).catch(() => setBuiltinAssets([]));
+  }, []);
   useEffect(() => {
     if (!toast) return undefined;
     const timer = window.setTimeout(() => setToast(''), 3800);
@@ -343,6 +353,44 @@ function App() {
     } catch (error) { setToast(error.message); }
   };
   const bindAsset = (asset, line) => { updateLine(line.id, { assetUrl: asset.url, assetName: asset.name, assetId: asset.id }); setToast(`已将「${asset.name}」绑定到「${line.text?.slice(0, 18) || line.label}」`); };
+  const uploadAndBind = async (file, line) => {
+    const asset = await uploadAsset(file);
+    bindAsset(asset, line);
+    return true;
+  };
+  // SoundPicker 生成 tab: persistent task, then register the generated clip
+  // as a project asset and bind it to the event in one write.
+  const generateSound = async (line, { prompt, durationSec }) => {
+    if (!project || generation) { setToast('已有任务进行中，稍后再试'); return false; }
+    try {
+      setGeneration({ progress: 5, message: `正在生成声音素材：${prompt.slice(0, 20)}` });
+      await commitPendingSave();
+      const task = await api.generate({ projectId: project.id, kind: 'sound-generate', sound: { prompt, durationMs: Math.round((durationSec || (line.type === 'sfx' ? 4 : 16)) * 1000), type: line.type } });
+      const completed = await waitForTask(task.id, (taskState) => setGeneration({ progress: taskState.progress, message: taskState.message }));
+      const result = completed.result;
+      const asset = {
+        id: `gen-${result.contentHash.slice(0, 12)}`,
+        name: prompt.slice(0, 20),
+        url: result.url,
+        category: line.type === 'music' ? '音乐' : line.type === 'ambient' ? '环境' : '动作',
+        tags: ['AI 生成'],
+        color: '#8fb4ff',
+        duration: formatDuration(result.durationMs),
+        source: 'generated',
+        license: 'AI 生成',
+        prompt,
+        provider: result.provider,
+      };
+      persistState({
+        ...state,
+        assets: [asset, ...(state.assets || [])],
+        scenes: scenes.map((scene) => ({ ...scene, status: scene.id === currentScene?.id ? 'draft' : scene.status, lines: scene.lines.map((item) => item.id === line.id ? { ...item, assetUrl: asset.url, assetName: asset.name, assetId: asset.id } : item) })),
+      });
+      setToast(`声音素材已生成并绑定：${asset.name}`);
+      return true;
+    } catch (error) { setToast(error.message); return false; }
+    finally { setGeneration(null); }
+  };
   const exportSceneById = async (sceneId = currentScene?.id) => {
     const scene = scenes.find((item) => item.id === sceneId);
     if (!scene?.lines.some((line) => line.type === 'dialogue' && line.audioUrl)) { setToast('当前场景没有已生成的对白'); return; }
@@ -361,6 +409,7 @@ function App() {
       // only — a per-percent toast used to overwrite every other message.
       const completed = await waitForTask(task.id, () => setTaskRefreshToken(Date.now()));
       downloadMedia(completed.result.url, completed.result.name);
+      if (completed.result.attributionUrl) downloadMedia(completed.result.attributionUrl, decodeURIComponent(completed.result.attributionUrl.split('/').pop()));
       setToast(`整集已导出：${completed.result.sceneCount} 场 · ${formatDuration(completed.result.durationMs)}`);
     } catch (error) { setToast(error.message); }
     finally { setExporting(false); setTaskRefreshToken(Date.now()); }
@@ -421,14 +470,14 @@ function App() {
   }
   const activeProgress = analysis || generation;
   let content;
-  if (view === 'studio') content = currentScene ? <StudioLayout project={project} scenes={scenes} currentScene={currentScene} mediaReport={mediaReport} characters={state.characters || []} selectedLineId={selectedLineId} onSelectLine={setSelectedLineId} onUpdateLine={updateLine} onUpdateScene={updateScene} onSceneChange={changeScene} onImportNovel={importNovel} onAddScene={addScene} onDeleteScene={deleteScene} onRegenerate={regenerateLine} onPlayLine={playLine} onAddLine={addLine} onDeleteLine={deleteLine} activeProgress={activeProgress} onCancelTask={cancelActiveTask} voiceMap={state.voiceMap || {}} configProvider={config?.provider} onOpenVoices={() => setView('voices')} onLabGenerate={runDirectionLab} labResult={labResult} labGenerating={Boolean(generation)} /> : <div className="empty-project"><BrandSignature /><h2>{project.name}</h2><p>{analysis ? `${analysis.message} · ${analysis.progress}%` : '还没有场景。导入 TXT 小说后，文本模型会识别角色、对白、旁白、声音事件和场景结构。'}</p>{analysis ? <button className="button secondary-button" type="button" onClick={cancelActiveTask}>取消拆解</button> : <><button className="button primary-button" type="button" onClick={importNovel}>导入小说并拆解</button><button className="button secondary-button" type="button" onClick={addScene}>手动新建场景</button></>}</div>;
+  if (view === 'studio') content = currentScene ? <StudioLayout project={project} scenes={scenes} currentScene={currentScene} mediaReport={mediaReport} characters={state.characters || []} selectedLineId={selectedLineId} onSelectLine={setSelectedLineId} onUpdateLine={updateLine} onUpdateScene={updateScene} onSceneChange={changeScene} onImportNovel={importNovel} onAddScene={addScene} onDeleteScene={deleteScene} onRegenerate={regenerateLine} onPlayLine={playLine} onAddLine={addLine} onDeleteLine={deleteLine} onAcquireSound={setPickerLine} activeProgress={activeProgress} onCancelTask={cancelActiveTask} voiceMap={state.voiceMap || {}} configProvider={config?.provider} onOpenVoices={() => setView('voices')} onLabGenerate={runDirectionLab} labResult={labResult} labGenerating={Boolean(generation)} /> : <div className="empty-project"><BrandSignature /><h2>{project.name}</h2><p>{analysis ? `${analysis.message} · ${analysis.progress}%` : '还没有场景。导入 TXT 小说后，文本模型会识别角色、对白、旁白、声音事件和场景结构。'}</p>{analysis ? <button className="button secondary-button" type="button" onClick={cancelActiveTask}>取消拆解</button> : <><button className="button primary-button" type="button" onClick={importNovel}>导入小说并拆解</button><button className="button secondary-button" type="button" onClick={addScene}>手动新建场景</button></>}</div>;
   else if (view === 'voices') content = <VoicesView characters={state.characters || []} voiceMap={state.voiceMap || {}} voiceDesignConfig={config} onDesignVoice={designVoice} onSetVoice={setVoice} onToast={setToast} />;
-  else if (view === 'sounds') content = <SoundsView assets={state.assets || []} sceneUsage={assetUsage} sceneEvents={(currentScene?.lines || []).filter((line) => line.type !== 'dialogue')} sceneTitle={currentScene?.title || ''} onUpload={uploadAsset} onBindAsset={bindAsset} onDeleteAsset={deleteAsset} onUpdateAsset={updateAsset} onToast={setToast} />;
+  else if (view === 'sounds') content = <SoundsView assets={state.assets || []} builtinAssets={builtinAssets} sceneUsage={assetUsage} sceneEvents={(currentScene?.lines || []).filter((line) => line.type !== 'dialogue')} sceneTitle={currentScene?.title || ''} onUpload={uploadAsset} onBindAsset={bindAsset} onDeleteAsset={deleteAsset} onUpdateAsset={updateAsset} onToast={setToast} />;
   else if (view === 'production') content = <ProductionView project={project} mediaReport={mediaReport} currentSceneId={currentSceneId} onSceneChange={changeScene} onUpdateLine={updateLine} onUpdateDictionary={updateDictionary} onExportScene={exportSceneById} onExportEpisode={exportEpisode} onOneClick={oneClick} oneClickToken={oneClickToken} onGenerateMissing={generateMissingDialogue} generating={Boolean(generation)} exporting={exporting} taskRefreshToken={taskRefreshToken} onToast={setToast} />;
   else if (view === 'quality') content = <QualityView report={qualityReport} stages={stages} onToast={setToast} onExport={() => exportSceneById(currentScene?.id)} onOpenProduction={() => setView('production')} onOpenView={setView} onLocateLine={locateLine} onOpenVoices={() => setView('voices')} onOpenSounds={() => setView('sounds')} onGenerateMissing={() => generateMissingDialogue([currentScene?.id])} onRegenerateStale={() => regenerateStaleDialogue([currentScene?.id])} generating={Boolean(generation)} exporting={exporting} />;
   else content = <SettingsView config={config} onSave={saveConfig} onTestLlm={api.testLlm} onToast={setToast} onReload={reloadConfig} />;
 
-  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} /> : null}{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}<Toast message={toast} /></div>;
+  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} /> : null}{pickerLine ? <SoundPicker line={pickerLine} projectId={project.id} config={config} builtinAssets={builtinAssets} onBind={bindAsset} onUpload={uploadAndBind} onGenerate={generateSound} onClose={() => setPickerLine(null)} onToast={setToast} /> : null}{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}<Toast message={toast} /></div>;
 }
 
 // --- Local composition helpers (props-only, no state of their own) --------
@@ -449,13 +498,13 @@ function LoadingScreen() {
   return <div className="app-loading" role="status"><BrandSignature /><span>正在打开本地项目数据库</span></div>;
 }
 
-function StudioLayout({ project, scenes, currentScene, mediaReport, characters, selectedLineId, onSelectLine, onUpdateLine, onUpdateScene, onSceneChange, onImportNovel, onAddScene, onDeleteScene, onRegenerate, onPlayLine, onAddLine, onDeleteLine, activeProgress, onCancelTask, voiceMap, configProvider, onOpenVoices, onLabGenerate, labResult, labGenerating }) {
+function StudioLayout({ project, scenes, currentScene, mediaReport, characters, selectedLineId, onSelectLine, onUpdateLine, onUpdateScene, onSceneChange, onImportNovel, onAddScene, onDeleteScene, onRegenerate, onPlayLine, onAddLine, onDeleteLine, onAcquireSound, activeProgress, onCancelTask, voiceMap, configProvider, onOpenVoices, onLabGenerate, labResult, labGenerating }) {
   const selectedLine = currentScene?.lines.find((line) => line.id === selectedLineId) || currentScene?.lines[0] || null;
   return (
     <div className="studio-layout">
       <SceneSidebar project={project} scenes={scenes} currentSceneId={currentScene.id} mediaReport={mediaReport} onSceneChange={onSceneChange} onImportNovel={onImportNovel} onAddScene={onAddScene} onDeleteScene={onDeleteScene} />
-      <SceneCanvas scene={currentScene} durationMs={mediaReport?.scenes?.find((item) => item.sceneId === currentScene.id)?.durationMs} sourceText={project.sourceText} characters={characters} selectedLineId={selectedLineId} onSelectLine={onSelectLine} onUpdateLine={onUpdateLine} onUpdateScene={onUpdateScene} onRegenerate={onRegenerate} onPlayLine={onPlayLine} onAddLine={onAddLine} onDeleteLine={onDeleteLine} generationProgress={activeProgress?.progress ?? null} generationMessage={activeProgress?.message} onCancelTask={onCancelTask} />
-      <Inspector line={selectedLine} characters={characters} voiceMap={voiceMap} provider={configProvider} onUpdate={(patch) => onUpdateLine(selectedLine.id, patch)} onOpenVoices={onOpenVoices} onLabGenerate={onLabGenerate} lab={labResult} labGenerating={labGenerating} />
+      <SceneCanvas scene={currentScene} durationMs={mediaReport?.scenes?.find((item) => item.sceneId === currentScene.id)?.durationMs} sourceText={project.sourceText} characters={characters} selectedLineId={selectedLineId} onSelectLine={onSelectLine} onUpdateLine={onUpdateLine} onUpdateScene={onUpdateScene} onRegenerate={onRegenerate} onPlayLine={onPlayLine} onAddLine={onAddLine} onDeleteLine={onDeleteLine} onAcquireSound={onAcquireSound} generationProgress={activeProgress?.progress ?? null} generationMessage={activeProgress?.message} onCancelTask={onCancelTask} />
+      <Inspector line={selectedLine} characters={characters} voiceMap={voiceMap} provider={configProvider} onUpdate={(patch) => onUpdateLine(selectedLine.id, patch)} onOpenVoices={onOpenVoices} onAcquireSound={onAcquireSound} onLabGenerate={onLabGenerate} lab={labResult} labGenerating={labGenerating} />
     </div>
   );
 }

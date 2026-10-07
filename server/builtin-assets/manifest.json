@@ -1,0 +1,26 @@
+{
+  "license": "本清单内全部音频由 scripts/build-builtin-assets.mjs 程序合成，属本仓库自有内容，按 MIT 随项目发布（等同可自由使用与再分发）。未来引入外部素材时请逐条更新 license 与 attribution，仅允许 CC0 或已获商用授权的内容进入。",
+  "origin": "synthesized",
+  "assets": [
+    { "id": "ambient-rain-light", "name": "小雨 · 屋檐", "type": "ambient", "file": "ambient/ambient-rain-light.mp3", "durationSec": 24, "loop": true, "tags": ["雨", "小雨", "夜", "屋檐", "安静"], "mood": "平静" },
+    { "id": "ambient-rain-heavy", "name": "暴雨 · 码头", "type": "ambient", "file": "ambient/ambient-rain-heavy.mp3", "durationSec": 24, "loop": true, "tags": ["暴雨", "雷雨", "风雨", "夜", "倾盆"], "mood": "紧张" },
+    { "id": "ambient-sea-waves", "name": "海浪 · 夜岸", "type": "ambient", "file": "ambient/ambient-sea-waves.mp3", "durationSec": 28, "loop": true, "tags": ["海", "海浪", "涛声", "岸边", "夜"], "mood": "辽阔" },
+    { "id": "ambient-city-night", "name": "城市 · 夜间底噪", "type": "ambient", "file": "ambient/ambient-city-night.mp3", "durationSec": 24, "loop": true, "tags": ["城市", "街道", "夜", "车流", "嘈杂"], "mood": "疏离" },
+    { "id": "ambient-forest", "name": "森林 · 晨风鸟鸣", "type": "ambient", "file": "ambient/ambient-forest.mp3", "durationSec": 28, "loop": true, "tags": ["森林", "鸟", "清晨", "自然", "风"], "mood": "清新" },
+    { "id": "ambient-fire", "name": "篝火 · 噼啪", "type": "ambient", "file": "ambient/ambient-fire.mp3", "durationSec": 24, "loop": true, "tags": ["篝火", "火堆", "噼啪", "夜", "温暖"], "mood": "温暖" },
+    { "id": "ambient-wind", "name": "山风 · 呜咽", "type": "ambient", "file": "ambient/ambient-wind.mp3", "durationSec": 24, "loop": true, "tags": ["风", "山风", "荒野", "呜咽", "呼啸"], "mood": "荒凉" },
+    { "id": "ambient-room", "name": "室内 · 静默底噪", "type": "ambient", "file": "ambient/ambient-room.mp3", "durationSec": 24, "loop": true, "tags": ["室内", "安静", "静止", "沉闷"], "mood": "静止" },
+    { "id": "sfx-door-knock", "name": "敲门 · 三声", "type": "sfx", "file": "sfx/sfx-door-knock.mp3", "durationSec": 4, "loop": false, "tags": ["敲门", "门", "到访", "叩门"], "mood": "到访" },
+    { "id": "sfx-door-creak", "name": "门轴 · 吱呀", "type": "sfx", "file": "sfx/sfx-door-creak.mp3", "durationSec": 3, "loop": false, "tags": ["门", "开门", "吱呀", "旧门"], "mood": "不安" },
+    { "id": "sfx-footsteps", "name": "脚步 · 碎石", "type": "sfx", "file": "sfx/sfx-footsteps.mp3", "durationSec": 6, "loop": false, "tags": ["脚步", "行走", "碎石", "脚步声"], "mood": "行进" },
+    { "id": "sfx-whoosh", "name": "转场 · 风掠", "type": "sfx", "file": "sfx/sfx-whoosh.mp3", "durationSec": 2.6, "loop": false, "tags": ["转场", "风声", "掠过", "快速", "切换"], "mood": "迅疾" },
+    { "id": "sfx-thunder", "name": "远雷 · 隆隆", "type": "sfx", "file": "sfx/sfx-thunder.mp3", "durationSec": 3, "loop": false, "tags": ["雷", "雷声", "轰鸣", "暴雨"], "mood": "威压" },
+    { "id": "sfx-glass-clink", "name": "玻璃 · 轻碰", "type": "sfx", "file": "sfx/sfx-glass-clink.mp3", "durationSec": 1.2, "loop": false, "tags": ["玻璃", "碰杯", "器皿", "轻响"], "mood": "克制" },
+    { "id": "sfx-crowd", "name": "人群 · 低语嘈杂", "type": "sfx", "file": "sfx/sfx-crowd.mp3", "durationSec": 12, "loop": false, "tags": ["人群", "嘈杂", "低语", "集市", "喧哗"], "mood": "嘈杂" },
+    { "id": "sfx-heartbeat", "name": "心跳 · 沉缓", "type": "sfx", "file": "sfx/sfx-heartbeat.mp3", "durationSec": 10, "loop": false, "tags": ["心跳", "紧张", "恐惧", "心悸"], "mood": "恐惧" },
+    { "id": "music-pad-suspense", "name": "悬疑 · 低音持续音", "type": "music", "file": "music/music-pad-suspense.mp3", "durationSec": 28, "loop": true, "tags": ["悬疑", "紧张", "低音", "不安", "铺垫"], "mood": "紧张" },
+    { "id": "music-pad-warm", "name": "温暖 · 柔光和声", "type": "music", "file": "music/music-pad-warm.mp3", "durationSec": 28, "loop": true, "tags": ["温暖", "回忆", "抒情", "钢琴", "柔和"], "mood": "温暖" },
+    { "id": "music-pad-sad", "name": "哀伤 · 缓慢弦感", "type": "music", "file": "music/music-pad-sad.mp3", "durationSec": 28, "loop": true, "tags": ["悲伤", "离别", "哀伤", "慢", "弦乐"], "mood": "悲伤" },
+    { "id": "music-pulse-tension", "name": "逐升 · 脉冲推进", "type": "music", "file": "music/music-pulse-tension.mp3", "durationSec": 24, "loop": true, "tags": ["紧张", "推进", "脉冲", "追逐", "渐强"], "mood": "推进" }
+  ]
+}

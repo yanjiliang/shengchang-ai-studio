@@ -6,10 +6,12 @@ import { randomUUID } from 'node:crypto';
 import { buildGenerationRequests } from '../shared/generation-requests.mjs';
 import { publicConfig, readConfig, writeConfig } from './config-store.js';
 import { archiveProject, createProject, getProject, listPersistentTasks, listProjects, updateProject } from './database.js';
-import { designVoice, validateProviderConfig } from './model-adapters.js';
+import { designVoice, validateProviderConfig, validateSoundConfig } from './model-adapters.js';
 import { ensureRuntime, exportSceneTimeline, extractPeaks, inspectProjectMedia, probeDuration, probeFfmpeg, renderScenePreview, runtimePaths, saveUploadedAsset } from './media-store.js';
-import { cancelTask, enqueueGeneration, enqueueNovelAnalysis, enqueueOneClick, enqueueProjectExport, estimateGeneration, getTask, retryTask } from './task-manager.js';
+import { cancelTask, enqueueGeneration, enqueueNovelAnalysis, enqueueOneClick, enqueueProjectExport, enqueueSoundGeneration, estimateGeneration, getTask, retryTask } from './task-manager.js';
 import { seedSampleProject } from './sample-project.js';
+import { ensureBuiltinAssets, listBuiltinAssets } from './builtin-assets.js';
+import { recommendForEvent } from './asset-recommend.js';
 import { testLlm, validateLlmConfig } from './story-analyzer.js';
 
 const PORT = Number(process.env.SHENGCHANG_API_PORT || 4174);
@@ -22,6 +24,14 @@ const rootDir = path.resolve(serverDir, '..');
 const app = express();
 
 await ensureRuntime();
+// Register the built-in CC0 library into MEDIA_DIR (shared, read-only): the
+// picker, recommendations, and mixes all treat builtin clips like any audio.
+try {
+  const builtin = await ensureBuiltinAssets();
+  console.log(`内置声音素材库就绪：${builtin.size} 条（CC0）`);
+} catch (error) {
+  console.warn(`内置素材库登记失败（功能降级，不影响其他能力）：${error.message}`);
+}
 // Fresh install (zero project rows): seed the 三打白骨精 sample so the first
 // contact is 一键成片 on a real, direction-rich project — no key, no setup.
 const seeded = seedSampleProject();
@@ -208,6 +218,17 @@ app.post('/api/projects/:projectId/one-click-estimate', async (request, response
 });
 app.post('/api/generate', async (request, response, next) => {
   try {
+    // Sound-effect / music-bed generation has its own provider config and
+    // request shape (prompt, not text + direction params).
+    if (request.body.kind === 'sound-generate') {
+      const config = await readConfig();
+      validateSoundConfig(config);
+      const sound = request.body.sound || {};
+      if (!String(sound.prompt || '').trim()) throw new Error('生成描述不能为空');
+      const project = getProject(request.body.projectId);
+      if (!project) throw new Error('生成任务缺少有效项目');
+      return response.status(202).json(enqueueSoundGeneration({ projectId: project.id, sound }));
+    }
     const config = await readConfig();
     validateProviderConfig(config);
     if (!Array.isArray(request.body.requests) || request.body.requests.length === 0) throw new Error('生成任务没有台词');
@@ -263,6 +284,25 @@ app.get('/api/media/peaks', async (request, response, next) => {
     response.json({ peaks: await extractPeaks(url) });
   } catch (error) { next(error); }
 });
+// Built-in CC0 library (shared read-only supply for the sound picker).
+app.get('/api/assets/builtin', async (_request, response, next) => {
+  try { response.json({ assets: await listBuiltinAssets() }); } catch (error) { next(error); }
+});
+// Rule-based recommendations: the sound event's text description against
+// builtin entries + the project's own assets, with usage-consistency bonus.
+app.get('/api/assets/recommend', async (request, response, next) => {
+  try {
+    const project = getProject(String(request.query.projectId || ''));
+    const line = (project?.state?.scenes || [])
+      .flatMap((scene) => scene.lines || [])
+      .find((item) => item.id === String(request.query.lineId || ''));
+    if (!line || line.type === 'dialogue') throw new Error('没有找到对应的声音事件');
+    const usageCounts = {};
+    for (const scene of project.state.scenes || []) for (const item of scene.lines || []) if (item.assetId) usageCounts[item.assetId] = (usageCounts[item.assetId] || 0) + 1;
+    const candidates = [...await listBuiltinAssets(), ...(project.state.assets || [])];
+    response.json({ recommendations: recommendForEvent({ line, candidates, usageCounts }) });
+  } catch (error) { next(error); }
+});
 // Asset-file deletion policy (§8): a file leaves disk only once nothing
 // references it. The browser unbinds its lines first, so a 409 here means
 // another project (or a manual reference) still needs the file.
@@ -271,6 +311,7 @@ app.delete('/api/assets', async (request, response, next) => {
     const url = String(request.query.url || '');
     const filename = path.basename(url);
     if (!url.startsWith('/media/') || !filename || filename.includes('..')) throw new Error('无效的素材地址');
+    if (filename.startsWith('builtin-')) throw new Error('内置素材属于共享资源，不可删除');
     const referenced = listProjects().some((summary) => {
       const project = getProject(summary.id);
       return (project?.state?.scenes || []).some((scene) => (scene.lines || []).some((line) => line.assetUrl === url || line.audioUrl === url));

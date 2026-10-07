@@ -1,11 +1,13 @@
-import { access, stat, unlink } from 'node:fs/promises';
+import { access, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { readConfig } from './config-store.js';
-import { audioContentHash, cacheAudio, createPersistentTask, deleteAudioCache, findCachedAudio, getPersistentTask, getProject, listAudioCache, listProjects, nextQueuedTask, requestTaskCancellation, updatePersistentTask, updateProject } from './database.js';
+import { audioContentHash, cacheAudio, createPersistentTask, deleteAudioCache, findCachedAudio, getPersistentTask, getProject, listAudioCache, listProjects, nextQueuedTask, requestTaskCancellation, soundContentHash, updatePersistentTask, updateProject } from './database.js';
 import { exportProjectTimeline, runtimePaths, saveMedia } from './media-store.js';
-import { synthesize } from './model-adapters.js';
+import { synthesize, synthesizeSound } from './model-adapters.js';
 import { analyzeNovel } from './story-analyzer.js';
 import { runOneClickPipeline } from './one-click.js';
+import { buildAttribution } from './attribution.js';
+import { ensureBuiltinAssets } from './builtin-assets.js';
 
 const MAX_CONCURRENCY = 2;
 let activeWorkers = 0;
@@ -223,10 +225,57 @@ async function runTask(task) {
         shouldCancel: () => Boolean(getPersistentTask(task.id)?.cancelRequested),
         onProgress: ({ progress, message }) => updatePersistentTask(task.id, { progress, message }),
       });
+      // The attribution sheet rides along with the episode: the creator sees
+      // exactly which sound assets went into it and what each source permits.
+      try {
+        const lines = (project.state.scenes || []).flatMap((scene) => scene.lines || []);
+        const attribution = buildAttribution({ lines, assets: project.state.assets || [], builtinIndex: await ensureBuiltinAssets() });
+        const name = String(result.name || '').replace(/\.[^.]+$/, '');
+        await writeFile(path.join(runtimePaths.EXPORT_DIR, `${name}-来源清单.txt`), `${attribution}\n`, 'utf8');
+        result.attributionUrl = `/media/exports/${encodeURIComponent(`${name}-来源清单.txt`)}`;
+      } catch { /* attribution is best-effort; the export itself is done */ }
       updatePersistentTask(task.id, { status: 'completed', progress: 100, message: `整集导出完成，共 ${result.sceneCount} 个场景`, result, completedAt: Date.now() });
     } catch (error) {
       if (error.code === 'TASK_CANCELLED') updatePersistentTask(task.id, { status: 'cancelled', message: '整集导出已取消', error: '', completedAt: Date.now() });
       else updatePersistentTask(task.id, { status: 'failed', message: '整集导出失败', error: error.message, completedAt: Date.now() });
+    }
+    return;
+  }
+  if (task.kind === 'sound-generate') {
+    const sound = task.payload.sound || {};
+    updatePersistentTask(task.id, { status: 'running', progress: 10, message: `正在生成声音素材：${String(sound.prompt || '').slice(0, 30)}`, startedAt: Date.now(), error: '' });
+    try {
+      // Same content-addressed cache as speech, keyed by prompt + params: the
+      // same description reused anywhere in the project is a free hit.
+      const contentHash = soundContentHash(config, sound);
+      const cached = findCachedAudio(contentHash);
+      let url;
+      let mime;
+      let durationMs = Number(sound.durationMs) || 0;
+      if (await validCache(cached)) {
+        cacheAudio({ contentHash, url: cached.url, mime: cached.mime, provider: config.sfxProvider || 'demo', model: config.sfxModel || '', voiceId: '' });
+        url = cached.url; mime = cached.mime;
+      } else {
+        const recovered = await recoverCachedAudioFromDisk(contentHash);
+        if (recovered) {
+          cacheAudio({ contentHash, url: recovered.url, mime: recovered.mime, provider: config.sfxProvider || 'demo', model: config.sfxModel || '', voiceId: '' });
+          url = recovered.url; mime = recovered.mime;
+        } else {
+          const audio = await synthesizeSound(config, sound);
+          const extension = extensionForMime(audio.mime, 'mp3');
+          const saved = await saveMedia(contentHash, extension, audio.buffer);
+          cacheAudio({ contentHash, url: saved.url, mime: audio.mime, provider: config.sfxProvider || 'demo', model: config.sfxModel || '', voiceId: '' });
+          url = saved.url; mime = audio.mime;
+        }
+      }
+      await evictAudioCacheIfNeeded(config.cacheLimitGb);
+      updatePersistentTask(task.id, {
+        status: 'completed', progress: 100, message: `声音素材已生成：${String(sound.prompt || '').slice(0, 30)}`,
+        result: { url, name: `${String(sound.prompt || '声音素材').slice(0, 24)}`, contentHash, durationMs, prompt: sound.prompt, type: sound.type, provider: config.sfxProvider || 'demo' },
+        completedAt: Date.now(),
+      });
+    } catch (error) {
+      updatePersistentTask(task.id, { status: 'failed', message: '声音素材生成失败', error: error.message, completedAt: Date.now() });
     }
     return;
   }
@@ -276,6 +325,12 @@ export function enqueueGeneration(input) {
 
 export function enqueueNovelAnalysis(input) {
   const task = createPersistentTask({ kind: 'analyze-novel', projectId: input.projectId, payload: { text: input.text, filename: input.filename, name: input.name } });
+  queueMicrotask(pumpQueue);
+  return task;
+}
+
+export function enqueueSoundGeneration(input) {
+  const task = createPersistentTask({ kind: 'sound-generate', projectId: input.projectId, payload: { sound: input.sound } });
   queueMicrotask(pumpQueue);
   return task;
 }

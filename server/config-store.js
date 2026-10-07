@@ -26,6 +26,14 @@ export const DEFAULT_CONFIG = {
   llmApiKey: '',
   llmModel: '',
   llmSystemPrompt: '你是一位专业广播剧编剧和声音导演。忠于原作，不凭空新增关键剧情。',
+  // Sound-effect / music-bed generation (SoundPicker 生成 tab). Independent of
+  // the speech provider: different services, different request shapes.
+  sfxProvider: 'demo',
+  sfxEndpoint: '',
+  sfxAccessKey: '',
+  sfxModel: '',
+  sfxCustomHeaders: '{}',
+  sfxCustomBodyTemplate: '{"prompt":"{{prompt}}","duration":{{durationSec}}}',
 };
 
 function sanitizeConfig(input = {}) {
@@ -54,6 +62,12 @@ function sanitizeConfig(input = {}) {
     llmApiKey: String(config.llmApiKey || ''),
     llmModel: String(config.llmModel || ''),
     llmSystemPrompt: String(config.llmSystemPrompt || DEFAULT_CONFIG.llmSystemPrompt),
+    sfxProvider: ['demo', 'custom'].includes(config.sfxProvider) ? config.sfxProvider : 'demo',
+    sfxEndpoint: String(config.sfxEndpoint || ''),
+    sfxAccessKey: String(config.sfxAccessKey || ''),
+    sfxModel: String(config.sfxModel || ''),
+    sfxCustomHeaders: String(config.sfxCustomHeaders || '{}'),
+    sfxCustomBodyTemplate: String(config.sfxCustomBodyTemplate || DEFAULT_CONFIG.sfxCustomBodyTemplate),
   };
 }
 
@@ -92,8 +106,10 @@ export function publicConfig(config) {
     customHeaders: safeCustomHeaders,
     accessKey: '',
     llmApiKey: '',
+    sfxAccessKey: '',
     hasAccessKey: Boolean(config.accessKey),
     hasLlmApiKey: Boolean(config.llmApiKey),
+    hasSfxAccessKey: Boolean(config.sfxAccessKey),
     llmSecretHint: config.llmApiKey ? `${config.llmApiKey.slice(0, 3)}••••${config.llmApiKey.slice(-3)}` : '',
     secretHint: config.accessKey ? `${config.accessKey.slice(0, 3)}••••${config.accessKey.slice(-3)}` : '',
     configPath: CONFIG_PATH,

@@ -1,4 +1,4 @@
-import { Play, RefreshCcw, Trash2 } from 'lucide-react';
+import { Play, RefreshCcw, Sparkles, Trash2 } from 'lucide-react';
 import { Waveform } from './Waveform';
 
 const typeColors = {
@@ -24,7 +24,7 @@ function eventTimeLabel(line) {
   return Number.isFinite(startMs) && line.mix.startMs !== '' ? `入点 ${(Math.max(0, startMs) / 1000).toFixed(1)}s` : '跟随场景';
 }
 
-export function ScriptLine({ line, character, selected, onSelect, onTextChange, onRegenerate, onPlay, onDelete }) {
+export function ScriptLine({ line, character, selected, onSelect, onTextChange, onRegenerate, onPlay, onAcquire, onDelete }) {
   if (line.type !== 'dialogue') {
     return (
       <div className={`sound-event sound-${line.type}`}>
@@ -34,6 +34,7 @@ export function ScriptLine({ line, character, selected, onSelect, onTextChange, 
           <span className="event-time">{eventTimeLabel(line)}</span>
           <Play size={13} className="event-play" fill="currentColor" />
         </button>
+        <button className="event-acquire" type="button" aria-label={`获取${line.label}素材`} title={line.assetUrl ? '更换素材' : '获取素材'} onClick={onAcquire}><Sparkles size={13} /></button>
         <button className="event-delete" type="button" aria-label={`删除${line.label}`} title="删除此事件" onClick={onDelete}><Trash2 size={13} /></button>
       </div>
     );

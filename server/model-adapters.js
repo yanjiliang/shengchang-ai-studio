@@ -171,6 +171,75 @@ function demoAudio(request, config) {
   return { buffer: writeWavHeader(pcm, sampleRate), mime: 'audio/wav' };
 }
 
+// --- Sound-effect / music-bed generation (SoundPicker 生成 tab) -----------
+// Same provider pattern as speech: demo synth (offline placeholder), or a
+// custom HTTP template against any text-to-SFX service.
+
+export function validateSoundConfig(config) {
+  const provider = config.sfxProvider || 'demo';
+  if (provider === 'demo') return;
+  if (provider === 'custom') {
+    if (!config.sfxEndpoint) throw new Error('请填写音效生成接口地址');
+    if (!config.sfxAccessKey) throw new Error('请填写音效生成访问凭证');
+    if (!String(config.sfxCustomBodyTemplate || '').includes('{{prompt}}')) throw new Error('音效请求体模板需包含 {{prompt}}');
+    return;
+  }
+  throw new Error(`不支持的音效生成适配器: ${provider}`);
+}
+
+function demoSound(request, config) {
+  const sampleRate = Number(config.sampleRate) || 24000;
+  const defaultSeconds = request.type === 'music' || request.type === 'ambient' ? 12 : 3;
+  const seconds = Math.max(1, Math.min(30, Number(request.durationMs) ? Number(request.durationMs) / 1000 : defaultSeconds));
+  const samples = Math.floor(seconds * sampleRate);
+  const pcm = Buffer.alloc(samples * 2);
+  const seed = [...String(request.prompt || '')].reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  let filtered = 0;
+  for (let index = 0; index < samples; index += 1) {
+    const t = index / sampleRate;
+    let sample = 0;
+    if (request.type === 'music') {
+      const base = 150 + (seed % 6) * 26;
+      const chord = Math.sin(2 * Math.PI * base * t) + Math.sin(2 * Math.PI * base * 1.5 * t) + Math.sin(2 * Math.PI * base * 2 * t);
+      sample = 0.18 * (0.6 + 0.4 * Math.sin(2 * Math.PI * 0.15 * t + seed)) * (chord / 3);
+    } else if (request.type === 'ambient') {
+      const white = Math.random() * 2 - 1;
+      filtered += 0.04 * (white - filtered);
+      sample = filtered * 0.95 * (0.7 + 0.3 * Math.sin(2 * Math.PI * 0.2 * t + seed));
+    } else {
+      const decay = Math.exp(-2.2 * t);
+      const white = Math.random() * 2 - 1;
+      filtered += 0.2 * (white - filtered);
+      sample = filtered * decay * 1.4;
+    }
+    const envelope = Math.min(1, t / 0.05, (seconds - t) / 0.4);
+    pcm.writeInt16LE(Math.round(Math.max(-1, Math.min(1, sample * envelope)) * 32767), index * 2);
+  }
+  return { buffer: writeWavHeader(pcm, sampleRate), mime: 'audio/wav' };
+}
+
+async function synthesizeSoundCustom(config, request) {
+  const timeout = requestTimeout(120_000);
+  try {
+    const headers = parseJsonObject(config.sfxCustomHeaders, '音效生成请求头');
+    if (config.sfxAccessKey && !Object.values(headers).some((value) => String(value).includes(config.sfxAccessKey))) headers.Authorization ||= `Bearer ${config.sfxAccessKey}`;
+    const body = interpolateTemplate(config.sfxCustomBodyTemplate, {
+      prompt: request.prompt, durationSec: (Number(request.durationMs) || 0) / 1000 || '', type: request.type || 'sfx', model: config.sfxModel,
+    });
+    const response = await fetch(config.sfxEndpoint, { method: 'POST', signal: timeout.signal, headers: { 'Content-Type': 'application/json', ...headers }, body });
+    return parseAudioResponse(response, { ...config, responseMode: 'auto', audioFormat: 'mp3' });
+  } finally { timeout.clear(); }
+}
+
+export async function synthesizeSound(config, request) {
+  validateSoundConfig(config);
+  if (!String(request.prompt || '').trim()) throw new Error('音效生成描述不能为空');
+  const provider = config.sfxProvider || 'demo';
+  if (provider === 'demo') return demoSound(request, config);
+  if (provider === 'custom') return synthesizeSoundCustom(config, request);
+  throw new Error(`不支持的音效生成适配器: ${provider}`);
+}
+
 export function validateProviderConfig(config) {
   if (config.provider === 'demo') return;
   if (!config.endpoint) throw new Error('请填写接口地址');

@@ -17,7 +17,7 @@ function intensityCurve(scene) {
   return values.filter((_, index) => index % step === 0);
 }
 
-export function SceneCanvas({ scene, durationMs, sourceText, characters, selectedLineId, onSelectLine, onUpdateLine, onUpdateScene, onRegenerate, onPlayLine, onAddLine, onDeleteLine, generationProgress, generationMessage, onCancelTask }) {
+export function SceneCanvas({ scene, durationMs, sourceText, characters, selectedLineId, onSelectLine, onUpdateLine, onUpdateScene, onRegenerate, onPlayLine, onAddLine, onDeleteLine, onAcquireSound, generationProgress, generationMessage, onCancelTask }) {
   const [showSource, setShowSource] = useState(false);
   useEffect(() => {
     if (!showSource) return undefined;
@@ -68,6 +68,7 @@ export function SceneCanvas({ scene, durationMs, sourceText, characters, selecte
             onTextChange={(text) => onUpdateLine(line.id, { text })}
             onRegenerate={() => onRegenerate(line)}
             onPlay={() => onPlayLine(line)}
+            onAcquire={() => onAcquireSound(line)}
             onDelete={() => onDeleteLine(line.id)}
           />
         ))}

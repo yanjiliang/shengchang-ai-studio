@@ -1,4 +1,4 @@
-import { AlertCircle, BrainCircuit, Check, KeyRound, LoaderCircle, Save, ShieldCheck } from 'lucide-react';
+import { AlertCircle, AudioWaveform, BrainCircuit, Check, KeyRound, LoaderCircle, Save, ShieldCheck } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 const providerPresets = {
@@ -58,6 +58,17 @@ export function SettingsView({ config, onSave, onTestLlm, onToast, onReload }) {
             <label className="setting-field"><span>模型名称</span><input value={draft.llmModel || ''} placeholder="例如 doubao-seed-1-6-250615" onChange={(event) => change('llmModel', event.target.value)} /></label>
             {llmResult ? <div className={`test-result is-${llmResult.type}`}>{llmResult.type === 'success' ? <Check size={14} /> : <AlertCircle size={14} />}<span>{llmResult.text}</span></div> : null}
             <div className="settings-actions"><button className="button secondary-button" type="button" disabled={testingLlm} onClick={testLlm}>{testingLlm ? <LoaderCircle size={14} className="spin" /> : <BrainCircuit size={14} />}{testingLlm ? '正在测试' : '测试文本理解'}</button></div>
+          </section>
+          <section className="settings-panel sfx-settings-panel">
+            <div className="settings-panel-head"><AudioWaveform size={17} /><div><strong>音效与音乐生成</strong><p>在场景里按描述生成音效、环境声与音乐垫，与语音模型相互独立。</p></div></div>
+            <label className="setting-field"><span>生成引擎</span><select value={draft.sfxProvider || 'demo'} onChange={(event) => change('sfxProvider', event.target.value)}><option value="demo">演示引擎 · 离线占位音</option><option value="custom">自定义 HTTP 接口（text-to-SFX 服务）</option></select></label>
+            {draft.sfxProvider === 'custom' ? <>
+              <label className="setting-field"><span>接口地址</span><input value={draft.sfxEndpoint || ''} placeholder="https://.../sound-effects" onChange={(event) => change('sfxEndpoint', event.target.value)} /></label>
+              <label className="setting-field"><span>访问凭证 {draft.hasSfxAccessKey ? <em>已保存</em> : null}</span><input type="password" value={draft.sfxAccessKey || ''} placeholder={draft.hasSfxAccessKey ? '留空则继续使用已保存凭证' : 'API Key / Token'} autoComplete="new-password" onChange={(event) => change('sfxAccessKey', event.target.value)} /></label>
+              <label className="setting-field"><span>模型标识</span><input value={draft.sfxModel || ''} placeholder="服务端要求的模型名（可选）" onChange={(event) => change('sfxModel', event.target.value)} /></label>
+              <label className="setting-field"><span>请求头 JSON</span><textarea rows="2" value={draft.sfxCustomHeaders || '{}'} onChange={(event) => change('sfxCustomHeaders', event.target.value)} /></label>
+              <label className="setting-field"><span>请求体模板</span><textarea rows="4" value={draft.sfxCustomBodyTemplate || ''} onChange={(event) => change('sfxCustomBodyTemplate', event.target.value)} /><small>变量：{'{{prompt}}'}、{'{{durationSec}}'}、{'{{type}}'}、{'{{model}}'}；响应需为音频或含 base64 音频的 JSON。</small></label>
+            </> : <p className="picker-note">演示引擎产出离线占位音（链路真实，声音为合成示意），用于零密钥体验生成流程。</p>}
           </section>
           <div className="local-security-note"><ShieldCheck size={17} /><div><strong>本地安全边界</strong><p>访问凭证写入 <code>{draft.configPath || '~/.shengchang/config.json'}</code>，文件权限仅限当前用户；浏览器不会读取明文凭证。</p></div></div>
         </div>

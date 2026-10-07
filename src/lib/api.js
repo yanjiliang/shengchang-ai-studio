@@ -29,6 +29,8 @@ export const api = {
   oneClick: (projectId) => apiRequest(`/api/projects/${projectId}/one-click`, { method: 'POST' }),
   oneClickEstimate: (projectId) => apiRequest(`/api/projects/${projectId}/one-click-estimate`, { method: 'POST' }),
   designVoice: (input) => apiRequest('/api/voices/design', { method: 'POST', body: JSON.stringify(input) }),
+  builtinAssets: () => apiRequest('/api/assets/builtin'),
+  recommendSound: (projectId, lineId) => apiRequest(`/api/assets/recommend?projectId=${projectId}&lineId=${lineId}`),
   deleteAsset: (url) => apiRequest(`/api/assets?url=${encodeURIComponent(url)}`, { method: 'DELETE' }),
   uploadAsset: async (file) => {
     const response = await fetch('/api/assets/upload', { method: 'POST', headers: { 'Content-Type': file.type || 'audio/wav', 'X-File-Name': encodeURIComponent(file.name) }, body: await file.arrayBuffer() });

@@ -175,6 +175,35 @@ check('seed script skips when sample exists', seed.includes('跳过'), seed.trim
 const listing2 = await call('/api/projects');
 check('seed script did not duplicate the sample', listing2.payload.projects.filter((item) => item.name.includes('三打白骨精')).length === 1);
 
+// 14. builtin CC0 library: registered, served, guarded against deletion
+const builtin = await call('/api/assets/builtin');
+check('builtin library registered', builtin.payload.assets?.length >= 20, `${builtin.payload.assets?.length ?? 0} 条`);
+const builtinClip = builtin.payload.assets?.[0];
+const builtinMedia = await fetch(`${BASE}${builtinClip?.url || ''}`);
+check('builtin clip served via /media', builtinMedia.ok, `${builtinMedia.status} ${builtinClip?.url}`);
+const builtinDelete = await call(`/api/assets?url=${encodeURIComponent(builtinClip.url)}`, { method: 'DELETE' });
+check('builtin clips cannot be deleted', builtinDelete.status === 400, builtinDelete.payload?.error || '');
+
+// 15. recommendations follow the event's type + text
+const sampleProject = listing2.payload.projects.find((item) => item.name.includes('三打白骨精'));
+const sampleDetail = (await call(`/api/projects/${sampleProject.id}`)).payload;
+const soundEvent = sampleDetail.state.scenes.flatMap((scene) => scene.lines || []).find((line) => line.type !== 'dialogue');
+if (soundEvent) {
+  const rec = await call(`/api/assets/recommend?projectId=${sampleProject.id}&lineId=${soundEvent.id}`);
+  const typesOk = (rec.payload.recommendations || []).every((item) => item.type === soundEvent.type);
+  check('recommendations respect the event type', rec.status === 200 && typesOk, `${rec.payload.recommendations?.length ?? 0} 条推荐`);
+} else {
+  check('recommendations respect the event type', true, '示例无声音事件，跳过');
+}
+
+// 16. sound generation task (demo engine) completes and lands in the cache
+const soundTaskCreated = await call('/api/generate', { method: 'POST', body: JSON.stringify({ kind: 'sound-generate', projectId: sampleProject.id, sound: { prompt: '雨夜码头，远处汽笛', type: 'ambient', durationMs: 3000 } }) });
+check('sound generation task accepted', soundTaskCreated.status === 202, JSON.stringify(soundTaskCreated.payload));
+const soundTask = await waitForTask(soundTaskCreated.payload.id);
+check('sound generation completes (demo engine)', soundTask.status === 'completed' && Boolean(soundTask.result?.url), soundTask.error || soundTask.message);
+const soundAudio = await fetch(`${BASE}${soundTask.result?.url || ''}`);
+check('generated sound audio served', soundAudio.ok, `${soundAudio.status}`);
+
 console.log(process.exitCode ? 'E2E FAILED' : 'E2E GREEN');
 // The spawned server would keep the event loop alive forever; tear down
 // explicitly instead of relying on the exit handler.

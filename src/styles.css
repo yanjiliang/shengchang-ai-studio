@@ -780,3 +780,4 @@ button.issue-copy { padding: 0; border: 0; background: transparent; font: inheri
 .asset-action.is-placeholder { border: none; }
 .asset-tags i.is-generated { color: #8fb4ff; }
 .inspector .picker-note { margin: 8px 0; }
+.event-binding-actions { display: flex; gap: 8px; margin: 10px 0 4px; }

@@ -21,7 +21,7 @@ function RangeField({ label, value, suffix, min = 0, max = 100, onChange }) {
   );
 }
 
-export function Inspector({ line, characters = [], voiceMap = {}, provider, onUpdate, onOpenVoices, onAcquireSound, onLabGenerate, lab, labGenerating }) {
+export function Inspector({ line, characters = [], voiceMap = {}, provider, onUpdate, onOpenVoices, onAcquireSound, onUnbindSound, onLabGenerate, lab, labGenerating }) {
   const [tab, setTab] = useState('performance');
   const [labOpen, setLabOpen] = useState(false);
   const [variants, setVariants] = useState(() => labPresets(line));
@@ -36,7 +36,7 @@ export function Inspector({ line, characters = [], voiceMap = {}, provider, onUp
     return (
       <aside className="inspector">
         <div className="inspector-title"><strong>声音事件</strong></div>
-        <div className="event-inspector-empty"><CircleDot size={28} /><h3>{line?.label || '选择一个事件'}</h3>{line ? <><div className="similarity-row"><span>当前绑定</span><b>{line.assetName || '未绑定素材'}</b></div><button className="button primary-button full-button" type="button" onClick={() => onAcquireSound(line)}><Sparkles size={14} />{line.assetUrl ? '更换素材' : '获取素材'}</button><p className="picker-note">按事件描述推荐内置素材、AI 生成，或从本地导入。</p><textarea className="intent-editor" rows="6" value={line.text || ''} aria-label="事件描述" onChange={(event) => onUpdate({ text: event.target.value })} /></> : <p>选择对白或声音事件，在这里调整生成参数。</p>}</div>
+        <div className="event-inspector-empty"><CircleDot size={28} /><h3>{line?.label || '选择一个事件'}</h3>{line ? <><div className="similarity-row"><span>当前绑定</span><b>{line.assetName || '未绑定素材'}</b></div><div className="event-binding-actions"><button className="button primary-button" type="button" onClick={() => onAcquireSound(line)}><Sparkles size={14} />{line.assetUrl ? '更换素材' : '获取素材'}</button>{line.assetUrl ? <button className="button secondary-button" type="button" onClick={() => onUnbindSound(line)}>解除绑定</button> : null}</div><p className="picker-note">按事件描述推荐内置素材、AI 生成，或从本地导入。解除绑定不会删除素材库中的音频。</p><textarea className="intent-editor" rows="6" value={line.text || ''} aria-label="事件描述" onChange={(event) => onUpdate({ text: event.target.value })} /></> : <p>选择对白或声音事件，在这里调整生成参数。</p>}</div>
       </aside>
     );
   }

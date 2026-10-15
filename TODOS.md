@@ -128,8 +128,16 @@ carry the failure count. The old "已完成的 N 句已进入缓存" message is 
 - Owner web-UI settings still pending: description, topics, Discussions,
   social preview image (checklist in the launch design doc step 2).
 
+## Done 2026-10-15 (repo went public, launch checklist closed via gh)
+
+- Visibility flipped to PUBLIC (`gh repo edit --visibility public`).
+- Description, 14 topics, Discussions enabled via gh (see `gh repo view`).
+- README now carries CI + license badges (public-repo face).
+
 ## Still open
 
+- Social preview image: gh/GitHub API cannot upload it — one manual web
+  upload (Settings → Social preview), use `public/brand/launch-cover.jpg`.
 - Real-voice demo episode MP3: must be rendered by the owner with a 豆包 key
   (一键成片 on the sample project), then referenced from README's demo section.
 - Silent-week check (from the launch design doc): verify whether GitHub renders
@@ -137,4 +145,4 @@ carry the failure count. The old "已完成的 N 句已进入缓存" message is 
   repo. Pre-check 2026-08-19: html-pipeline's default sanitizer allowlist has
   no `audio`/`video` elements, so inline `<audio>` will likely be stripped;
   expected landing = GitHub-uploaded mp4 screen recording (renders a player in
-  markdown) + a prominent raw-MP3 link. Confirm on the live repo.
+  markdown) + a prominent raw-MP3 link. Confirm on the live (now public) repo.

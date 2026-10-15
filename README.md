@@ -1,5 +1,7 @@
 # 声场 ShengChang
 
+[![CI](https://github.com/yanjiliang/shengchang-ai-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/yanjiliang/shengchang-ai-studio/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-informational.svg)](LICENSE)
+
 ![声场：让故事，有声有场。AI 多人广播剧创作工作台](public/brand/launch-cover.jpg)
 
 **Personal AI radio-drama workbench — paste a novel, get a directed, mixed episode.**

@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Personal AI radio-drama workbench — paste a novel, get a directed, mixed episode. 个人 AI 多人广播剧制作工作台：小说进，成片出。",
   "license": "MIT",
+  "homepage": "https://yanjiliang.github.io/shengchang-ai-studio/",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yanjiliang/shengchang-ai-studio.git"

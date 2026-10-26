@@ -75,6 +75,7 @@ function projectRow(row) {
   state.assets ||= [];
   state.voiceMap ||= {};
   state.pronunciationDictionary ||= [];
+  state.voiceReferences ||= {};
   return { id: row.id, name: row.name, genre: row.genre, sourceFilename: row.source_filename, sourceText: row.source_text, state, createdAt: row.created_at, updatedAt: row.updated_at };
 }
 
@@ -135,6 +136,8 @@ export function updateProject(id, patch) {
   const currentState = parseJson(current.state_json, {});
   let state = patch.state ?? currentState;
   if (patch.state && !patch.trustedAudio) state = mergeServerOwnedAudio(patch.state, currentState);
+  // 角色参考音（voiceReferences）只由服务端锁定接口写入；浏览器保存的旧快照不能覆盖。
+  if (patch.state && !patch.trustedAudio) state = { ...state, voiceReferences: currentState.voiceReferences || {} };
   // 角色性别/年龄：校验枚举；浏览器保存时来源由服务端推断（见 character-meta.js）。
   if (patch.state && Array.isArray(state.characters)) state = { ...state, characters: sanitizeCharacters(state.characters, currentState.characters, { trusted: Boolean(patch.trustedAudio) }) };
   database.prepare('UPDATE projects SET name=?,genre=?,source_filename=?,source_text=?,state_json=?,updated_at=? WHERE id=?').run(
@@ -240,7 +243,11 @@ function ttsGeneratorKey(config) {
 }
 
 export function audioContentHash(config, request) {
-  return createHash('sha256').update(JSON.stringify({ ...ttsGeneratorKey(config), provider: config.provider, endpoint: config.provider === 'breeze' ? config.breezeEndpoint : config.endpoint, model: config.model, resourceId: config.resourceId, voiceId: request.voiceId, text: request.text, subtext: request.subtext, emotion: request.emotion, emotionScale: request.emotionScale, speed: request.speed, distance: request.distance, format: config.audioFormat, sampleRate: config.sampleRate })).digest('hex');
+  return createHash('sha256').update(JSON.stringify({ ...ttsGeneratorKey(config), provider: config.provider, endpoint: config.provider === 'breeze' ? config.breezeEndpoint : config.endpoint, model: config.model, resourceId: config.resourceId, voiceId: request.voiceId, text: request.text, subtext: request.subtext, emotion: request.emotion, emotionScale: request.emotionScale, speed: request.speed, distance: request.distance, format: config.audioFormat, sampleRate: config.sampleRate,
+    // 只在出现时才加入：既有台词（无参考音、无显式 seed）的缓存键保持不变。
+    // referenceHash = 角色参考音指纹（Breeze 参考音角色）；seed = 显式指定的生成种子。
+    ...(request.referenceHash ? { referenceHash: request.referenceHash } : {}),
+    ...(Number.isSafeInteger(request.seed) ? { seed: request.seed } : {}) })).digest('hex');
 }
 
 // Generated sound effects / beds: same content-addressed cache, different key

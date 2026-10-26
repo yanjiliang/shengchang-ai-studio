@@ -9,6 +9,8 @@ import { analyzeNovel } from './story-analyzer.js';
 import { runOneClickPipeline } from './one-click.js';
 import { buildAttribution } from './attribution.js';
 import { ensureBuiltinAssets } from './builtin-assets.js';
+import { ensureReferenceRegistered, resolveReferenceRequest } from './voice-references.js';
+import { createVoiceDesignJob, runVoiceDesignTask } from './voice-design.js';
 
 const MAX_CONCURRENCY = 2;
 let activeWorkers = 0;
@@ -107,7 +109,7 @@ export function applyResultsToProject(projectId, sceneId, results) {
   updateProject(projectId, { state, trustedAudio: true });
 }
 
-function applyPronunciation(text, dictionary = []) {
+export function applyPronunciation(text, dictionary = []) {
   return dictionary.reduce((value, entry) => {
     const term = String(entry.term || '').trim();
     const replacement = String(entry.replacement || '').trim();
@@ -123,13 +125,15 @@ function applyPronunciation(text, dictionary = []) {
 export async function runGenerationRequests(config, requests, { projectId, sceneId, onProgress, shouldCancel, synthesize: synthesizeLine = synthesize } = {}) {
   const results = [];
   const failures = [];
-  const projectDictionary = getProject(projectId)?.state?.pronunciationDictionary || [];
+  const projectState = getProject(projectId)?.state || {};
+  const projectDictionary = projectState.pronunciationDictionary || [];
   for (let index = 0; index < requests.length; index += 1) {
     if (shouldCancel?.()) return { status: 'cancelled', results, failures };
     const request = requests[index];
     onProgress?.({ index, total: requests.length, message: `正在处理 ${index + 1} / ${requests.length} 句` });
     try {
-      const resolved = { ...request, text: applyPronunciation(request.text, projectDictionary) };
+      // Breeze 下有参考音的角色：voiceId 换成注册的 Breeze voice，参考指纹进缓存键。
+      const resolved = resolveReferenceRequest(config, projectState, { ...request, text: applyPronunciation(request.text, projectDictionary) });
       const contentHash = audioContentHash(config, resolved);
       const cached = findCachedAudio(contentHash);
       if (await validCache(cached)) {
@@ -144,11 +148,12 @@ export async function runGenerationRequests(config, requests, { projectId, scene
           cacheAudio({ contentHash, url: recovered.url, mime: recovered.mime, provider: config.provider || '', model: config.model || '', voiceId: resolved.voiceId || '' });
           results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: recovered.url, mime: recovered.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', cached: true, createdAt: Date.now() });
         } else {
+          if (resolved.referenceHash) await ensureReferenceRegistered(config, projectState.voiceReferences[request.speakerId]);
           const audio = await synthesizeLine(config, resolved);
           const extension = extensionForMime(audio.mime, config.audioFormat);
           const saved = await saveMedia(contentHash, extension, audio.buffer);
           cacheAudio({ contentHash, url: saved.url, mime: audio.mime, provider: config.provider || '', model: config.model || '', voiceId: resolved.voiceId || '' });
-          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: saved.url, mime: audio.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', cached: false, usage: audio.usage || null, usageExpected: config.provider === 'volcengine-api-key', createdAt: Date.now() });
+          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: saved.url, mime: audio.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', cached: false, ...(Number.isSafeInteger(audio.seed) ? { seed: audio.seed } : {}), usage: audio.usage || null, usageExpected: config.provider === 'volcengine-api-key', createdAt: Date.now() });
         }
       }
     } catch (error) {
@@ -227,6 +232,7 @@ async function runGenerationTask(task, config) {
 
 async function runTask(task) {
   const config = await readConfig();
+  if (task.kind === 'voice-design') return runVoiceDesignTask(task, config);
   if (task.kind === 'one-click') {
     // The pipeline owns its progress/message/status writes; this wrapper only
     // maps its outcomes onto task status.
@@ -376,10 +382,11 @@ export function enqueueOneClick({ projectId }) {
 // Cache-hit prediction for the estimate endpoint (§8 follow-up): runs the
 // exact hash path generation would take, minus the synthesis.
 export async function estimateGeneration(config, requests, { projectId } = {}) {
-  const projectDictionary = getProject(projectId)?.state?.pronunciationDictionary || [];
+  const projectState = getProject(projectId)?.state || {};
+  const projectDictionary = projectState.pronunciationDictionary || [];
   let cacheHits = 0;
   for (const request of requests) {
-    const resolved = { ...request, text: applyPronunciation(request.text, projectDictionary) };
+    const resolved = resolveReferenceRequest(config, projectState, { ...request, text: applyPronunciation(request.text, projectDictionary) });
     if (await validCache(findCachedAudio(audioContentHash(config, resolved)))) cacheHits += 1;
   }
   return cacheHits;
@@ -390,18 +397,26 @@ export async function estimateGeneration(config, requests, { projectId } = {}) {
 //   （没有任何句子绑定音色时为 null——选角前无法判断）。
 // - unknownCharacters：尚未绑定音色的句子字数（要等选角后才知道是否命中）。
 export async function estimateBillableCharacters(config, requests, { projectId } = {}) {
-  const projectDictionary = getProject(projectId)?.state?.pronunciationDictionary || [];
+  const projectState = getProject(projectId)?.state || {};
+  const projectDictionary = projectState.pronunciationDictionary || [];
   let billable = 0;
   let unknown = 0;
   let mapped = 0;
   for (const request of requests) {
     const length = String(request.text || '').length;
-    if (!request.voiceId) { unknown += length; continue; }
+    const resolved = resolveReferenceRequest(config, projectState, { ...request, text: applyPronunciation(request.text, projectDictionary) });
+    if (!resolved.voiceId) { unknown += length; continue; }
     mapped += 1;
-    const resolved = { ...request, text: applyPronunciation(request.text, projectDictionary) };
     if (!(await validCache(findCachedAudio(audioContentHash(config, resolved))))) billable += length;
   }
   return { estimatedBillableCharacters: (mapped || requests.length === 0) ? billable : null, unknownCharacters: unknown };
+}
+
+// 音色设计试听：创建（或复用相同参数的进行中任务）并交给任务泵。
+export function enqueueVoiceDesign(config, input) {
+  const created = createVoiceDesignJob(config, input);
+  queueMicrotask(pumpQueue);
+  return created;
 }
 
 export function retryTask(taskId) {

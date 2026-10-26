@@ -22,6 +22,7 @@ import { getPersistentTask, getProject, updatePersistentTask, updateProject } fr
 import { exportProjectTimeline, inspectProjectMedia } from './media-store.js';
 import { analyzeNovel } from './story-analyzer.js';
 import { applyResultsToProject, runGenerationRequests, summarizeBilling } from './task-manager.js';
+import { effectiveVoiceMap } from './voice-references.js';
 
 // Preset roster (design OQ1: hardcoded known-good voices, simple > clever).
 // Demo accepts any voice id (pitch derives from the string). 豆包预设按
@@ -240,7 +241,7 @@ export async function runOneClickPipeline(task, config, deps = {}) {
   // Stage 2: 音色 - auto-map unmapped characters to preset voices.
   if (!skip('音色')) {
     const project = getProject(task.projectId);
-    const { assignments, notes } = planCasting(project?.state?.characters, project?.state?.voiceMap, config.provider, config.resourceId, { scenes: project?.state?.scenes });
+    const { assignments, notes } = planCasting(project?.state?.characters, effectiveVoiceMap(config, project?.state), config.provider, config.resourceId, { scenes: project?.state?.scenes });
     // 选角说明存进 payload（浅合并），导出阶段并入“需注意”；断点续跑不丢。
     updatePersistentTask(task.id, { payload: { castingNotes: notes } });
     const count = Object.keys(assignments).length;
@@ -258,7 +259,8 @@ export async function runOneClickPipeline(task, config, deps = {}) {
   if (!skip('生成')) {
     const project = getProject(task.projectId);
     const state = project.state;
-    const allRequests = buildGenerationRequests(state);
+    // Breeze 下锁了参考音的角色算作已绑定（voiceId 在生成时解析成注册的 Breeze voice）。
+    const allRequests = buildGenerationRequests({ ...state, voiceMap: effectiveVoiceMap(config, state) });
     const requests = allRequests.filter((request) => request.voiceId);
     const unmapped = allRequests.length - requests.length;
     const results = [];
@@ -292,6 +294,7 @@ export async function runOneClickPipeline(task, config, deps = {}) {
       const outcome = await runGeneration(config, sceneRequests, {
         projectId: task.projectId,
         sceneId,
+        jobId: task.id,
         onProgress: ({ index, total, message }) => progress(35 + Math.round(((processed + index) / Math.max(1, requests.length)) * 45), `生成 · ${scene?.title || '场景'} · ${message}`),
         shouldCancel,
       });
@@ -332,7 +335,7 @@ export async function runOneClickPipeline(task, config, deps = {}) {
     });
     const billing = getPersistentTask(task.id)?.payload || {};
     const usageNotes = billing.missingUsageCount ? [`${billing.missingUsageCount} 句新生成的语音没有返回计费字数：计费字数 ${billing.billedCharacters ?? 0} 只是已知部分（服务端日志里有 [doubao-tts] 调试行）`] : [];
-    const attention = [...(billing.castingNotes || []), ...usageNotes, ...buildAttentionList(getProject(task.projectId), media)];
+    const attention = [...(billing.castingNotes || []), ...usageNotes, ...buildAttentionList(getProject(task.projectId), media, config)];
     const attentionNote = attention.length ? `\n需注意：\n${attention.join('\n')}` : '';
     const cacheNote = billing.cacheHits ? `，${billing.cacheHits} 句复用缓存（未调用接口、不计费）` : '';
     done('导出');
@@ -352,9 +355,9 @@ export function flagUndirectableVoices(voiceMap, characterIds) {
     .map((item) => ({ ...item, directable: voiceDirectability(item.voiceId) }));
 }
 
-function buildAttentionList(project, mediaReport) {
+function buildAttentionList(project, mediaReport, config = {}) {
   const attention = [];
-  const state = project.state;
+  const state = { ...project.state, voiceMap: effectiveVoiceMap(config, project.state) };
   const speakers = [...new Set((state.scenes || []).flatMap((scene) => (scene.lines || []).filter((line) => line.type === 'dialogue' && line.speakerId).map((line) => line.speakerId)))];
   const unmappedVoices = speakers.filter((id) => !state.voiceMap?.[id]);
   if (unmappedVoices.length) attention.push(`${unmappedVoices.length} 个角色未绑定音色（相关台词未生成）`);

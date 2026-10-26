@@ -247,8 +247,10 @@ export function deleteAudioCache(contentHash) {
 // 拼装规则 + 稳定说话人开关决定，任一变化都必须重新合成，不能复用旧音频。
 // 其他提供方不发指令，键保持原样（它们的缓存不受影响）。
 function ttsGeneratorKey(config) {
-  // Breeze /tts 也收同一条情绪/节奏指令，措辞一改旧缓存同样要失效。
-  if (config.provider === 'breeze') return { instructionVersion: TTS_INSTRUCTION_VERSION, breezeInstructionVersion: BREEZE_INSTRUCTION_VERSION };
+  // Breeze /tts 的指令由 breezeInstruction 生成（声场为准），它的版本进键：措辞一改旧缓存
+  // 要失效。instructionVersion 固定写 2（当年的豆包版本号）只为不挪动现有 Breeze 缓存键；
+  // 以后豆包升 TTS_INSTRUCTION_VERSION（例如清理停顿措辞）不再连带让 Breeze 缓存失效。
+  if (config.provider === 'breeze') return { instructionVersion: 2, breezeInstructionVersion: BREEZE_INSTRUCTION_VERSION };
   if (config.provider !== 'volcengine-api-key' || config.resourceId !== 'seed-tts-2.0') return {};
   return { instructionVersion: TTS_INSTRUCTION_VERSION, stableSpeaker: config.ttsStableSpeaker !== false };
 }

@@ -184,6 +184,8 @@ function pacingPhrase(speed, { pauseWording = true } = {}) {
 // audioContentHash），旧指令生成的缓存自然失效，不会被当成新指令的结果复用。
 export const TTS_INSTRUCTION_VERSION = 2;
 // Breeze 专用措辞的版本（只进 Breeze 的缓存键，不影响豆包缓存）。1：慢速不写停顿。
+// 改为 breezeInstruction（声场为准）时没有加：规则与 1 逐字相同（Tavi 的 server.py 也一样），
+// 只多了 300 字上限，现有 Breeze 缓存 / stale 判断不受影响。
 export const BREEZE_INSTRUCTION_VERSION = 1;
 
 // 稳定说话人从句（0001 之前就有，0005 恢复，配置 ttsStableSpeaker 控制，默认开）：
@@ -204,6 +206,41 @@ export function voiceInstructions(request, { stableSpeaker = true, pauseWording 
   if (subtext) fragments.push(`这句话的情绪来由是：${subtext}`);
   if (fragments.length && stableSpeaker) fragments.push(STABLE_SPEAKER_CLAUSE);
   return fragments.length ? [`${fragments.join('，')}。`] : [];
+}
+
+// Breeze /tts 的指令：声场说了算（Breeze 已改为优先用请求里的 instruction，≤ 300 字；
+// 缺省 / null 才由 Breeze 自己拼；空字符串 = 不要指令，纯克隆）。规则照搬 Tavi 的
+// Breeze server.py（第 37–58 行）——两边一致，接管前后同一参数出同一条指令：
+//   - 情绪：emotionScale 缺省 0.4、夹到 [0.1, 1]；≥0.8 特别特别 / ≥0.6 特别 / ≥0.4 比较 /
+//     否则 略带一点；“用{程度}{情绪}的语气说”；
+//   - speed ≤ 0.9 “语速稍慢、从容”，≥ 1.1 “语速加快，说得紧凑一些”，否则不写；
+//   - 潜台词取前 100 字：“这句话的情绪来由是：{潜台词}”；
+//   - 用“，”连接、句号结尾；什么都没有 → ''（纯克隆）。
+// 不加豆包的“保持当前基础音色稳定”，也不写停顿（慢速句的停顿由混音层加）。
+// 措辞 / 规则一改就要加 BREEZE_INSTRUCTION_VERSION（进 Breeze 缓存键）。
+// 豆包的 voiceInstructions / TTS_INSTRUCTION_VERSION 与此无关，保持不动。
+export const BREEZE_INSTRUCTION_MAX_CHARS = 300;
+export function breezeInstruction(request = {}) {
+  const parts = [];
+  if (request.emotion) {
+    const scale = Math.min(1, Math.max(0.1, Number(request.emotionScale) || 0.4));
+    const degree = EMOTION_DEGREE.find((item) => scale >= item.min).word;
+    parts.push(`用${degree}${request.emotion}的语气说`);
+  }
+  const speed = Number(request.speed) || 1;
+  if (speed <= 0.9) parts.push('语速稍慢、从容');
+  else if (speed >= 1.1) parts.push('语速加快，说得紧凑一些');
+  const subtext = String(request.subtext || '').trim().slice(0, 100);
+  if (subtext) parts.push(`这句话的情绪来由是：${subtext}`);
+  if (!parts.length) return '';
+  return Array.from(`${parts.join('，')}。`).slice(0, BREEZE_INSTRUCTION_MAX_CHARS).join('');
+}
+
+// Breeze 在响应头 X-Instruction-B64 里回显它实际用的指令（base64 UTF-8）。没有这个头
+// （旧版 Breeze）返回 null。
+export function parseInstructionHeader(value) {
+  if (value === null || value === undefined) return null;
+  try { return Buffer.from(String(value), 'base64').toString('utf8'); } catch { return null; }
 }
 
 async function synthesizeVolcengineApiKey(config, request) {
@@ -251,7 +288,9 @@ async function synthesizeCustom(config, request) {
       emotionScale: request.emotionScale || 1, speed: request.speed || 1, model: config.model, resourceId: config.resourceId,
       subtext: request.subtext || '', distance: request.distance || '',
       // 同一套情绪/节奏指令（与豆包 seed-tts-2.0 同源，含 TTS_INSTRUCTION_VERSION）。
-      instruction: voiceInstructions(request, config.breeze ? { stableSpeaker: false, pauseWording: false } : { stableSpeaker: config.ttsStableSpeaker !== false })[0] || '',
+      // Breeze：声场的指令为准（breezeInstruction，可能是 '' = 纯克隆）。其他 custom 服务
+      // 沿用豆包同源的指令（含 TTS_INSTRUCTION_VERSION）。
+      instruction: config.breeze ? breezeInstruction(request) : (voiceInstructions(request, { stableSpeaker: config.ttsStableSpeaker !== false })[0] || ''),
     });
     // Breeze 预设：显式种子（单句换种子重生成）才进请求体；没有就让服务用默认种子。
     if (config.breeze && Number.isSafeInteger(request.seed)) body = JSON.stringify({ ...JSON.parse(body), seed: request.seed });
@@ -259,7 +298,13 @@ async function synthesizeCustom(config, request) {
     if (config.breeze && !response.ok) throw await upstreamError(response, '/tts');
     const seed = parseSeedHeader(response.headers.get('x-seed'));
     const audio = await parseAudioResponse(response, config);
-    return seed === null ? audio : { ...audio, seed };
+    const result = seed === null ? audio : { ...audio, seed };
+    if (!config.breeze) return result;
+    // 核对 Breeze 实际用的指令；不一致只记日志（说明 Breeze 那边没按声场的来），不报错。
+    const sent = JSON.parse(body).instruction ?? null;
+    const used = parseInstructionHeader(response.headers.get('x-instruction-b64'));
+    if (used !== null && sent !== null && used !== sent) console.warn(`[breeze] /tts 实际指令与声场发送的不一致：sent=${JSON.stringify(sent)} used=${JSON.stringify(used)}`);
+    return { ...result, instructionSent: sent, instructionUsed: used };
   } finally { timeout.clear(); }
 }
 

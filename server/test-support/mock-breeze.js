@@ -66,7 +66,10 @@ export async function startMockBreeze({ port = 0, delayMs = 0, clipSeconds = 1.2
         if (state.delayMs) await new Promise((resume) => setTimeout(resume, state.delayMs));
         state.inFlight -= 1;
         const seed = Number.isSafeInteger(body.seed) ? body.seed : 42;
-        response.writeHead(200, { 'Content-Type': 'audio/wav', 'X-Seed': String(seed) });
+        // 真 Breeze：请求里有 instruction（字符串，含 ''）就用它，缺省 / null 自己拼；
+        // X-Instruction-B64 回显实际用的。instructionOverride 用来模拟“没按声场的来”。
+        const usedInstruction = state.instructionOverride ?? (typeof body.instruction === 'string' ? body.instruction : '[breeze 自拟]');
+        response.writeHead(200, { 'Content-Type': 'audio/wav', 'X-Seed': String(seed), ...(state.echoInstruction === false ? {} : { 'X-Instruction-B64': Buffer.from(usedInstruction, 'utf8').toString('base64') }) });
         return response.end(toneWav(state.clipSeconds, { frequency: 180 + (seed % 200) }));
       }
       response.writeHead(404, { 'Content-Type': 'text/plain' }); response.end('not found');

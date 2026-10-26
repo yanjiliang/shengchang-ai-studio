@@ -2,6 +2,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { validateProviderConfig } from './model-adapters.js';
+import { llmRequiresApiKey } from './story-analyzer.js';
 import { DEFAULT_ENGINE_CONCURRENCY, normalizeEngineConcurrency } from './breeze-lane.js';
 import { BREEZE_DEFAULT_ENDPOINT, BREEZE_DEFAULT_TIMEOUT_MS, normalizeBreezeEndpoint, normalizeBreezeTimeout } from './breeze.js';
 
@@ -79,6 +80,8 @@ export function sanitizeConfig(input = {}) {
     llmEndpoint: String(config.llmEndpoint || DEFAULT_CONFIG.llmEndpoint),
     llmApiKey: String(config.llmApiKey || ''),
     llmModel: String(config.llmModel || ''),
+    // 本地大模型拆一段 24k 字可能很慢：10 秒–30 分钟，默认 180 秒。
+    llmTimeoutMs: Number.isInteger(Number(config.llmTimeoutMs)) && Number(config.llmTimeoutMs) >= 10_000 && Number(config.llmTimeoutMs) <= 1_800_000 ? Number(config.llmTimeoutMs) : 180_000,
     llmSystemPrompt: String(config.llmSystemPrompt || DEFAULT_CONFIG.llmSystemPrompt),
     sfxProvider: ['demo', 'custom'].includes(config.sfxProvider) ? config.sfxProvider : 'demo',
     sfxEndpoint: String(config.sfxEndpoint || ''),
@@ -140,6 +143,8 @@ export function publicConfig(config) {
     sfxAccessKey: '',
     hasAccessKey: Boolean(config.accessKey),
     hasLlmApiKey: Boolean(config.llmApiKey),
+    // 本地 OpenAI 兼容服务不需要 Key；方舟默认地址需要（前端据此决定是否提示必填）。
+    llmApiKeyRequired: llmRequiresApiKey(config.llmEndpoint),
     hasSfxAccessKey: Boolean(config.sfxAccessKey),
     voiceReady,
     llmSecretHint: config.llmApiKey ? `${config.llmApiKey.slice(0, 3)}••••${config.llmApiKey.slice(-3)}` : '',

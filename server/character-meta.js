@@ -46,6 +46,8 @@ export function mergeAnalyzedCharacters(previous, analyzed) {
   return (analyzed || []).map((character) => {
     const old = byId.get(character.id) || byName.get(character.name);
     const next = { ...character };
+    // 用户在角色页改过的音色描述不被重新拆解覆盖。
+    if (old?.voiceDescription) next.voiceDescription = old.voiceDescription;
     for (const [field, sourceField, normalize] of FIELDS) {
       delete next[sourceField];
       const fresh = normalize(character[field]);

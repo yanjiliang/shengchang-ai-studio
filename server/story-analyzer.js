@@ -3,12 +3,13 @@ import { normalizeAge, normalizeGender } from './character-meta.js';
 
 const SCHEMA_INSTRUCTION = `
 将输入小说改编成可制作的中文多人广播剧场景。只返回 JSON，不要 Markdown。
-格式：{"project":{"genre":"题材"},"characters":[{"id":"稳定英文或拼音id","name":"姓名","role":"角色定位","gender":"男|女|未知","age":"儿童|少年|青年|中年|老年|未知","description":"声音与性格描述"}],"scenes":[{"title":"场景标题","location":"时间 / 内外 / 地点","mood":"场景氛围","synopsis":"剧情作用","lines":[{"type":"dialogue|ambient|sfx|music","speaker":"说话者，仅dialogue","speakerId":"角色id，仅dialogue","text":"台词或声音描述","subtext":"潜台词","emotion":"情绪","intensity":0到100,"pace":70到120,"distance":"声音距离"}]}]}。
+格式：{"project":{"genre":"题材"},"characters":[{"id":"稳定英文或拼音id","name":"姓名","role":"角色定位","gender":"男|女|未知","age":"儿童|少年|青年|中年|老年|未知","description":"声音与性格描述","voiceDescription":"可选：一句给语音合成做音色设计的声音描述（年龄感、性别、音高、音色质感、语速习惯），不写剧情"}],"scenes":[{"title":"场景标题","location":"时间 / 内外 / 地点","mood":"场景氛围","synopsis":"剧情作用","lines":[{"type":"dialogue|ambient|sfx|music","speaker":"说话者，仅dialogue","speakerId":"角色id，仅dialogue","text":"台词或声音描述","subtext":"潜台词","emotion":"情绪","intensity":0到100,"pace":70到120,"distance":"声音距离"}]}]}。
 要求：区分旁白与人物对白；用声音事件替代可听见的动作描写；每句保持适合语音合成的长度；speakerId 在全项目稳定；旁白 speakerId 固定为 narrator；不要省略推动剧情的对白。
 `;
 
 function extractJson(content) {
-  const text = String(content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  // 推理模型（DeepSeek-R1 / Qwen3 等本地部署）常把思考过程放在 <think> 里，里面可能有花括号。
+  const text = String(content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
   if (start < 0 || end <= start) throw new Error('文本模型没有返回 JSON 对象');
@@ -27,7 +28,7 @@ function normalizeLine(line, characterIds) {
 
 function normalizeResult(result, fallbackName) {
   if (!Array.isArray(result.scenes) || !result.scenes.length) throw new Error('文本模型没有返回可用场景');
-  const characters = Array.isArray(result.characters) ? result.characters.map((character) => ({ id: String(character.id || randomUUID()), name: String(character.name || '未命名角色'), role: String(character.role || '角色'), gender: normalizeGender(character.gender), age: normalizeAge(character.age), description: String(character.description || '') })) : [];
+  const characters = Array.isArray(result.characters) ? result.characters.map((character) => ({ id: String(character.id || randomUUID()), name: String(character.name || '未命名角色'), role: String(character.role || '角色'), gender: normalizeGender(character.gender), age: normalizeAge(character.age), description: String(character.description || ''), ...(String(character.voiceDescription || '').trim() ? { voiceDescription: String(character.voiceDescription).trim().slice(0, 500) } : {}) })) : [];
   if (!characters.some((item) => item.id === 'narrator')) characters.unshift({ id: 'narrator', name: '旁白', role: '叙事者', description: '保持客观、克制，避免播音腔。' });
   const characterIds = new Set(characters.map((item) => item.id));
   const scenes = result.scenes.map((scene, index) => {
@@ -81,9 +82,26 @@ function mergeAnalysis(target, result) {
   }
 }
 
+// 文本模型走 OpenAI 兼容的 chat/completions：火山方舟（默认）、DeepSeek、OpenAI，
+// 以及本地的 Ollama / LM Studio / vLLM / llama.cpp server。llmEndpoint 可以是完整的
+// .../chat/completions，也可以只填 base URL（如 http://127.0.0.1:11434/v1）。
+export function llmChatUrl(endpoint) {
+  const value = String(endpoint || '').trim().replace(/\/+$/, '');
+  if (!value) return '';
+  if (/\/chat\/completions$/i.test(value)) return value;
+  return `${value}/chat/completions`;
+}
+
+// API Key 只有托管服务需要；本地 OpenAI 兼容服务通常不校验，留空即可。方舟默认地址
+// 仍要求 Key（没填 Key 时走规则拆解，而不是打一个必然 401 的请求）。
+export function llmRequiresApiKey(endpoint) {
+  try { return /(^|\.)volces\.com$/i.test(new URL(llmChatUrl(endpoint)).hostname); } catch { return true; }
+}
+
 export function validateLlmConfig(config) {
   if (!config.llmEndpoint) throw new Error('请在设置中填写文本理解模型地址');
-  if (!config.llmApiKey) throw new Error('请在设置中填写文本理解模型 API Key');
+  try { new URL(llmChatUrl(config.llmEndpoint)); } catch { throw new Error('文本理解模型地址不是合法 URL'); }
+  if (!config.llmApiKey && llmRequiresApiKey(config.llmEndpoint)) throw new Error('请在设置中填写文本理解模型 API Key');
   if (!config.llmModel) throw new Error('请在设置中填写文本理解模型名称');
 }
 
@@ -211,18 +229,29 @@ export async function testLlm(config) {
   validateLlmConfig(config);
   const startedAt = Date.now();
   const result = await callLlm(config, '将这句话分析为一个广播剧场景：雨夜，林夏敲响了旧旅馆的门。');
-  return { latencyMs: Date.now() - startedAt, sceneCount: result.scenes.length };
+  const characters = Array.isArray(result.characters) ? result.characters : [];
+  return { latencyMs: Date.now() - startedAt, sceneCount: result.scenes.length, endpoint: llmChatUrl(config.llmEndpoint), model: config.llmModel, characterCount: characters.length, voiceDescriptionCount: characters.filter((item) => String(item?.voiceDescription || '').trim()).length };
 }
+
+export const LLM_DEFAULT_TIMEOUT_MS = 180_000;
+
+// 有的 OpenAI 兼容服务（LM Studio、部分 vLLM / 旧版 llama.cpp）不认
+// response_format: json_object，返回 400/422。此时去掉它重试一次，靠提示词约束 JSON。
+const rejectsJsonMode = (status, text) => [400, 422].includes(status) && /response_format|json_object|json_schema/i.test(text);
 
 async function callLlm(config, sourceText) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 180_000);
+  const timer = setTimeout(() => controller.abort(), Number(config.llmTimeoutMs) || LLM_DEFAULT_TIMEOUT_MS);
+  const headers = { 'Content-Type': 'application/json', ...(config.llmApiKey ? { Authorization: `Bearer ${config.llmApiKey}` } : {}) };
+  const body = { model: config.llmModel, temperature: 0.25, max_tokens: 8_192, messages: [{ role: 'system', content: `${config.llmSystemPrompt}\n${SCHEMA_INSTRUCTION}` }, { role: 'user', content: sourceText }] };
+  const post = (jsonMode) => fetch(llmChatUrl(config.llmEndpoint), { method: 'POST', signal: controller.signal, headers, body: JSON.stringify(jsonMode ? { ...body, response_format: { type: 'json_object' } } : body) });
   try {
-    const response = await fetch(config.llmEndpoint, {
-      method: 'POST', signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.llmApiKey}` },
-      body: JSON.stringify({ model: config.llmModel, temperature: 0.25, max_tokens: 8_192, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: `${config.llmSystemPrompt}\n${SCHEMA_INSTRUCTION}` }, { role: 'user', content: sourceText }] }),
-    });
+    let response = await post(true);
+    if (!response.ok) {
+      const text = await response.text();
+      if (rejectsJsonMode(response.status, text)) response = await post(false);
+      else throw new Error(`文本模型返回 ${response.status}: ${text.slice(0, 800)}`);
+    }
     if (!response.ok) throw new Error(`文本模型返回 ${response.status}: ${(await response.text()).slice(0, 800)}`);
     const payload = await response.json();
     // 8k is the floor of current chat-completions output caps (DeepSeek's is

@@ -22,7 +22,7 @@ import { getPersistentTask, getProject, updatePersistentTask, updateProject } fr
 import { exportProjectTimeline, inspectProjectMedia } from './media-store.js';
 import { analyzeNovel } from './story-analyzer.js';
 import { applyResultsToProject, runGenerationRequests, summarizeBilling } from './task-manager.js';
-import { effectiveVoiceMap } from './voice-references.js';
+import { effectiveVoiceMap, generationVoiceMap, voiceReadiness } from './voice-references.js';
 
 // Preset roster (design OQ1: hardcoded known-good voices, simple > clever).
 // Demo accepts any voice id (pitch derives from the string). 豆包预设按
@@ -75,6 +75,9 @@ const directabilityRank = (voiceId) => DIRECTABILITY_RANK[String(voiceDirectabil
 
 // 返回 { narrator, cast }，元素为 { voiceId, gender, age }（demo 的元数据为 null）。
 export function presetVoicesFor(provider, resourceId) {
+  // Breeze 没有预设音色：角色必须锁定参考音（一键成片会按声音描述自动设计），
+  // 绝不把演示/豆包音色 id 填进 voiceMap 再发给 Breeze。
+  if (provider === 'breeze') return null;
   const presets = provider === 'volcengine-api-key'
     ? PRESET_VOICES['volcengine-api-key'][resourceId] ?? null
     : PRESET_VOICES[provider] || PRESET_VOICES.demo;
@@ -199,6 +202,24 @@ export function planCasting(characters, voiceMap, provider, resourceId, { scenes
   return { assignments, notes };
 }
 
+// 一键成片开跑前仍然没有音色的角色（与 voice-readiness 的 missingRoles 同形）：
+// Breeze = 没锁参考音的角色（不自动设计，本轮直接拦下）；其他引擎 = 预设选角之后
+// 仍分配不到音色的角色。
+export function oneClickMissingVoiceRoles(config, state) {
+  const { missingRoles } = voiceReadiness(config, state);
+  if (config.provider === 'breeze' || !missingRoles.length) return missingRoles;
+  const { assignments } = planCasting(state?.characters, effectiveVoiceMap(config, state), config.provider, config.resourceId, { scenes: state?.scenes });
+  return missingRoles.filter((role) => !assignments[role.roleId]);
+}
+
+export function voiceNotReadyError(missingVoiceRoles) {
+  const error = new Error(`${missingVoiceRoles.length} 个角色没有锁定参考音，一键成片未开始：${missingVoiceRoles.map((role) => role.name).join('、')}（请在角色音色页设计或上传参考音后重试）`);
+  error.status = 409;
+  error.code = 'VOICE_NOT_READY';
+  error.details = { missingVoiceRoles };
+  return error;
+}
+
 export function mapCharactersToPresets(characters, voiceMap, provider, resourceId, options) {
   return planCasting(characters, voiceMap, provider, resourceId, options).assignments;
 }
@@ -207,6 +228,15 @@ function cancelledError() {
   const error = new Error('一键成片已取消');
   error.code = 'TASK_CANCELLED';
   return error;
+}
+
+// Breeze：只认锁定的参考音，不自动映射预设、不自动设计（自动设计等文本模型可用后再接）。
+// 缺参考音的角色记进注意事项，其台词在生成阶段跳过（不让整批失败）。
+// 正常情况下 POST /api/one-click 已经因 missingVoiceRoles 拦下；这里兜底断点续跑 / 并发修改。
+function breezeCastingNotes(config, state) {
+  const { missingRoles } = voiceReadiness(config, state);
+  if (!missingRoles.length) return [];
+  return [`${missingRoles.length} 个角色没有锁定参考音，相关台词未生成（请在角色音色页设计或上传参考音）：${missingRoles.map((role) => role.name).join('、')}`];
 }
 
 export async function runOneClickPipeline(task, config, deps = {}) {
@@ -239,6 +269,16 @@ export async function runOneClickPipeline(task, config, deps = {}) {
   }
 
   // Stage 2: 音色 - auto-map unmapped characters to preset voices.
+  // Breeze：不映射预设（见 breezeCastingNotes）。
+  if (!skip('音色') && config.provider === 'breeze') {
+    // 拆解刚产出角色（开跑前没有场景、预检拦不住）时在这里停：任务以 VOICE_NOT_READY
+    // 失败、completedStages 含 拆解；锁好参考音后重试从 音色 继续。
+    const missing = oneClickMissingVoiceRoles(config, getProject(task.projectId)?.state || {});
+    if (missing.length) throw voiceNotReadyError(missing);
+    const notes = breezeCastingNotes(config, getProject(task.projectId)?.state || {});
+    updatePersistentTask(task.id, { payload: { castingNotes: notes } });
+    done('音色');
+  }
   if (!skip('音色')) {
     const project = getProject(task.projectId);
     const { assignments, notes } = planCasting(project?.state?.characters, effectiveVoiceMap(config, project?.state), config.provider, config.resourceId, { scenes: project?.state?.scenes });
@@ -260,7 +300,7 @@ export async function runOneClickPipeline(task, config, deps = {}) {
     const project = getProject(task.projectId);
     const state = project.state;
     // Breeze 下锁了参考音的角色算作已绑定（voiceId 在生成时解析成注册的 Breeze voice）。
-    const allRequests = buildGenerationRequests({ ...state, voiceMap: effectiveVoiceMap(config, state) });
+    const allRequests = buildGenerationRequests({ ...state, voiceMap: generationVoiceMap(config, state) });
     const requests = allRequests.filter((request) => request.voiceId);
     const unmapped = allRequests.length - requests.length;
     const results = [];
@@ -357,7 +397,7 @@ export function flagUndirectableVoices(voiceMap, characterIds) {
 
 function buildAttentionList(project, mediaReport, config = {}) {
   const attention = [];
-  const state = { ...project.state, voiceMap: effectiveVoiceMap(config, project.state) };
+  const state = { ...project.state, voiceMap: generationVoiceMap(config, project.state) };
   const speakers = [...new Set((state.scenes || []).flatMap((scene) => (scene.lines || []).filter((line) => line.type === 'dialogue' && line.speakerId).map((line) => line.speakerId)))];
   const unmappedVoices = speakers.filter((id) => !state.voiceMap?.[id]);
   if (unmappedVoices.length) attention.push(`${unmappedVoices.length} 个角色未绑定音色（相关台词未生成）`);

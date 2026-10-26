@@ -199,19 +199,51 @@ export function effectiveVoiceMap(config, state) {
   return voiceMap;
 }
 
+export function applyPronunciation(text, dictionary = []) {
+  return dictionary.reduce((value, entry) => {
+    const term = String(entry.term || '').trim();
+    const replacement = String(entry.replacement || '').trim();
+    return term && replacement ? value.split(term).join(replacement) : value;
+  }, text);
+}
+
+// 按当前配置 + 参考音 + 发音词典复算这句台词“现在生成会得到的”缓存键，与
+// runGenerationRequests 完全同一路径；采用过单句试听的台词带上它的 seed（audioSeed）。
+export function expectedAudioHash(config, state, line, voiceMap = effectiveVoiceMap(config, state)) {
+  const base = buildGenerationRequest(line, voiceMap);
+  const request = { ...base, text: applyPronunciation(base.text, state?.pronunciationDictionary || []), ...(Number.isSafeInteger(line.audioSeed) ? { seed: line.audioSeed } : {}) };
+  const resolved = resolveReferenceRequest(config, state, request);
+  return resolved.voiceId ? audioContentHash(config, resolved) : null;
+}
+
+// stale：已有音频与当前参数不符。reason 'text' = 台词改了；'params' = 情绪/语速/音色/
+// 参考音/发音词典/引擎指令版本等任一进缓存键的参数变了（或角色已解绑音色）。
+// 音频是别的引擎生成的（audioEngine ≠ 当前引擎）不判 stale：切引擎不等于参数变了。
+export function lineStaleness(config, state, line, voiceMap = effectiveVoiceMap(config, state)) {
+  if (line.type !== 'dialogue' || !line.audioUrl) return { stale: false, staleReason: null };
+  if (line.audioStale) return { stale: true, staleReason: 'text' };
+  if (!line.audioHash || (line.audioEngine && line.audioEngine !== (config.provider || ''))) return { stale: false, staleReason: null };
+  const expected = expectedAudioHash(config, state, line, voiceMap);
+  return expected === line.audioHash ? { stale: false, staleReason: null } : { stale: true, staleReason: 'params' };
+}
+
+// 给响应用：每句台词加 stale / staleReason（不落盘；浏览器回存时 updateProject 会剥掉）。
+export function annotateStaleness(config, project) {
+  if (!project?.state) return project;
+  const voiceMap = effectiveVoiceMap(config, project.state);
+  return { ...project, state: { ...project.state, scenes: (project.state.scenes || []).map((scene) => ({ ...scene, lines: (scene.lines || []).map((line) => ({ ...line, ...lineStaleness(config, project.state, line, voiceMap) })) })) } };
+}
+
 // 影响范围（只读）：该角色已有音频的对白里，按当前参考 + 当前引擎配置重新算出的
 // 缓存键 ≠ 台词上存的 audioHash 的，就是“需要重新生成”的句子。
-// 注意：这里不加发音词典替换——与 runGenerationRequests 一致需要同样的替换。
-export function referenceImpact(config, project, roleId, { applyPronunciation = (text) => text } = {}) {
+export function referenceImpact(config, project, roleId) {
   const state = project.state;
   const voiceMap = effectiveVoiceMap(config, state);
   const lineIds = [];
   for (const scene of state.scenes || []) {
     for (const line of scene.lines || []) {
       if (line.type !== 'dialogue' || line.speakerId !== roleId || !line.audioUrl) continue;
-      const request = resolveReferenceRequest(config, state, buildGenerationRequest(line, voiceMap));
-      const expected = audioContentHash(config, { ...request, text: applyPronunciation(request.text) });
-      if (line.audioHash !== expected) lineIds.push(line.id);
+      if (line.audioHash !== expectedAudioHash(config, state, line, voiceMap)) lineIds.push(line.id);
     }
   }
   return { affectedLineCount: lineIds.length, lineIds };
@@ -219,4 +251,52 @@ export function referenceImpact(config, project, roleId, { applyPronunciation = 
 
 export function isReferenceError(error) {
   return error instanceof ReferenceError || error instanceof BreezeError;
+}
+
+// --- 音色就绪（Breeze）-------------------------------------------------------
+// Breeze 下每个有台词的角色都需要锁定的参考音才能生成（Breeze 没有可直接用的
+// 预设音色，绝不拿豆包/演示音色顶替）。hasVoiceDescription 表示该角色已有可用于
+// 音色设计的描述（前端可预填设计表单）；自动设计本轮不做。
+const PLACEHOLDER_DESCRIPTION = /^由规则拆解推断的说话人/;
+const GENDER_WORD = { 男: '男声', 女: '女声', male: '男声', female: '女声' };
+const AGE_WORD = { 儿童: '童声', 少年: '少年', 青年: '青年', 中年: '中年', 老年: '老年', child: '童声', teen: '少年', young: '青年', middle: '中年', elder: '老年' };
+
+// 音色设计用的描述：优先拆解给出的 voiceDescription；否则用 性别/年龄 + 角色描述
+// 拼一句；规则拆解的占位描述不算。没有可用信息返回 ''。
+export function voiceDesignDescription(character) {
+  const explicit = String(character?.voiceDescription || '').trim();
+  if (explicit) return explicit.slice(0, 500);
+  const description = String(character?.description || '').trim();
+  if (!description || PLACEHOLDER_DESCRIPTION.test(description)) return '';
+  const prefix = [AGE_WORD[character?.age], GENDER_WORD[character?.gender]].filter(Boolean).join('');
+  return `${prefix ? `${prefix}，` : ''}${description}`.slice(0, 500);
+}
+
+export function speakingRoles(state) {
+  const counts = new Map();
+  for (const scene of state?.scenes || []) for (const line of scene.lines || []) {
+    if (line.type === 'dialogue' && line.speakerId && String(line.text || '').trim()) counts.set(line.speakerId, (counts.get(line.speakerId) || 0) + 1);
+  }
+  return counts;
+}
+
+export function voiceReadiness(config, state) {
+  const engine = config.provider || 'demo';
+  const characters = new Map((state?.characters || []).map((character) => [character.id, character]));
+  const missingRoles = [];
+  for (const [roleId, lineCount] of speakingRoles(state)) {
+    const character = characters.get(roleId);
+    const bound = engine === 'breeze' ? Boolean(state?.voiceReferences?.[roleId]?.breezeVoiceId) : Boolean(state?.voiceMap?.[roleId]);
+    if (bound) continue;
+    const designDescription = engine === 'breeze' ? voiceDesignDescription(character) : '';
+    missingRoles.push({ roleId, name: character?.name || roleId, lineCount, hasVoiceDescription: Boolean(designDescription), voiceDescription: designDescription });
+  }
+  return { engine, ready: missingRoles.length === 0, requirement: engine === 'breeze' ? 'locked-reference' : 'voice-map', missingRoles };
+}
+
+// 一键成片用的“可生成音色表”：Breeze 下只认锁定的参考音（voiceMap 里可能残留豆包 /
+// 演示音色 id，发给 Breeze 必然 400，整批失败）；其他引擎就是 voiceMap。
+export function generationVoiceMap(config, state) {
+  if (config.provider !== 'breeze') return { ...(state?.voiceMap || {}) };
+  return Object.fromEntries(Object.entries(state?.voiceReferences || {}).filter(([, reference]) => reference?.breezeVoiceId).map(([roleId, reference]) => [roleId, reference.breezeVoiceId]));
 }

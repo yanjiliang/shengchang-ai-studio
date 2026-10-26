@@ -2,6 +2,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { validateProviderConfig } from './model-adapters.js';
+import { DEFAULT_ENGINE_CONCURRENCY, normalizeEngineConcurrency } from './breeze-lane.js';
 import { BREEZE_DEFAULT_ENDPOINT, BREEZE_DEFAULT_TIMEOUT_MS, normalizeBreezeEndpoint, normalizeBreezeTimeout } from './breeze.js';
 
 const CONFIG_DIR = path.join(homedir(), '.shengchang');
@@ -27,6 +28,10 @@ export const DEFAULT_CONFIG = {
   // 覆盖豆包的 endpoint/accessKey，切回豆包只改 provider。
   breezeEndpoint: BREEZE_DEFAULT_ENDPOINT,
   breezeTimeoutMs: BREEZE_DEFAULT_TIMEOUT_MS,
+  // 按引擎的并发（同时在飞的生成请求数）与单次请求超时。Breeze 的超时用上面的
+  // breezeTimeoutMs；这里管豆包与自定义 HTTP。
+  engineConcurrency: { ...DEFAULT_ENGINE_CONCURRENCY },
+  engineTimeoutMs: { 'volcengine-api-key': 90_000, custom: 90_000 },
   // seed-tts-2.0 指令末尾追加“保持当前基础音色稳定”（见 model-adapters.js）。
   ttsStableSpeaker: true,
   targetLufs: -16,
@@ -67,6 +72,8 @@ export function sanitizeConfig(input = {}) {
     cacheLimitGb: Number(config.cacheLimitGb) || 50,
     breezeEndpoint: normalizeBreezeEndpoint(config.breezeEndpoint) || BREEZE_DEFAULT_ENDPOINT,
     breezeTimeoutMs: normalizeBreezeTimeout(config.breezeTimeoutMs),
+    engineConcurrency: normalizeEngineConcurrency(config.engineConcurrency),
+    engineTimeoutMs: normalizeEngineTimeouts(config.engineTimeoutMs),
     ttsStableSpeaker: config.ttsStableSpeaker !== false && config.ttsStableSpeaker !== 'false',
     targetLufs: Number(config.targetLufs) || -16,
     llmEndpoint: String(config.llmEndpoint || DEFAULT_CONFIG.llmEndpoint),
@@ -80,6 +87,15 @@ export function sanitizeConfig(input = {}) {
     sfxCustomHeaders: String(config.sfxCustomHeaders || '{}'),
     sfxCustomBodyTemplate: String(config.sfxCustomBodyTemplate || DEFAULT_CONFIG.sfxCustomBodyTemplate),
   };
+}
+
+// 5s–900s；非法值回落 90s。
+export function normalizeEngineTimeouts(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  return Object.fromEntries(Object.entries(DEFAULT_CONFIG.engineTimeoutMs).map(([engine, fallback]) => {
+    const value = Number(source[engine]);
+    return [engine, Number.isFinite(value) && value >= 5_000 && value <= 900_000 ? Math.round(value) : fallback];
+  }));
 }
 
 export async function readConfig() {

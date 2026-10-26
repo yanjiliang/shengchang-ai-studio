@@ -8,12 +8,15 @@ import { publicConfig, readConfig, writeConfig } from './config-store.js';
 import { archiveProject, createProject, getProject, listPersistentTasks, listProjects, updateProject } from './database.js';
 import { designVoice, validateProviderConfig, validateSoundConfig } from './model-adapters.js';
 import { ensureRuntime, exportSceneTimeline, extractPeaks, inspectProjectMedia, probeDuration, probeFfmpeg, renderScenePreview, runtimePaths, saveUploadedAsset } from './media-store.js';
-import { cancelTask, enqueueGeneration, enqueueNovelAnalysis, enqueueOneClick, enqueueProjectExport, enqueueSoundGeneration, estimateBillableCharacters, estimateGeneration, getTask, retryTask } from './task-manager.js';
+import { taskWithQueuePosition, cancelTask, enqueueGeneration, enqueueNovelAnalysis, enqueueOneClick, enqueueProjectExport, enqueueSoundGeneration, estimateBillableCharacters, estimateGeneration, getTask, retryTask } from './task-manager.js';
 import { seedSampleProject } from './sample-project.js';
 import { ensureBuiltinAssets, listBuiltinAssets } from './builtin-assets.js';
 import { recommendForEvent } from './asset-recommend.js';
 import { testLlm, validateLlmConfig } from './story-analyzer.js';
-import { registerBreezeRoutes } from './breeze-routes.js';
+import { registerBreezeRoutes, sendError } from './breeze-routes.js';
+import { oneClickMissingVoiceRoles, voiceNotReadyError } from './one-click.js';
+import { annotateStaleness, generationVoiceMap } from './voice-references.js';
+import { registerProductionRoutes } from './production-routes.js';
 
 const PORT = Number(process.env.SHENGCHANG_API_PORT || 4174);
 // Default binds loopback only. Docker sets SHENGCHANG_BIND_HOST=0.0.0.0 because
@@ -104,11 +107,12 @@ app.get('/api/projects', (_request, response) => response.json({ projects: listP
 app.post('/api/projects', (request, response, next) => {
   try { response.status(201).json(createProject({ name: request.body.name, genre: request.body.genre })); } catch (error) { next(error); }
 });
-app.get('/api/projects/:projectId', (request, response) => {
+// 每句台词附带 stale / staleReason（按当前参数复算缓存键，见 voice-references.js）。
+app.get('/api/projects/:projectId', async (request, response) => {
   const project = getProject(request.params.projectId);
-  return project ? response.json(project) : response.status(404).json({ error: '项目不存在' });
+  return project ? response.json(annotateStaleness(await readConfig(), project)) : response.status(404).json({ error: '项目不存在' });
 });
-app.put('/api/projects/:projectId', (request, response, next) => {
+app.put('/api/projects/:projectId', async (request, response, next) => {
   try {
     // OV-4 stale-autosave guard: the browser holds a whole-project snapshot,
     // so an autosave landing mid-orchestration would silently revert the
@@ -117,7 +121,8 @@ app.put('/api/projects/:projectId', (request, response, next) => {
     if (active) return response.status(409).json({ error: '一键成片运行中，完成后可继续编辑' });
     // Whitelist: trustedAudio is a server-internal flag and must never be
     // settable by the browser, or the stale-snapshot guard is bypassable.
-    response.json(updateProject(request.params.projectId, { name: request.body.name, genre: request.body.genre, sourceFilename: request.body.sourceFilename, sourceText: request.body.sourceText, state: request.body.state }));
+    const saved = updateProject(request.params.projectId, { name: request.body.name, genre: request.body.genre, sourceFilename: request.body.sourceFilename, sourceText: request.body.sourceText, state: request.body.state });
+    response.json(annotateStaleness(await readConfig(), saved));
   } catch (error) { next(error); }
 });
 app.delete('/api/projects/:projectId', (request, response, next) => {
@@ -190,6 +195,11 @@ app.post('/api/projects/:projectId/one-click', async (request, response, next) =
     if (!project.state.scenes?.length && !project.sourceText?.trim()) throw new Error('请先导入小说文本或手动创建场景');
     const config = await readConfig();
     validateProviderConfig(config);
+    // Breeze：有角色没锁参考音就不开跑（自动音色设计本轮不做），409 + missingVoiceRoles。
+    if (config.provider === 'breeze' && project.state.scenes?.length) {
+      const missingVoiceRoles = oneClickMissingVoiceRoles(config, project.state);
+      if (missingVoiceRoles.length) return sendError(response, voiceNotReadyError(missingVoiceRoles), next);
+    }
     response.status(202).json(enqueueOneClick({ projectId: project.id }));
   } catch (error) { next(error); }
 });
@@ -205,9 +215,14 @@ app.post('/api/projects/:projectId/one-click-estimate', async (request, response
     // auto-maps unmapped characters first, so requests without a voiceId
     // today are still billable lines (except genuinely unmappable ones, which
     // the pipeline skips - hence the separate unmappedVoiceCount).
-    const requests = buildGenerationRequests(project.state);
+    // Breeze 只认锁定的参考音（与生成阶段 generationVoiceMap 一致）。
+    const requests = buildGenerationRequests({ ...project.state, voiceMap: generationVoiceMap(config, project.state) });
     const mappable = requests.filter((item) => item.voiceId);
+    const missingVoiceRoles = oneClickMissingVoiceRoles(config, project.state);
     response.json({
+      // 与 GET voice-readiness 的 missingRoles 同形；Breeze 下非空时 POST one-click 会 409。
+      missingVoiceRoles,
+      voiceReady: missingVoiceRoles.length === 0,
       provider: config.provider,
       sceneCount: project.state.scenes?.length || 0,
       dialogueCount: dialogue.length,
@@ -330,7 +345,7 @@ app.delete('/api/assets', async (request, response, next) => {
 });
 app.get('/api/tasks/:taskId', (request, response) => {
   const task = getTask(request.params.taskId);
-  return task ? response.json(task) : response.status(404).json({ error: '任务不存在或本地服务已重启' });
+  return task ? response.json(taskWithQueuePosition(task)) : response.status(404).json({ error: '任务不存在或本地服务已重启' });
 });
 app.post('/api/tasks/:taskId/cancel', (request, response, next) => {
   try { response.json(cancelTask(request.params.taskId)); } catch (error) { next(error); }
@@ -339,6 +354,7 @@ app.post('/api/tasks/:taskId/retry', (request, response, next) => {
   try { response.status(202).json(retryTask(request.params.taskId)); } catch (error) { next(error); }
 });
 registerBreezeRoutes(app);
+registerProductionRoutes(app);
 // Unknown API routes must not fall through to the SPA fallback: apiRequest
 // would parse the HTML shell as `{}` and treat the call as a success.
 app.use('/api', (_request, response) => response.status(404).json({ error: '接口不存在' }));

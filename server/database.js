@@ -76,6 +76,7 @@ function projectRow(row) {
   state.voiceMap ||= {};
   state.pronunciationDictionary ||= [];
   state.voiceReferences ||= {};
+  state.lineTakes ||= {};
   return { id: row.id, name: row.name, genre: row.genre, sourceFilename: row.source_filename, sourceText: row.source_text, state, createdAt: row.created_at, updatedAt: row.updated_at };
 }
 
@@ -109,7 +110,7 @@ export function createProject({ name = '未命名作品', genre = '', state = { 
 // between load and save would otherwise be erased by a stale snapshot. Keep
 // whatever the server already has, and mark a clip stale (instead of deleting
 // it) when the text it was synthesized from has changed.
-const AUDIO_FIELDS = ['audioUrl', 'audioMime', 'audioHash', 'generatedAt', 'synthesizedText', 'audioEngine'];
+const AUDIO_FIELDS = ['audioUrl', 'audioMime', 'audioHash', 'generatedAt', 'synthesizedText', 'audioEngine', 'audioSeed'];
 
 function mergeServerOwnedAudio(incomingState, currentState) {
   const currentLines = new Map();
@@ -120,8 +121,10 @@ function mergeServerOwnedAudio(incomingState, currentState) {
       ...scene,
       lines: (scene.lines || []).map((line) => {
         const current = currentLines.get(line.id);
-        if (!current?.audioUrl) return line;
-        const merged = { ...line };
+        // stale / staleReason 是响应里算出来的，不落盘。
+        const { stale: _stale, staleReason: _staleReason, ...clean } = line;
+        if (!current?.audioUrl) return clean;
+        const merged = { ...clean };
         for (const field of AUDIO_FIELDS) if (current[field] !== undefined) merged[field] = current[field];
         merged.audioStale = String(line.text ?? '') !== String(current.text ?? '');
         return merged;
@@ -137,7 +140,8 @@ export function updateProject(id, patch) {
   let state = patch.state ?? currentState;
   if (patch.state && !patch.trustedAudio) state = mergeServerOwnedAudio(patch.state, currentState);
   // 角色参考音（voiceReferences）只由服务端锁定接口写入；浏览器保存的旧快照不能覆盖。
-  if (patch.state && !patch.trustedAudio) state = { ...state, voiceReferences: currentState.voiceReferences || {} };
+  // 单句试听（lineTakes）同理，只由服务端生成/采用接口写入。
+  if (patch.state && !patch.trustedAudio) state = { ...state, voiceReferences: currentState.voiceReferences || {}, lineTakes: currentState.lineTakes || {} };
   // 角色性别/年龄：校验枚举；浏览器保存时来源由服务端推断（见 character-meta.js）。
   if (patch.state && Array.isArray(state.characters)) state = { ...state, characters: sanitizeCharacters(state.characters, currentState.characters, { trusted: Boolean(patch.trustedAudio) }) };
   database.prepare('UPDATE projects SET name=?,genre=?,source_filename=?,source_text=?,state_json=?,updated_at=? WHERE id=?').run(
@@ -192,8 +196,12 @@ export function updatePersistentTask(id, patch) {
   return getPersistentTask(id);
 }
 
-export function nextQueuedTask() {
-  const row = database.prepare("SELECT id FROM tasks WHERE status='queued' ORDER BY created_at ASC LIMIT 1").get();
+// kinds：只在这些 kind 里挑（交互槽用）；不传 = 任意 kind。同一条件下按创建时间先来先领。
+export function nextQueuedTask({ kinds } = {}) {
+  const list = Array.isArray(kinds) && kinds.length ? kinds : null;
+  const row = list
+    ? database.prepare(`SELECT id FROM tasks WHERE status='queued' AND kind IN (${list.map(() => '?').join(',')}) ORDER BY created_at ASC LIMIT 1`).get(...list)
+    : database.prepare("SELECT id FROM tasks WHERE status='queued' ORDER BY created_at ASC LIMIT 1").get();
   return row ? getPersistentTask(row.id) : null;
 }
 

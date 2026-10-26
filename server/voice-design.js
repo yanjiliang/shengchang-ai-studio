@@ -9,7 +9,7 @@ import { randomInt } from 'node:crypto';
 import { readdir, stat, unlink, writeFile, access } from 'node:fs/promises';
 import path from 'node:path';
 import { breezeAudio, BreezeError } from './breeze.js';
-import { breezeLane, PRIORITY } from './breeze-lane.js';
+import { laneFor, PRIORITY } from './breeze-lane.js';
 import { createPersistentTask, getPersistentTask, listPersistentTasks, updatePersistentTask } from './database.js';
 import { runtimePaths } from './media-store.js';
 import { ReferenceError, requireProjectRole } from './voice-references.js';
@@ -46,7 +46,7 @@ export async function sweepStaleTakes(now = Date.now(), ttlMs = TAKE_TTL_MS) {
   return removed;
 }
 
-function appendEvent(taskId, event, patch = {}) {
+export function appendEvent(taskId, event, patch = {}) {
   const task = getPersistentTask(taskId);
   const result = { ...(task.result || {}), ...(patch.result || {}) };
   result.events = [...(task.result?.events || []), { at: Date.now(), ...event }];
@@ -70,7 +70,7 @@ export function createVoiceDesignJob(config, { projectId, roleId, body }) {
 }
 
 // 由任务泵调用（task-manager runTask）。
-export async function runVoiceDesignTask(task, config, { lane = breezeLane } = {}) {
+export async function runVoiceDesignTask(task, config, { lane = laneFor('breeze', config) } = {}) {
   const { roleId, description, testLines, count } = task.payload;
   updatePersistentTask(task.id, { status: 'running', progress: 2, message: '音色设计排队中', startedAt: Date.now(), error: '' });
   appendEvent(task.id, { type: 'started' });
@@ -130,3 +130,4 @@ export async function findTake(projectId, roleId, takeId) {
   try { await access(file); } catch { throw new ReferenceError('试听音频已过期被清理，请重新生成', { status: 410, code: 'TAKE_EXPIRED' }); }
   return { take, file, description: task.payload.description, transcript: task.payload.testLines[take.lineIndex] };
 }
+

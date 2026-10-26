@@ -9,11 +9,17 @@ import { analyzeNovel } from './story-analyzer.js';
 import { runOneClickPipeline } from './one-click.js';
 import { buildAttribution } from './attribution.js';
 import { ensureBuiltinAssets } from './builtin-assets.js';
-import { ensureReferenceRegistered, resolveReferenceRequest } from './voice-references.js';
+import { ensureReferenceRegistered, resolveReferenceRequest, applyPronunciation } from './voice-references.js';
+import { cancelJobEverywhere, laneFor, PRIORITY, queuePositionOf } from './breeze-lane.js';
 import { createVoiceDesignJob, runVoiceDesignTask } from './voice-design.js';
+import { createLineTakeJob, runLineTakeTask } from './line-takes.js';
 
 const MAX_CONCURRENCY = 2;
+const INTERACTIVE_SLOTS = 1;
+// 用户在等着听的任务：单句生成 / 单句重来、方向对比、音色设计。
+export const INTERACTIVE_KINDS = new Set(['line', 'direction-lab', 'voice-design', 'line-take']);
 let activeWorkers = 0;
+let activeInteractive = 0;
 
 function extensionForMime(mime, configuredFormat) {
   if (mime.includes('wav')) return 'wav';
@@ -55,6 +61,8 @@ async function evictAudioCacheIfNeeded(limitGb) {
         if (line.assetUrl) referenced.add(path.basename(line.assetUrl));
       }
     }
+    // 单句试听（A/B 历史）引用的缓存文件也保留，否则“采用旧试听”会 410。
+    for (const record of Object.values(project?.state?.lineTakes || {})) for (const take of record?.takes || []) if (take.audioUrl) referenced.add(path.basename(take.audioUrl));
   }
   let total = 0;
   const entries = [];
@@ -95,6 +103,8 @@ export function applyResultsToProject(projectId, sceneId, results) {
         audioHash: result.contentHash,
         generatedAt: result.createdAt,
         ...(result.engine ? { audioEngine: result.engine } : {}),
+        // 进缓存键的显式 seed（采用单句试听时）；普通生成清空。stale 判断要用它复算缓存键。
+        audioSeed: Number.isSafeInteger(result.requestSeed) ? result.requestSeed : null,
         synthesizedText: result.synthesizedText,
         // The request captured the text at enqueue time. If the line has been
         // edited since, this fresh clip is already stale for the current text;
@@ -110,20 +120,18 @@ export function applyResultsToProject(projectId, sceneId, results) {
   updateProject(projectId, { state, trustedAudio: true });
 }
 
-export function applyPronunciation(text, dictionary = []) {
-  return dictionary.reduce((value, entry) => {
-    const term = String(entry.term || '').trim();
-    const replacement = String(entry.replacement || '').trim();
-    return term && replacement ? value.split(term).join(replacement) : value;
-  }, text);
-}
+// 发音词典替换移到 voice-references.js（stale 判断要复用同一实现），这里保留导出名。
+export { applyPronunciation };
 
 // B3: the single pipeline every generation flow - manual scene/line, batch
 // fill/stale, and the future one-click orchestrator - runs requests through.
 // Per-line failures are collected and the run continues (TODO-2): one bad
 // line must not hide the state of the lines after it. synthesize is
 // injectable so tests can fail specific lines on demand.
-export async function runGenerationRequests(config, requests, { projectId, sceneId, onProgress, shouldCancel, synthesize: synthesizeLine = synthesize } = {}) {
+// jobId / priority：合成请求经过该引擎的生成通道（breeze-lane.js），同一引擎的
+// 并发受 engineConcurrency 限制，交互任务插到批量任务前面；取消任务时通道里的
+// 排队项被移除、在飞项结果被丢弃（TASK_CANCELLED → 本函数返回 cancelled）。
+export async function runGenerationRequests(config, requests, { projectId, sceneId, onProgress, shouldCancel, jobId = '', priority = PRIORITY.batch, synthesize: synthesizeLine = synthesize } = {}) {
   const results = [];
   const failures = [];
   const projectState = getProject(projectId)?.state || {};
@@ -150,7 +158,13 @@ export async function runGenerationRequests(config, requests, { projectId, scene
           results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: recovered.url, mime: recovered.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', engine: config.provider || '', cached: true, createdAt: Date.now() });
         } else {
           if (resolved.referenceHash) await ensureReferenceRegistered(config, projectState.voiceReferences[request.speakerId]);
-          const audio = await synthesizeLine(config, resolved);
+          // 取消可能发生在上面的 await 期间（此时还不在通道里，cancelJobEverywhere 摸不到）：
+          // 进通道前同步再查一次；轮到它时再查一次，已取消的绝不发给引擎。
+          if (shouldCancel?.()) return { status: 'cancelled', results, failures };
+          const audio = await laneFor(config.provider, config).run({ jobId, priority, fn: () => {
+            if (shouldCancel?.()) throw Object.assign(new Error('任务已取消'), { code: 'TASK_CANCELLED' });
+            return synthesizeLine(config, resolved);
+          } });
           const extension = extensionForMime(audio.mime, config.audioFormat);
           const saved = await saveMedia(contentHash, extension, audio.buffer);
           cacheAudio({ contentHash, url: saved.url, mime: audio.mime, provider: config.provider || '', model: config.model || '', voiceId: resolved.voiceId || '' });
@@ -158,6 +172,7 @@ export async function runGenerationRequests(config, requests, { projectId, scene
         }
       }
     } catch (error) {
+      if (error.code === 'TASK_CANCELLED') return { status: 'cancelled', results, failures };
       failures.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, text: request.text, error: error.name === 'AbortError' ? '模型请求超时' : error.message });
     }
   }
@@ -198,6 +213,8 @@ async function runGenerationTask(task, config) {
       sceneId: task.sceneId,
       onProgress: ({ index, total, message }) => updatePersistentTask(task.id, { message, progress: Math.max(3, Math.round((index / total) * 90)) }),
       shouldCancel: () => Boolean(getPersistentTask(task.id)?.cancelRequested),
+      jobId: task.id,
+      priority: INTERACTIVE_KINDS.has(task.kind) ? PRIORITY.interactive : PRIORITY.batch,
     });
     if (outcome.status === 'cancelled') {
       updatePersistentTask(task.id, { status: 'cancelled', message: '任务已取消', result: { results: outcome.results }, completedAt: Date.now() });
@@ -234,6 +251,7 @@ async function runGenerationTask(task, config) {
 async function runTask(task) {
   const config = await readConfig();
   if (task.kind === 'voice-design') return runVoiceDesignTask(task, config);
+  if (task.kind === 'line-take') return runLineTakeTask(task, config, { runGeneration: runGenerationRequests });
   if (task.kind === 'one-click') {
     // The pipeline owns its progress/message/status writes; this wrapper only
     // maps its outcomes onto task status.
@@ -242,7 +260,7 @@ async function runTask(task) {
       await runOneClickPipeline(task, config);
     } catch (error) {
       if (error.code === 'TASK_CANCELLED') updatePersistentTask(task.id, { status: 'cancelled', message: '一键成片已取消', error: '', completedAt: Date.now() });
-      else updatePersistentTask(task.id, { status: 'failed', message: '一键成片失败', error: error.message, completedAt: Date.now() });
+      else updatePersistentTask(task.id, { status: 'failed', message: error.code === 'VOICE_NOT_READY' ? '一键成片暂停：有角色缺少参考音' : '一键成片失败', error: error.message, completedAt: Date.now(), ...(error.details ? { result: { code: error.code, ...error.details } } : {}) });
     }
     return;
   }
@@ -335,13 +353,28 @@ async function runTask(task) {
   await runGenerationTask(task, config);
 }
 
+// 两个通用槽（任意任务，先来先领）+ 一个交互槽（只领试听 / 单句 / 音色设计）：
+// 两个整场批量任务占满通用槽时，用户点的单句试听不必等它们跑完才被领取；
+// 真正发往引擎的顺序再由生成通道按优先级排（交互先于批量）。
+function claim(task, slot) {
+  if (slot === 'interactive') activeInteractive += 1; else activeWorkers += 1;
+  updatePersistentTask(task.id, { status: 'running', message: '本地工作进程已领取任务', startedAt: Date.now() });
+  runTask(task).finally(() => {
+    if (slot === 'interactive') activeInteractive -= 1; else activeWorkers -= 1;
+    queueMicrotask(pumpQueue);
+  });
+}
+
 function pumpQueue() {
+  while (activeInteractive < INTERACTIVE_SLOTS) {
+    const task = nextQueuedTask({ kinds: [...INTERACTIVE_KINDS] });
+    if (!task) break;
+    claim(task, 'interactive');
+  }
   while (activeWorkers < MAX_CONCURRENCY) {
     const task = nextQueuedTask();
     if (!task) break;
-    activeWorkers += 1;
-    updatePersistentTask(task.id, { status: 'running', message: '本地工作进程已领取任务', startedAt: Date.now() });
-    runTask(task).finally(() => { activeWorkers -= 1; queueMicrotask(pumpQueue); });
+    claim(task, 'general');
   }
 }
 
@@ -420,6 +453,13 @@ export function enqueueVoiceDesign(config, input) {
   return created;
 }
 
+// 单句试听：创建（或复用同 seed 的进行中任务）并交给任务泵。
+export function enqueueLineTake(config, input) {
+  const created = createLineTakeJob(config, input);
+  queueMicrotask(pumpQueue);
+  return created;
+}
+
 export function retryTask(taskId) {
   const task = getPersistentTask(taskId);
   if (!task) throw new Error('任务不存在');
@@ -429,6 +469,38 @@ export function retryTask(taskId) {
   return retried;
 }
 
-export { getPersistentTask as getTask, requestTaskCancellation as cancelTask };
+export { getPersistentTask as getTask };
+
+// 取消：排队中的任务直接变成已取消；运行中的任务置 cancelRequested，同时把它在
+// 引擎通道里的排队项移除、在飞项结果丢弃（runGenerationRequests / 音色设计随即
+// 以 cancelled 收尾）。已结束的任务原样返回（幂等）。
+export function cancelTask(taskId) {
+  const task = getPersistentTask(taskId);
+  if (!task) throw Object.assign(new Error('任务不存在'), { status: 404, code: 'JOB_NOT_FOUND' });
+  if (['completed', 'failed', 'cancelled'].includes(task.status)) return { ...task, lane: { removed: 0, discardedInFlight: 0 } };
+  const wasQueued = task.status === 'queued';
+  const updated = requestTaskCancellation(taskId);
+  const lane = cancelJobEverywhere(taskId);
+  if (wasQueued && (task.kind === 'voice-design' || task.kind === 'line-take')) {
+    const events = [...(task.result?.events || []), { type: 'cancelled', at: Date.now() }];
+    updatePersistentTask(taskId, { result: { ...(task.result || {}), events } });
+  }
+  return { ...(getPersistentTask(taskId) || updated), lane };
+}
+
+// 等任务离开 running（取消后通常几毫秒内收尾），最多等 timeoutMs。
+export async function waitForTaskToSettle(taskId, timeoutMs = 2_000) {
+  const started = Date.now();
+  for (;;) {
+    const task = getPersistentTask(taskId);
+    if (!task || !['queued', 'running'].includes(task.status) || Date.now() - started >= timeoutMs) return task;
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+}
+
+// 轮询接口附带实时排队位置：0 = 正在生成，n = 前面还有 n 个生成，null = 不在引擎通道里。
+export function taskWithQueuePosition(task) {
+  return task ? { ...task, queuePosition: queuePositionOf(task.id) } : task;
+}
 
 queueMicrotask(pumpQueue);

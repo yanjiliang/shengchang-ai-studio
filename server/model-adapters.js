@@ -208,7 +208,7 @@ export function voiceInstructions(request, { stableSpeaker = true, pauseWording 
 
 async function synthesizeVolcengineApiKey(config, request) {
   assertVoiceMatchesResource(config.resourceId, request.voiceId);
-  const timeout = requestTimeout();
+  const timeout = requestTimeout(config.engineTimeoutMs?.['volcengine-api-key'] || 90_000);
   try {
     const instructions = config.resourceId === 'seed-tts-2.0' ? voiceInstructions(request, { stableSpeaker: config.ttsStableSpeaker !== false }) : [];
     const response = await fetch(config.endpoint || 'https://openspeech.bytedance.com/api/v3/tts/unidirectional', {
@@ -242,7 +242,7 @@ async function synthesizeVolcengineApiKey(config, request) {
 }
 
 async function synthesizeCustom(config, request) {
-  const timeout = requestTimeout(config.timeoutMs || 90_000);
+  const timeout = requestTimeout(config.timeoutMs || config.engineTimeoutMs?.custom || 90_000);
   try {
     const headers = parseJsonObject(config.customHeaders, '自定义请求头');
     if (config.accessKey && !Object.values(headers).some((value) => String(value).includes(config.accessKey))) headers.Authorization ||= `Bearer ${config.accessKey}`;

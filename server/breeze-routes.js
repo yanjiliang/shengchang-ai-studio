@@ -8,17 +8,17 @@ import { readFile } from 'node:fs/promises';
 import express from 'express';
 import { readConfig } from './config-store.js';
 import { breezeHealth, BreezeError } from './breeze.js';
-import { applyPronunciation, enqueueVoiceDesign } from './task-manager.js';
-import { breezeLane } from './breeze-lane.js';
+import { enqueueVoiceDesign } from './task-manager.js';
+import { laneFor } from './breeze-lane.js';
 import { findTake } from './voice-design.js';
 import {
   REFERENCE_MAX_BYTES, ReferenceError, lockReference, referenceImpact, requireProjectRole,
   transcodeToMonoWav, validateTranscript, validateUploadFile,
 } from './voice-references.js';
 
-function sendError(response, error, next) {
-  if (error instanceof ReferenceError || error instanceof BreezeError) {
-    return response.status(error.status || 400).json({ error: error.message, code: error.code || '', ...(error.rule ? { rule: error.rule } : {}) });
+export function sendError(response, error, next) {
+  if (error instanceof ReferenceError || error instanceof BreezeError || (error?.code && Number.isInteger(error.status))) {
+    return response.status(error.status || 400).json({ error: error.message, code: error.code || '', ...(error.rule ? { rule: error.rule } : {}), ...(error.details || {}) });
   }
   return next(error);
 }
@@ -50,7 +50,7 @@ export function registerBreezeRoutes(app) {
   app.get('/api/engines/breeze/health', async (_request, response, next) => {
     try {
       const config = await readConfig();
-      response.json({ ...(await breezeHealth(config)), active: config.provider === 'breeze', timeoutMs: config.breezeTimeoutMs, queue: breezeLane.snapshot() });
+      response.json({ ...(await breezeHealth(config)), active: config.provider === 'breeze', timeoutMs: config.breezeTimeoutMs, queue: laneFor('breeze', config).snapshot() });
     } catch (error) { next(error); }
   });
 
@@ -59,7 +59,7 @@ export function registerBreezeRoutes(app) {
     try {
       const config = await readConfig();
       const { task, deduplicated } = enqueueVoiceDesign(config, { projectId: request.params.projectId, roleId: request.params.roleId, body: request.body || {} });
-      response.status(deduplicated ? 200 : 202).json({ jobId: task.id, taskId: task.id, status: task.status, queuePosition: breezeLane.positionOf(task.id), deduplicated, task });
+      response.status(deduplicated ? 200 : 202).json({ jobId: task.id, taskId: task.id, status: task.status, queuePosition: laneFor('breeze', config).positionOf(task.id), deduplicated, task });
     } catch (error) { sendError(response, error, next); }
   });
 
@@ -104,8 +104,7 @@ export function registerBreezeRoutes(app) {
     try {
       const { project } = requireProjectRole(request.params.projectId, request.params.roleId);
       const config = await readConfig();
-      const dictionary = project.state.pronunciationDictionary || [];
-      response.json(referenceImpact(config, project, request.params.roleId, { applyPronunciation: (text) => applyPronunciation(text, dictionary) }));
+      response.json(referenceImpact(config, project, request.params.roleId));
     } catch (error) { sendError(response, error, next); }
   });
 

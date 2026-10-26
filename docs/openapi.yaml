@@ -62,6 +62,21 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PublicConfig' }
+    put:
+      operationId: putConfig
+      tags: [engine]
+      summary: 保存配置，回脱敏后的 PublicConfig
+      description: '语音（TTS）设置按引擎分槽保存（demo、volcengine-api-key、breeze、custom），切引擎不会清空别的引擎的地址和 Key。平铺字段 endpoint、accessKey、resourceId、model、audioFormat、sampleRate、responseMode、customHeaders、customBodyTemplate 写进目标引擎那一槽——请求里带了 provider 且与当前不同时就是新引擎；这种切引擎的请求只写真正改过的字段（等于设置页预设、或与上一个引擎回传值相同的字段不覆盖目标槽已保存的值）。accessKey 留空时，只有本槽规范化后的地址没变才沿用已保存的 Key，换了地址就清空本槽 Key 和请求头里的旧密钥（豆包的空地址等同官方默认地址）。请求体里的 ttsProviders 是只读摘要，会被忽略。文本模型（llm*）和音效（sfx*）字段结构不变，规则同前。'
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicConfig' }
   /api/config/test-llm:
     post:
       operationId: postConfigTestLlm
@@ -606,6 +621,24 @@ components:
         customHeaders: { type: string, description: 'JSON 字符串；名字含 authorization/token/key/secret 的头值显示为 __SAVED_SECRET__，原样回传即保留（地址没变时）' }
         sfxCustomHeaders: { type: string, description: '同 customHeaders 的脱敏规则' }
         targetLufs: { type: number, example: -16 }
+        endpoint: { type: string, description: '当前引擎那一槽的地址（resourceId、model、audioFormat 等平铺 TTS 字段同样反映当前引擎）' }
+        ttsProviders:
+          type: object
+          description: '每个语音引擎各自保存的设置摘要（不含 Key 值；请求头密钥打码）。键为 demo、volcengine-api-key、breeze、custom。只读，PUT 时忽略。'
+          additionalProperties: { $ref: '#/components/schemas/TtsProviderSummary' }
+    TtsProviderSummary:
+      type: object
+      properties:
+        endpoint: { type: string }
+        hasKey: { type: boolean }
+        secretHint: { $ref: '#/components/schemas/SecretHint' }
+        resourceId: { type: string }
+        model: { type: string }
+        audioFormat: { type: string, enum: [mp3, wav, ogg_opus] }
+        sampleRate: { type: integer }
+        responseMode: { type: string }
+        customHeaders: { type: string, description: '同 PublicConfig.customHeaders 的脱敏规则' }
+        customBodyTemplate: { type: string }
     BreezeHealth:
       type: object
       properties:

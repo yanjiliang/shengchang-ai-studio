@@ -92,10 +92,11 @@ describe('Breeze 配置', () => {
     assert.equal(normalizeBreezeTimeout('abc'), 180_000);
     assert.equal(sanitizeConfig({ breezeTimeoutMs: 60000 }).breezeTimeoutMs, 60000);
   });
-  test('切到 Breeze 不动豆包的 endpoint / accessKey', () => {
+  test('切到 Breeze 不动豆包的 endpoint / accessKey（豆包那一槽保留；顶层平铺字段 = 当前引擎 Breeze）', () => {
     const config = sanitizeConfig({ provider: 'breeze', endpoint: 'https://openspeech.example/v3', accessKey: 'k' });
-    assert.equal(config.endpoint, 'https://openspeech.example/v3');
-    assert.equal(config.accessKey, 'k');
+    assert.equal(config.ttsProviders['volcengine-api-key'].endpoint, 'https://openspeech.example/v3');
+    assert.equal(config.ttsProviders['volcengine-api-key'].accessKey, 'k');
+    assert.equal(config.accessKey, '');
   });
   test('缓存键：Breeze 带指令版本和 Breeze 地址；换地址即换键', () => {
     const a = audioContentHash(sanitizeConfig({ provider: 'breeze', breezeEndpoint: 'http://127.0.0.1:4180' }), line);

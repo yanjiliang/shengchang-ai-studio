@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { buildGenerationRequests } from '../shared/generation-requests.mjs';
 import { publicConfig, readConfig, writeConfig } from './config-store.js';
+import { TTS_SLOT_FIELDS, applyTtsUpdate } from './tts-providers.js';
 import { archiveProject, createProject, getProject, listPersistentTasks, listProjects, updateProject } from './database.js';
 import { designVoice, validateProviderConfig, validateSoundConfig } from './model-adapters.js';
 import { ensureRuntime, exportSceneTimeline, extractPeaks, inspectProjectMedia, probeDuration, probeFfmpeg, renderScenePreview, runtimePaths, saveUploadedAsset } from './media-store.js';
@@ -88,20 +89,22 @@ function mergeRedactedHeaders(incoming, saved, keepSaved = true) {
 
 // 已保存的密钥：没填新值时，只有对应接口地址（规范化后）没变才沿用；地址换了就清空，
 // 不能把旧 Key 带到另一家服务。preserveSecret:false = 明确要求按请求体原样保存。
+// 语音（TTS）的 accessKey / customHeaders 不在这里：按引擎分槽，由 applyTtsUpdate 在本槽内套同一规则。
 const SAVED_SECRETS = [
-  { secretField: 'accessKey', endpointField: 'endpoint' },
   { secretField: 'llmApiKey', endpointField: 'llmEndpoint', same: sameLlmEndpoint },
   { secretField: 'sfxAccessKey', endpointField: 'sfxEndpoint' },
 ];
 const SECRET_HEADERS = [
-  { headersField: 'customHeaders', endpointField: 'endpoint' },
   { headersField: 'sfxCustomHeaders', endpointField: 'sfxEndpoint' },
 ];
 
 app.put('/api/config', async (request, response, next) => {
   try {
     const current = await readConfig();
-    const nextConfig = { ...current, ...request.body };
+    // 平铺的 TTS 字段写进目标引擎那一槽（请求里切引擎就是新引擎）；ttsProviders 是只读摘要，忽略请求体里的。
+    const { ttsProviders: _readOnlySummary, ...body } = request.body || {};
+    for (const field of TTS_SLOT_FIELDS) delete body[field];
+    const nextConfig = { ...current, ...body, ...applyTtsUpdate(current, request.body || {}, { currentPublic: publicConfig(current), preserveSecret: request.body?.preserveSecret !== false }) };
     if (request.body.preserveSecret !== false) {
       for (const rule of SAVED_SECRETS) nextConfig[rule.secretField] = resolveSavedSecret(request.body, current, rule);
     }

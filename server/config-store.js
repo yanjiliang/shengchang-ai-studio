@@ -4,6 +4,7 @@ import path from 'node:path';
 import { validateProviderConfig } from './model-adapters.js';
 import { llmRequiresApiKey } from './story-analyzer.js';
 import { DEFAULT_ENGINE_CONCURRENCY, normalizeEngineConcurrency } from './breeze-lane.js';
+import { activeTtsSettings, publicTtsProviders, redactHeaders, sanitizeTtsProviders } from './tts-providers.js';
 import { BREEZE_DEFAULT_ENDPOINT, BREEZE_DEFAULT_TIMEOUT_MS, normalizeBreezeEndpoint, normalizeBreezeTimeout } from './breeze.js';
 
 const CONFIG_DIR = path.join(homedir(), '.shengchang');
@@ -56,20 +57,12 @@ export function sanitizeConfig(input = {}) {
   const provider = migratedLegacyProvider
     ? 'volcengine-api-key'
     : String(config.provider || DEFAULT_CONFIG.provider);
-  const resourceId = provider === 'volcengine-api-key' && !['seed-tts-2.0', 'seed-icl-2.0'].includes(config.resourceId)
-    ? DEFAULT_CONFIG.resourceId
-    : String(config.resourceId || '');
+  // TTS 按引擎分槽（tts-providers.js）。旧的平铺配置第一次读到时迁进对应槽；顶层平铺字段 = 当前引擎那一槽。
+  const ttsProviders = sanitizeTtsProviders(migratedLegacyProvider ? { ...config, endpoint: '' } : config, provider);
   return {
     provider,
-    endpoint: migratedLegacyProvider ? DEFAULT_CONFIG.endpoint : String(config.endpoint || DEFAULT_CONFIG.endpoint),
-    accessKey: String(config.accessKey || ''),
-    resourceId,
-    model: provider === 'volcengine-api-key' ? (resourceId === 'seed-icl-2.0' ? 'seed-tts-2.0-standard' : '') : String(config.model || ''),
-    audioFormat: ['mp3', 'wav', 'ogg_opus'].includes(config.audioFormat) ? config.audioFormat : 'mp3',
-    sampleRate: Number(config.sampleRate) || 24000,
-    responseMode: String(config.responseMode || 'auto'),
-    customHeaders: String(config.customHeaders || '{}'),
-    customBodyTemplate: String(config.customBodyTemplate || DEFAULT_CONFIG.customBodyTemplate),
+    ...activeTtsSettings({ provider, ttsProviders }),
+    ttsProviders,
     cacheLimitGb: Number(config.cacheLimitGb) || 50,
     breezeEndpoint: normalizeBreezeEndpoint(config.breezeEndpoint) || BREEZE_DEFAULT_ENDPOINT,
     breezeTimeoutMs: normalizeBreezeTimeout(config.breezeTimeoutMs),
@@ -130,15 +123,7 @@ export function secretHint(secret) {
 }
 
 export function publicConfig(config) {
-  let safeCustomHeaders = config.customHeaders;
-  const redactHeaders = (value) => {
-    try {
-      const parsed = JSON.parse(value || '{}');
-      for (const key of Object.keys(parsed)) if (/authorization|token|key|secret/i.test(key)) parsed[key] = '__SAVED_SECRET__';
-      return JSON.stringify(parsed, null, 2);
-    } catch { return '{}'; }
-  };
-  safeCustomHeaders = redactHeaders(safeCustomHeaders);
+  const safeCustomHeaders = redactHeaders(config.customHeaders);
   // 音效请求头同样可能带 Authorization，之前原样回传给了浏览器。
   // voiceReady：前端判断“能不能开始生成”的唯一依据（Breeze 没有凭证也就绪）。
   let voiceReady = true;
@@ -159,6 +144,8 @@ export function publicConfig(config) {
     llmSecretHint: secretHint(config.llmApiKey),
     secretHint: secretHint(config.accessKey),
     sfxSecretHint: secretHint(config.sfxAccessKey),
+    // 每个语音引擎各自保存的设置摘要：不含 Key 值，请求头密钥打码。
+    ttsProviders: publicTtsProviders(config.ttsProviders, secretHint),
     configPath: CONFIG_PATH,
   };
 }

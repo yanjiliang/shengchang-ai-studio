@@ -605,8 +605,11 @@ components:
         kind: { type: string, enum: [analyze-novel, direction-lab, one-click, export-project, voice-design, line-take, sound-generate] }
         projectId: { type: string }
         sceneId: { type: string }
-        status: { $ref: '#/components/schemas/TaskStatus' }
-        progress: { type: integer, minimum: 0, maximum: 100 }
+        status:
+          allOf: [{ $ref: '#/components/schemas/TaskStatus' }]
+          description: 'line-take 在真正轮到引擎之前（还没有 started 事件）报 queued，哪怕任务泵已领取；排队进度看 queuePosition'
+        progress: { type: integer, minimum: 0, maximum: 100, description: 'queued 时为 0（不要拿它当排队进度，用 queuePosition）' }
+        startedAt: { type: [integer, 'null'], description: 'line-take 为真正开始生成（轮到引擎或命中缓存）的时刻；queued 时为 null' }
         message: { type: string }
         result:
           type: object

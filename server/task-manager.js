@@ -139,7 +139,7 @@ export { applyPronunciation };
 // jobId / priority：合成请求经过该引擎的生成通道（breeze-lane.js），同一引擎的
 // 并发受 engineConcurrency 限制，交互任务插到批量任务前面；取消任务时通道里的
 // 排队项被移除、在飞项结果被丢弃（TASK_CANCELLED → 本函数返回 cancelled）。
-export async function runGenerationRequests(config, requests, { projectId, sceneId, onProgress, shouldCancel, jobId = '', priority = PRIORITY.batch, synthesize: synthesizeLine = synthesize } = {}) {
+export async function runGenerationRequests(config, requests, { projectId, sceneId, onProgress, onLaneStart, shouldCancel, jobId = '', priority = PRIORITY.batch, synthesize: synthesizeLine = synthesize } = {}) {
   const results = [];
   const failures = [];
   const projectState = getProject(projectId)?.state || {};
@@ -172,6 +172,8 @@ export async function runGenerationRequests(config, requests, { projectId, scene
           if (shouldCancel?.()) return { status: 'cancelled', results, failures };
           const synthesizeOnce = () => laneFor(config.provider, config).run({ jobId, priority, fn: () => {
             if (shouldCancel?.()) throw Object.assign(new Error('任务已取消'), { code: 'TASK_CANCELLED' });
+            // 轮到它、真的要发给引擎了（单句试听据此从 queued 变 running）。
+            onLaneStart?.({ lineId: request.lineId });
             return synthesizeLine(config, resolved);
           } });
           let audio;
@@ -517,8 +519,13 @@ export async function waitForTaskToSettle(taskId, timeoutMs = 2_000) {
 }
 
 // 轮询接口附带实时排队位置：0 = 正在生成，n = 前面还有 n 个生成，null = 不在引擎通道里。
+// 单句试听在真正轮到它之前（还没有 started 事件：在引擎通道里排队，或在做缓存 / 参考音
+// 检查）对外报 status = queued、progress = 0、startedAt = null；进度看 queuePosition。
+// 库里仍是 running（任务泵领取时写的），这样不会被重复领取。
 export function taskWithQueuePosition(task) {
-  return task ? { ...task, queuePosition: queuePositionOf(task.id) } : task;
+  if (!task) return task;
+  const waiting = task.kind === 'line-take' && task.status === 'running' && !(task.result?.events || []).some((event) => event.type === 'started');
+  return { ...task, ...(waiting ? { status: 'queued', progress: 0, startedAt: null } : {}), queuePosition: queuePositionOf(task.id) };
 }
 
 queueMicrotask(pumpQueue);

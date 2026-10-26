@@ -242,8 +242,19 @@ describe('任务取消 DELETE /api/jobs/:jobId', () => {
     const queued = await postJson('/api/lines/pl1/takes', { projectId, seed: 9002 });
     // 等它真的排进 Breeze 车道（位置 1，前面是在飞的那段）。
     await waitFor(() => queuePositionOf(queued.body.jobId) === 1);
-    const position = (await api(`/api/jobs/${running.body.jobId}`)).body.queuePosition;
-    assert.equal(position, 0);
+    const runningView = (await api(`/api/jobs/${running.body.jobId}`)).body;
+    assert.equal(runningView.queuePosition, 0);
+    assert.equal(runningView.status, 'running');
+    assert.equal(runningView.progress, 20);
+    assert.ok(runningView.startedAt);
+    assert.ok(runningView.result.events.some((event) => event.type === 'started'));
+    // 排在后面的：对外 queued、progress 0、还没有 started 事件；位置看 queuePosition。
+    const queuedView = (await api(`/api/jobs/${queued.body.jobId}`)).body;
+    assert.equal(queuedView.status, 'queued');
+    assert.equal(queuedView.progress, 0);
+    assert.equal(queuedView.queuePosition, 1);
+    assert.equal(queuedView.startedAt, null);
+    assert.ok(!queuedView.result.events.some((event) => event.type === 'started'));
 
     const cancelQueued = await api(`/api/jobs/${queued.body.jobId}`, { method: 'DELETE' });
     assert.equal(cancelQueued.status, 200, JSON.stringify(cancelQueued.body));

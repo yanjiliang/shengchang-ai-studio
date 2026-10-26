@@ -117,15 +117,27 @@ async function storeTake(projectId, take) {
 // 由任务泵调用；runGeneration 是 task-manager 的 runGenerationRequests（注入以避免循环依赖）。
 export async function runLineTakeTask(task, config, { runGeneration }) {
   const { request, seed, lineId, sceneId } = task.payload;
-  updatePersistentTask(task.id, { status: 'running', progress: 5, message: '单句试听排队中', startedAt: Date.now(), error: '' });
-  appendEvent(task.id, { type: 'started', seed });
+  // 任务泵已领取，但还没轮到引擎：库里记 running（防止重复领取）、progress 0；没有
+  // started 事件之前 taskWithQueuePosition 对外报 queued。轮到引擎时（onLaneStart）才算开始，
+  // startedAt 也改成那一刻。
+  updatePersistentTask(task.id, { status: 'running', progress: 0, message: '单句试听排队中', error: '' });
+  let started = false;
+  const markStarted = (message) => {
+    if (started) return;
+    started = true;
+    updatePersistentTask(task.id, { progress: 20, message, startedAt: Date.now() });
+    appendEvent(task.id, { type: 'started', seed });
+  };
   const finishCancelled = () => appendEvent(task.id, { type: 'cancelled' }, { status: 'cancelled', message: '单句试听已取消', completedAt: Date.now(), error: '' });
   try {
     const outcome = await runGeneration(config, [request], {
       projectId: task.projectId, sceneId, jobId: task.id, priority: PRIORITY.interactive,
       shouldCancel: () => Boolean(getPersistentTask(task.id)?.cancelRequested),
-      onProgress: ({ message }) => updatePersistentTask(task.id, { message, progress: 20 }),
+      onProgress: ({ message }) => { if (!started) updatePersistentTask(task.id, { message: `${message}（排队中）` }); },
+      onLaneStart: () => markStarted('正在生成单句试听'),
     });
+    // 缓存命中不进引擎通道：这里补一个 started，事件序列保持 queued → started → take → completed。
+    if (outcome.status !== 'cancelled') markStarted('命中缓存');
     if (outcome.status === 'cancelled' || getPersistentTask(task.id)?.cancelRequested) return finishCancelled();
     if (outcome.failures.length || !outcome.results.length) throw Object.assign(new Error(outcome.failures[0]?.error || '生成失败'), { code: outcome.failures[0]?.code || 'GENERATION_FAILED' });
     const result = outcome.results[0];

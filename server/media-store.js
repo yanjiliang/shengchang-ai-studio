@@ -191,11 +191,26 @@ export async function extractPeaks(url, buckets = 48) {
   return normalized;
 }
 
+// 时长缓存：按 路径 + 大小 + mtime 记，文件被替换就自然失效。304 句的时间线原来每句串行跑一次
+// ffprobe（约 15 秒），命中缓存后只剩 stat。失败不缓存。
+const durationCache = new Map();
+const DURATION_CACHE_MAX = 20_000;
 export async function probeDuration(source) {
+  let key = '';
+  try { const info = await stat(source); key = `${source}|${info.size}|${info.mtimeMs}`; } catch { /* 交给 ffprobe 报真实错误 */ }
+  if (key && durationCache.has(key)) return durationCache.get(key);
   const output = await runWithOutput('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', source]);
   const seconds = Number(output.trim());
   if (!Number.isFinite(seconds) || seconds <= 0) throw new Error(`无法读取音频时长：${path.basename(source)}`);
+  if (key) { if (durationCache.size >= DURATION_CACHE_MAX) durationCache.clear(); durationCache.set(key, seconds); }
   return seconds;
+}
+
+// 冷缓存时并发预取（最多 8 个 ffprobe 同时跑），失败忽略：之后串行那遍会按原逻辑报错。
+async function prefetchDurations(sources, concurrency = 8) {
+  const queue = [...new Set(sources)];
+  const worker = async () => { while (queue.length) { const source = queue.shift(); await probeDuration(source).catch(() => {}); } };
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
 }
 
 async function probeMedia(source) {
@@ -254,6 +269,7 @@ export async function resolveSceneTimeline(scene) {
   const tracks = [];
   const missing = [];
   let dialogueCursor = 0;
+  await prefetchDurations((scene.lines || []).map((line) => (line.type === 'dialogue' ? line.audioUrl : line.assetUrl)).filter(Boolean).map(mediaPath));
   for (const line of scene.lines || []) {
     const url = line.type === 'dialogue' ? line.audioUrl : line.assetUrl;
     if (!url) { if (line.type === 'dialogue') missing.push(line.id); continue; }

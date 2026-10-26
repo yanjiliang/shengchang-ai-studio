@@ -19,7 +19,10 @@ import { audioContentHash, getProject, updateProject } from './database.js';
 import { runtimePaths } from './media-store.js';
 import { BreezeError, listBreezeVoices, registerBreezeVoice } from './breeze.js';
 
-export const REFERENCE_MIN_SECONDS = 10;
+// 上传参考音时长：< 5 秒拒收，> 30 秒拒收；5–10 秒收下但带 REFERENCE_SHORT 警告
+// （推荐 10–30 秒）。这三个数只在这里定义，报错文案 / 警告都从这里取。
+export const REFERENCE_MIN_SECONDS = 5;
+export const REFERENCE_RECOMMENDED_MIN_SECONDS = 10;
 export const REFERENCE_MAX_SECONDS = 30;
 export const REFERENCE_MAX_BYTES = 20 * 1024 * 1024;
 export const TRANSCRIPT_MAX_CHARS = 500;
@@ -96,12 +99,15 @@ export async function transcodeToMonoWav(buffer, { minSeconds = REFERENCE_MIN_SE
     }
     if (enforceDuration && seconds < minSeconds) throw new ReferenceError(`参考音频需 ${minSeconds}–${maxSeconds} 秒，当前 ${seconds.toFixed(1)} 秒，太短`, { code: 'REFERENCE_TOO_SHORT', rule: 'duration' });
     if (enforceDuration && seconds > maxSeconds) throw new ReferenceError(`参考音频需 ${minSeconds}–${maxSeconds} 秒，当前 ${seconds.toFixed(1)} 秒，太长`, { code: 'REFERENCE_TOO_LONG', rule: 'duration' });
+    const warnings = enforceDuration && seconds < REFERENCE_RECOMMENDED_MIN_SECONDS
+      ? [{ code: 'REFERENCE_SHORT', message: `参考音频 ${seconds.toFixed(1)} 秒，短于推荐的 ${REFERENCE_RECOMMENDED_MIN_SECONDS}–${maxSeconds} 秒，克隆效果可能不稳定`, durationMs: Math.round(seconds * 1000), recommendedMinSeconds: REFERENCE_RECOMMENDED_MIN_SECONDS, recommendedMaxSeconds: maxSeconds }]
+      : [];
     try {
       await execFileAsync('ffmpeg', ['-v', 'error', '-y', '-i', input, '-map', '0:a:0', '-ac', '1', '-ar', '24000', '-c:a', 'pcm_s16le', '-map_metadata', '-1', '-fflags', '+bitexact', '-flags:a', '+bitexact', output]);
     } catch {
       throw new ReferenceError('参考音频转码失败（ffmpeg 无法转成单声道 wav）', { code: 'REFERENCE_UNREADABLE', rule: 'decodable' });
     }
-    return { wav: await readFile(output), durationMs: Math.round(seconds * 1000) };
+    return { wav: await readFile(output), durationMs: Math.round(seconds * 1000), warnings };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }

@@ -137,7 +137,7 @@ paths:
     post:
       operationId: postProjectsRolesVoiceReference
       tags: [voices]
-      summary: 锁定参考音（来自音色设计试听，或上传 10–30 秒音频 + 参考文本）
+      summary: 锁定参考音（来自音色设计试听，或上传 5–30 秒音频 + 参考文本；推荐 10–30 秒）
       description: 只在 provider = breeze 时可用，否则 409 ENGINE_NOT_BREEZE。同一音频再次锁定返回 200 unchanged。
       parameters: [ { $ref: '#/components/parameters/projectId' }, { $ref: '#/components/parameters/roleId' } ]
       requestBody:
@@ -154,7 +154,7 @@ paths:
               type: object
               required: [file, transcript]
               properties:
-                file: { type: string, format: binary, description: 'audio/*，≤ 20MB，转成单声道后 10–30 秒' }
+                file: { type: string, format: binary, description: 'audio/*，≤ 20MB，转成单声道后 5–30 秒（< 5 秒 REFERENCE_TOO_SHORT，> 30 秒 REFERENCE_TOO_LONG；5–10 秒收下但 warnings 带 REFERENCE_SHORT）' }
                 transcript: { type: string, minLength: 1, maxLength: 500 }
                 description: { type: string, maxLength: 500 }
       responses:
@@ -493,6 +493,11 @@ components:
         - BREEZE_ERROR             # 502，其他 Breeze 错误
         - LINE_TAKE_INVALID        # 400，其他单句试听参数错误
         - GENERATION_FAILED        # 任务事件里的 code
+    WarningCode:
+      type: string
+      description: 响应 warnings[] 里的代码（请求成功，只是提示）
+      enum:
+        - REFERENCE_SHORT          # 上传参考音 5–10 秒，短于推荐的 10–30 秒
     Error:
       type: object
       required: [error]
@@ -548,6 +553,18 @@ components:
         audioUrl: { type: string }
         transcript: { type: string, maxLength: 500 }
         unchanged: { type: boolean }
+        warnings:
+          type: array
+          description: 可用但不理想的提示；没有时为 []（锁定接口才有）
+          items:
+            type: object
+            required: [code, message]
+            properties:
+              code: { $ref: '#/components/schemas/WarningCode' }
+              message: { type: string }
+              durationMs: { type: integer }
+              recommendedMinSeconds: { type: number, example: 10 }
+              recommendedMaxSeconds: { type: number, example: 30 }
     MissingRole:
       type: object
       properties:

@@ -80,12 +80,15 @@ export function registerBreezeRoutes(app) {
       if (config.provider !== 'breeze') throw new ReferenceError('当前语音引擎不是 Breeze：角色参考音只在 Breeze 引擎下可用', { status: 409, code: 'ENGINE_NOT_BREEZE' });
       requireProjectRole(projectId, roleId);
       let locked;
+      // warnings：可用但不理想（目前只有 REFERENCE_SHORT：上传 5–10 秒）。没有时为 []。
+      let warnings = [];
       if (request.is('multipart/form-data')) {
         const form = await parseMultipart(request);
         const transcript = validateTranscript(form.get('transcript'));
         const file = form.get('file');
         validateUploadFile(file);
-        const { wav, durationMs } = await transcodeToMonoWav(Buffer.from(await file.arrayBuffer()));
+        const { wav, durationMs, warnings: uploadWarnings } = await transcodeToMonoWav(Buffer.from(await file.arrayBuffer()));
+        warnings = uploadWarnings;
         locked = await lockReference(config, { projectId, roleId, wav, transcript, description: String(form.get('description') || ''), source: 'upload', durationMs });
       } else {
         const takeId = request.body?.takeId;
@@ -95,7 +98,7 @@ export function registerBreezeRoutes(app) {
         locked = await lockReference(config, { projectId, roleId, wav, transcript: take.transcript, description: take.description, seed: take.take.seed, source: 'design', durationMs });
       }
       const { reference, unchanged } = locked;
-      response.status(unchanged ? 200 : 201).json({ referenceId: reference.referenceId, audioHash: reference.audioHash, source: reference.source, version: reference.version, breezeVoiceId: reference.breezeVoiceId, audioUrl: reference.audioUrl, transcript: reference.transcript, unchanged });
+      response.status(unchanged ? 200 : 201).json({ referenceId: reference.referenceId, audioHash: reference.audioHash, source: reference.source, version: reference.version, breezeVoiceId: reference.breezeVoiceId, audioUrl: reference.audioUrl, transcript: reference.transcript, unchanged, warnings });
     } catch (error) { sendError(response, error, next); }
   });
 

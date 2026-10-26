@@ -16,7 +16,7 @@ const { createProject, getProject, updateProject, getPersistentTask, audioConten
 const { runtimePaths, ensureRuntime } = await import('./media-store.js');
 const { registerBreezeRoutes } = await import('./breeze-routes.js');
 const { runGenerationRequests, applyResultsToProject, estimateGeneration } = await import('./task-manager.js');
-const { forgetRegisteredVoices, breezeVoiceIdFor, referenceFingerprint } = await import('./voice-references.js');
+const { forgetRegisteredVoices, breezeVoiceIdFor, referenceFingerprint, REFERENCE_MIN_SECONDS, REFERENCE_MAX_SECONDS, REFERENCE_RECOMMENDED_MIN_SECONDS } = await import('./voice-references.js');
 const { sweepStaleTakes } = await import('./voice-design.js');
 const { buildGenerationRequests, buildGenerationRequest } = await import('../shared/generation-requests.mjs');
 const express = (await import('express')).default;
@@ -30,6 +30,7 @@ const characters = [
   { id: 'tangseng', name: '唐僧', role: '主角', description: '' },
   { id: 'sunwukong', name: '孙悟空', role: '主角', description: '' },
   { id: '白骨精', name: '白骨精', role: '反派', description: '' },
+  { id: '白龙马', name: '白龙马', role: '配角', description: '' },
 ];
 const scenes = [{ id: 's1', title: '白虎岭', lines: [
   { id: 'l1', type: 'dialogue', speakerId: 'tangseng', speaker: '唐僧', text: '徒弟，为师腹中饥饿。', emotion: '疲惫', intensity: 30, pace: 85 },
@@ -208,7 +209,25 @@ describe('锁定参考音', () => {
     assert.equal((await postJson(roleUrl('tangseng', '/voice-reference'), {})).body.code, 'REFERENCE_INPUT_REQUIRED');
   });
 
-  test('上传 multipart { file, transcript }：10–30 秒，转码后锁定，版本递增', async () => {
+  test('上传 5–10 秒：收下，但带 REFERENCE_SHORT 警告；≥ 10 秒 warnings 为空', async () => {
+    const short = await upload('白龙马', { wav: toneWav(6), transcript: '短参考。' });
+    assert.equal(short.status, 201, JSON.stringify(short.body));
+    assert.equal(short.body.warnings.length, 1);
+    assert.equal(short.body.warnings[0].code, 'REFERENCE_SHORT');
+    assert.equal(short.body.warnings[0].recommendedMinSeconds, REFERENCE_RECOMMENDED_MIN_SECONDS);
+    assert.equal(short.body.warnings[0].recommendedMaxSeconds, REFERENCE_MAX_SECONDS);
+    assert.ok(Math.abs(short.body.warnings[0].durationMs - 6000) < 50);
+    const edge = await upload('白龙马', { wav: toneWav(REFERENCE_MIN_SECONDS + 0.1), transcript: '刚好够。' });
+    assert.equal(edge.status, 201, JSON.stringify(edge.body));
+    assert.equal(edge.body.warnings[0].code, 'REFERENCE_SHORT');
+    const fine = await upload('白龙马', { wav: toneWav(10.5), transcript: '够长的参考。' });
+    assert.deepEqual(fine.body.warnings, []);
+    const tooShort = await upload('白龙马', { wav: toneWav(REFERENCE_MIN_SECONDS - 0.5), transcript: '太短' });
+    assert.equal(tooShort.body.code, 'REFERENCE_TOO_SHORT');
+    assert.match(tooShort.body.error, new RegExp(`${REFERENCE_MIN_SECONDS}–${REFERENCE_MAX_SECONDS} 秒`));
+  });
+
+  test('上传 multipart { file, transcript }：5–30 秒，转码后锁定，版本递增', async () => {
     const result = await upload('tangseng', { wav: toneWav(12, { sampleRate: 44100 }), transcript: '贫僧唐三藏，从东土大唐而来。' });
     assert.equal(result.status, 201, JSON.stringify(result.body));
     assert.equal(result.body.source, 'upload');
@@ -225,7 +244,7 @@ describe('锁定参考音', () => {
       [{ wav: good, transcript: '   ' }, 400, 'REFERENCE_TRANSCRIPT_REQUIRED', 'transcript'],
       [{ wav: good }, 400, 'REFERENCE_TRANSCRIPT_REQUIRED', 'transcript'],
       [{ transcript: '有字没音频' }, 400, 'REFERENCE_FILE_REQUIRED', 'file'],
-      [{ wav: toneWav(5), transcript: '太短' }, 400, 'REFERENCE_TOO_SHORT', 'duration'],
+      [{ wav: toneWav(4.5), transcript: '太短' }, 400, 'REFERENCE_TOO_SHORT', 'duration'],
       [{ wav: toneWav(31), transcript: '太长' }, 400, 'REFERENCE_TOO_LONG', 'duration'],
       [{ wav: Buffer.from('definitely not audio'), transcript: '坏文件', filename: 'x.wav' }, 400, 'REFERENCE_UNREADABLE', 'decodable'],
       [{ wav: good, transcript: '类型不对', filename: 'notes.txt', type: 'text/plain' }, 415, 'REFERENCE_UNSUPPORTED_TYPE', 'type'],

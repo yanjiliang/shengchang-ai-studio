@@ -27,9 +27,13 @@ test('生产链路路由都写进了 openapi.yaml', () => {
 
 test('服务端抛出的错误码都在 ErrorCode 枚举里', () => {
   const enumStart = spec.indexOf('    ErrorCode:');
-  const enumBlock = spec.slice(enumStart, spec.indexOf('    Error:\n', enumStart));
+  const enumBlock = spec.slice(enumStart, spec.indexOf('    WarningCode:', enumStart));
   assert.ok(enumBlock.length > 100, '找不到 ErrorCode 枚举');
-  const documented = new Set([...enumBlock.matchAll(/^ {8}- ([A-Z_]+)/gm)].map((match) => match[1]));
+  const warningStart = spec.indexOf('    WarningCode:');
+  const warningBlock = spec.slice(warningStart, spec.indexOf('    Error:\n', warningStart));
+  assert.ok(warningStart > 0 && warningBlock.includes('REFERENCE_SHORT'), '找不到 WarningCode 枚举');
+  // 警告码（warnings[].code）和错误码一样要有文档，记在 WarningCode 里。
+  const documented = new Set([...`${enumBlock}\n${warningBlock}`.matchAll(/^ {8}- ([A-Z_]+)/gm)].map((match) => match[1]));
   const sources = ['breeze.js', 'breeze-routes.js', 'production-routes.js', 'line-takes.js', 'voice-references.js', 'voice-design.js', 'one-click.js'].map((file) => read(`./${file}`)).join('\n');
   const thrown = new Set([...sources.matchAll(/code(?:: |\s*=\s*)'([A-Z][A-Z_]{3,})'/g), ...sources.matchAll(/httpError\(\d{3}, '([A-Z_]+)'/g)].map((match) => match[1]));
   thrown.delete('TASK_CANCELLED'); // 内部控制流，不会出现在 HTTP 响应里

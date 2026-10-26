@@ -1,0 +1,705 @@
+openapi: 3.1.0
+info:
+  title: 声场 本地服务 API（生产链路 / Breeze 端到端）
+  version: 0.3.0
+  license: { name: MIT, identifier: MIT }
+  description: |
+    本地服务（默认 http://127.0.0.1:4174）的生产链路接口：Breeze 引擎健康、角色音色设计与参考音、
+    单句试听（seed）、任务查询 / 取消、音色就绪、一键成片预估、导出与整集时间轴。
+
+    ## 鉴权
+    没有账号 / token。服务默认只监听 127.0.0.1，`/api` 前面有一层本机守卫：
+    `Host` 必须是 127.0.0.1 / localhost / [::1]，带 `Origin` 时 Origin 也必须是本机，否则 403。
+    非浏览器客户端（curl、e2e）不带 Origin，直接通过。Docker 下监听 0.0.0.0，守卫仍是唯一边界——
+    不要把端口暴露到公网。
+
+    ## 错误
+    生产链路接口的错误统一为 `Error`：`{ error, code[, rule][, ...details] }`。`error` 是给人看的中文，
+    `code` 是稳定的机器码（见 `ErrorCode`），`rule` 指出上传 / 参数校验里具体哪条规则没过。
+    较早的接口（项目、生成、导出）只返回 `{ error }`，HTTP 状态 400 / 404 / 409 / 413。
+
+    ## 任务与事件生命周期
+    长操作都是本地持久任务（SQLite），立即返回 `jobId`（= taskId），用 `GET /api/jobs/{jobId}`
+    （或旧的 `GET /api/tasks/{taskId}`）轮询。任务 `status`：
+    `queued → running → completed | failed | cancelled`。
+    音色设计 / 单句试听的进度写在 `task.result.events[]`，按时间追加：
+    `queued → started → take（每段一条；音色设计还可能有 take_failed）→ completed | failed | cancelled`。
+    每个引擎一条有并发上限的队列（默认 breeze 1、volcengine 2、custom 2、demo 4；
+    `engineConcurrency` 可改），`queuePosition` 为排队序号（0 = 正在跑，null = 不在队列里）。
+    取消正在跑的任务：Breeze 那次请求会跑完再丢弃结果（`discardedInFlight: true`），队列位置到那时才释放。
+security: []  # 无鉴权：靠本机 Host / Origin 守卫，见上方「鉴权」
+servers:
+  - url: http://127.0.0.1:4174
+tags:
+  - name: engine
+    description: 引擎配置与健康
+  - name: voices
+    description: 角色音色设计与参考音（Breeze）
+  - name: takes
+    description: 单句试听（seed）
+  - name: jobs
+    description: 任务查询与取消
+  - name: production
+    description: 一键成片、音色就绪、台词 stale
+  - name: export
+    description: 导出、时间轴、响度
+paths:
+  /api/health:
+    get:
+      operationId: getHealth
+      tags: [engine]
+      summary: 本地服务健康（含 ffmpeg 是否可用）
+      responses:
+        '200': { description: 'OK' }
+  /api/config:
+    get:
+      operationId: getConfig
+      tags: [engine]
+      summary: 当前配置（密钥脱敏）
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicConfig' }
+  /api/config/test-llm:
+    post:
+      operationId: postConfigTestLlm
+      tags: [engine]
+      summary: 用一小段示例文本真实调用一次文本模型
+      description: 不填 API Key 时，只有火山方舟（*.volces.com）会报错；本地 Ollama / LM Studio / vLLM 可以不填。
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  endpoint: { type: string, example: 'http://127.0.0.1:11434/v1/chat/completions' }
+                  model: { type: string, example: qwen2.5:14b }
+                  characterCount: { type: integer, minimum: 0 }
+                  voiceDescriptionCount: { type: integer, minimum: 0, description: '拆解结果里带 voiceDescription 的角色数' }
+  /api/engines/breeze/health:
+    get:
+      operationId: getEnginesBreezeHealth
+      tags: [engine]
+      summary: Breeze-TTS-2 服务是否可达（永远 200）
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BreezeHealth' }
+  /api/projects/{projectId}/roles/{roleId}/voice-design/takes:
+    post:
+      operationId: postProjectsRolesVoiceDesignTakes
+      tags: [voices]
+      summary: 音色设计：按描述生成若干段试听（异步）
+      parameters: [ { $ref: '#/components/parameters/projectId' }, { $ref: '#/components/parameters/roleId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [description, testLines]
+              properties:
+                description: { type: string, minLength: 1, maxLength: 500, example: '中年男声，低沉沙哑，语速偏慢' }
+                testLines:
+                  type: array
+                  minItems: 1
+                  maxItems: 5
+                  items: { type: string, minLength: 1, maxLength: 200 }
+                  example: ['贫僧从东土大唐而来。']
+                count: { type: integer, minimum: 1, maximum: 5, default: 3, description: '候选数；count × testLines 条数 ≤ 15' }
+      responses:
+        '202': { $ref: '#/components/responses/JobAccepted' }
+        '200': { $ref: '#/components/responses/JobAccepted' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /api/projects/{projectId}/roles/{roleId}/voice-reference:
+    get:
+      operationId: getProjectsRolesVoiceReference
+      tags: [voices]
+      summary: 角色当前锁定的参考音
+      parameters: [ { $ref: '#/components/parameters/projectId' }, { $ref: '#/components/parameters/roleId' } ]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoiceReference' }
+        '404': { $ref: '#/components/responses/Error' }
+    post:
+      operationId: postProjectsRolesVoiceReference
+      tags: [voices]
+      summary: 锁定参考音（来自音色设计试听，或上传 10–30 秒音频 + 参考文本）
+      description: 只在 provider = breeze 时可用，否则 409 ENGINE_NOT_BREEZE。同一音频再次锁定返回 200 unchanged。
+      parameters: [ { $ref: '#/components/parameters/projectId' }, { $ref: '#/components/parameters/roleId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [takeId]
+              properties:
+                takeId: { type: string, description: '音色设计任务 result.takes[].takeId（24 小时内有效）' }
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, transcript]
+              properties:
+                file: { type: string, format: binary, description: 'audio/*，≤ 20MB，转成单声道后 10–30 秒' }
+                transcript: { type: string, minLength: 1, maxLength: 500 }
+                description: { type: string, maxLength: 500 }
+      responses:
+        '201':
+          description: 新锁定
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoiceReference' }
+        '200':
+          description: 与当前参考音相同（unchanged = true）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoiceReference' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+        '415': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+  /api/projects/{projectId}/roles/{roleId}/voice-reference/impact:
+    get:
+      operationId: getProjectsRolesVoiceReferenceImpact
+      tags: [voices]
+      summary: 只读：换参考音后这个角色哪些已生成台词需要重做
+      parameters: [ { $ref: '#/components/parameters/projectId' }, { $ref: '#/components/parameters/roleId' } ]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  affectedLineCount: { type: integer, minimum: 0 }
+                  lineIds: { type: array, items: { type: string } }
+  /api/projects/{projectId}/roles/{roleId}/voice-reference/transcribe:
+    post:
+      operationId: postProjectsRolesVoiceReferenceTranscribe
+      tags: [voices]
+      summary: 自动转写（未实现，固定 501 ASR_NOT_IMPLEMENTED）
+      parameters: [ { $ref: '#/components/parameters/projectId' }, { $ref: '#/components/parameters/roleId' } ]
+      responses:
+        '501': { $ref: '#/components/responses/Error' }
+  /api/projects/{projectId}/voice-readiness:
+    get:
+      operationId: getProjectsVoiceReadiness
+      tags: [production]
+      summary: 哪些有台词的角色还没有可用音色
+      description: Breeze 要求锁定参考音（requirement = locked-reference）；其他引擎要求 voiceMap 绑定。
+      parameters: [ { $ref: '#/components/parameters/projectId' } ]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoiceReadiness' }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/projects/{projectId}/one-click-estimate:
+    post:
+      operationId: postProjectsOneClickEstimate
+      tags: [production]
+      summary: 一键成片预估（句数、字数、缓存命中、音色就绪）
+      parameters: [ { $ref: '#/components/parameters/projectId' } ]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  missingVoiceRoles: { type: array, items: { $ref: '#/components/schemas/MissingRole' }, description: '与 voice-readiness.missingRoles 同形；非空时 Breeze 下 POST one-click 返回 409' }
+                  voiceReady: { type: boolean }
+                  provider: { $ref: '#/components/schemas/Engine' }
+                  sceneCount: { type: integer, minimum: 0 }
+                  dialogueCount: { type: integer, minimum: 0 }
+                  requestCount: { type: integer, minimum: 0 }
+                  unmappedVoiceCount: { type: integer, minimum: 0 }
+                  characters: { type: integer, minimum: 0 }
+                  cacheHits: { type: [integer, 'null'], minimum: 0 }
+                  cacheHitsUnknownCount: { type: integer, minimum: 0 }
+                  needsLlm: { type: boolean }
+  /api/projects/{projectId}/one-click:
+    post:
+      operationId: postProjectsOneClick
+      tags: [production]
+      summary: 一键成片（拆解 → 音色 → 生成 → 检查 → 导出），异步
+      description: |
+        Breeze 下有角色没锁参考音 → 409 VOICE_NOT_READY（details.missingVoiceRoles），不会开跑。
+        （没有场景、要先拆解的项目会在拆解后停下，任务 failed 且 result = { code: VOICE_NOT_READY, missingVoiceRoles }；
+        锁好参考音后 POST /api/tasks/{id}/retry 从「音色」阶段续跑。）
+        完成后 task.result 带 url、durationMs、scenes、segments、lufs、lufsReason、targetLufs。
+      parameters: [ { $ref: '#/components/parameters/projectId' } ]
+      responses:
+        '202': { description: '已入队，返回任务' }
+        '409': { $ref: '#/components/responses/Error' }
+  /api/lines/{lineId}/takes:
+    post:
+      operationId: postLinesTakes
+      tags: [takes]
+      summary: 单句试听：用指定 / 随机 seed 生成一段新 take（异步）
+      description: seed 进缓存键：换 seed 一定是新生成；同 seed 同参数命中缓存。同一句同一显式 seed 的进行中任务会去重（200）。
+      parameters: [ { $ref: '#/components/parameters/lineId' } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                projectId: { type: string, description: '台词 id 在多个项目里重复时必填（否则 409 LINE_AMBIGUOUS）' }
+                seed: { type: [integer, 'null'], minimum: 0, maximum: 2147483647, description: '省略 / null = 服务端随机；必须是 JSON number', example: 42 }
+      responses:
+        '202':
+          description: 已入队
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LineTakeJob' }
+        '200':
+          description: 去重，返回已有任务
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LineTakeJob' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+    get:
+      operationId: getLinesTakes
+      tags: [takes]
+      summary: 这句台词的所有 take（每句最多保留 5 段，已采用 / 当前那段永不删）
+      parameters:
+        - { $ref: '#/components/parameters/lineId' }
+        - { name: projectId, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LineTakes' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /api/lines/{lineId}/takes/{takeId}/accept:
+    post:
+      operationId: postLinesTakesAccept
+      tags: [takes]
+      summary: 采用某段 take 为这句的正式音频（写回 audioUrl / audioSeed / audioHash）
+      parameters:
+        - { $ref: '#/components/parameters/lineId' }
+        - { name: takeId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                projectId: { type: string }
+      responses:
+        '200':
+          description: OK（同 GET takes 的形状）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LineTakes' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '410': { $ref: '#/components/responses/Error' }
+  /api/jobs/{jobId}:
+    get:
+      operationId: getJobs
+      tags: [jobs]
+      summary: 查询任务（含 queuePosition）
+      parameters: [ { $ref: '#/components/parameters/jobId' } ]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
+        '404': { $ref: '#/components/responses/Error' }
+    delete:
+      operationId: deleteJobs
+      tags: [jobs]
+      summary: 取消任务（排队中直接移出；进行中丢弃结果）
+      description: 已取消的再取消返回 200（幂等）；completed / failed 返回 409 JOB_NOT_CANCELLABLE（details.status）。
+      parameters: [ { $ref: '#/components/parameters/jobId' } ]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId: { type: string }
+                  status: { $ref: '#/components/schemas/TaskStatus' }
+                  removed: { type: boolean, description: '从等待队列里移出' }
+                  discardedInFlight: { type: boolean, description: '正在跑，结果到了会被丢弃' }
+                  task: { $ref: '#/components/schemas/Task' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /api/tasks/{taskId}:
+    get:
+      operationId: getTasks
+      tags: [jobs]
+      summary: 旧接口，同 GET /api/jobs/{jobId}（404 只有 { error }）
+      parameters: [ { name: taskId, in: path, required: true, schema: { type: string } } ]
+      responses:
+        '200': { description: 'OK' }
+  /api/projects/{projectId}:
+    get:
+      operationId: getProjects
+      tags: [production]
+      summary: 项目（每句对白带 stale / staleReason）
+      parameters: [ { $ref: '#/components/parameters/projectId' } ]
+      responses:
+        '200': { description: 'state.scenes[].lines[] 为 Line' }
+  /api/projects/{projectId}/export-scene:
+    post:
+      operationId: postProjectsExportScene
+      tags: [export]
+      summary: 导出单场景（同步，响度归一到 targetLufs）
+      parameters: [ { $ref: '#/components/parameters/projectId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sceneId]
+              properties:
+                sceneId: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExportResult' }
+  /api/projects/{projectId}/export-episode:
+    post:
+      operationId: postProjectsExportEpisode
+      tags: [export]
+      summary: 导出整集（异步任务；完成后 task.result 为 ExportResult + scenes / sceneCount / attributionUrl）
+      parameters: [ { $ref: '#/components/parameters/projectId' } ]
+      responses:
+        '202': { description: '已入队，返回任务' }
+  /api/projects/{projectId}/timeline:
+    get:
+      operationId: getProjectsTimeline
+      tags: [export]
+      summary: 整集时间轴（不渲染）+ 最近一次整集导出的响度
+      description: |
+        布局与整集导出完全一致：对白按「上一句结束 + gapAfterMs」顺排（mix.startMs 可钉住），
+        每场尾部加 900ms，场景首尾相接。需要 ffprobe 读时长。
+        lufs 取最近一次完成的 export-episode 或 one-click；之后的改动不会反映进去。
+      parameters: [ { $ref: '#/components/parameters/projectId' } ]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectTimeline' }
+        '404': { $ref: '#/components/responses/Error' }
+components:
+  parameters:
+    projectId: { name: projectId, in: path, required: true, schema: { type: string } }
+    roleId: { name: roleId, in: path, required: true, schema: { type: string }, description: '角色 id（characters[].id）' }
+    lineId: { name: lineId, in: path, required: true, schema: { type: string } }
+    jobId: { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+  responses:
+    Error:
+      description: 错误
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    JobAccepted:
+      description: 已入队（200 = 去重命中已有任务）
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              jobId: { type: string }
+              taskId: { type: string }
+              status: { $ref: '#/components/schemas/TaskStatus' }
+              queuePosition: { type: [integer, 'null'], minimum: 0 }
+              deduplicated: { type: boolean }
+              task: { $ref: '#/components/schemas/Task' }
+  schemas:
+    Engine:
+      type: string
+      enum: [breeze, volcengine, custom, demo]
+    ErrorCode:
+      type: string
+      description: 稳定机器码。括号内为 HTTP 状态。
+      enum:
+        - PROJECT_NOT_FOUND        # 404
+        - ROLE_NOT_FOUND           # 404
+        - JOB_NOT_FOUND            # 404
+        - JOB_NOT_CANCELLABLE      # 409，details.status
+        - ENGINE_NOT_BREEZE        # 409
+        - VOICE_NOT_READY          # 409，details.missingVoiceRoles
+        - SEED_INVALID             # 400
+        - LINE_ID_REQUIRED         # 400
+        - LINE_NOT_FOUND           # 404
+        - LINE_NOT_DIALOGUE        # 409
+        - LINE_TEXT_EMPTY          # 409
+        - LINE_VOICE_UNBOUND       # 409
+        - LINE_AMBIGUOUS           # 409，需带 projectId
+        - TAKE_NOT_FOUND           # 404
+        - TAKE_EXPIRED             # 410
+        - DESIGN_DESCRIPTION_REQUIRED
+        - DESIGN_DESCRIPTION_TOO_LONG
+        - DESIGN_TEST_LINES_REQUIRED
+        - DESIGN_TEST_LINES_TOO_MANY
+        - DESIGN_TEST_LINE_INVALID
+        - DESIGN_TEST_LINE_TOO_LONG
+        - DESIGN_COUNT_INVALID
+        - DESIGN_TOO_MANY_TAKES
+        - REFERENCE_INPUT_REQUIRED
+        - REFERENCE_BAD_FORM
+        - REFERENCE_FILE_REQUIRED
+        - REFERENCE_UNSUPPORTED_TYPE  # 415
+        - REFERENCE_TOO_LARGE      # 413
+        - REFERENCE_TOO_SHORT
+        - REFERENCE_TOO_LONG
+        - REFERENCE_TRANSCRIPT_REQUIRED
+        - REFERENCE_TRANSCRIPT_TOO_LONG
+        - REFERENCE_INVALID
+        - REFERENCE_UNREADABLE
+        - REFERENCE_FILE_MISSING   # 409
+        - REFERENCE_NOT_FOUND      # 404
+        - ASR_NOT_IMPLEMENTED      # 501
+        - BREEZE_UNREACHABLE       # 503
+        - BREEZE_TIMEOUT           # 504
+        - BREEZE_UPSTREAM          # 上游 4xx → 422，5xx → 502
+        - BREEZE_BAD_RESPONSE      # 502
+        - BREEZE_ERROR             # 502，其他 Breeze 错误
+        - LINE_TAKE_INVALID        # 400，其他单句试听参数错误
+        - GENERATION_FAILED        # 任务事件里的 code
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, example: 该角色还没有锁定参考音 }
+        code: { $ref: '#/components/schemas/ErrorCode' }
+        rule: { type: string, description: '没过的校验规则', example: transcript }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        missingVoiceRoles: { type: array, items: { $ref: '#/components/schemas/MissingRole' } }
+      additionalProperties: true
+    PublicConfig:
+      type: object
+      description: 只列出生产链路相关字段
+      properties:
+        provider: { $ref: '#/components/schemas/Engine' }
+        breezeEndpoint: { type: string, format: uri, example: 'http://127.0.0.1:8000' }
+        breezeTimeoutMs: { type: integer }
+        engineConcurrency: { type: object, additionalProperties: { type: integer, minimum: 1 } }
+        engineTimeoutMs: { type: object, additionalProperties: { type: integer } }
+        llmEndpoint: { type: string, description: 'base URL（…/v1）或完整 …/chat/completions', example: 'http://127.0.0.1:11434/v1' }
+        llmModel: { type: string }
+        llmTimeoutMs: { type: integer, minimum: 10000, maximum: 1800000, default: 180000 }
+        llmApiKeyRequired: { type: boolean, description: '只有火山方舟（*.volces.com）为 true' }
+        targetLufs: { type: number, example: -16 }
+    BreezeHealth:
+      type: object
+      properties:
+        engine: { const: breeze }
+        reachable: { type: boolean }
+        endpoint: { type: string }
+        latencyMs: { type: [integer, 'null'] }
+        voiceCount: { type: [integer, 'null'] }
+        error: { type: string }
+        active: { type: boolean, description: '当前 provider 是否为 breeze' }
+        timeoutMs: { type: integer }
+        queue: { $ref: '#/components/schemas/LaneSnapshot' }
+    LaneSnapshot:
+      type: object
+      properties:
+        concurrency: { type: integer, minimum: 1 }
+        inFlight: { type: [string, 'null'] }
+        inFlightJobs: { type: array, items: { type: string } }
+        waiting: { type: integer, minimum: 0 }
+    VoiceReference:
+      type: object
+      properties:
+        referenceId: { type: string }
+        audioHash: { type: string }
+        source: { type: string, enum: [design, upload] }
+        version: { type: integer, minimum: 1 }
+        breezeVoiceId: { type: string }
+        audioUrl: { type: string }
+        transcript: { type: string, maxLength: 500 }
+        unchanged: { type: boolean }
+    MissingRole:
+      type: object
+      properties:
+        roleId: { type: string }
+        name: { type: string }
+        lineCount: { type: integer, minimum: 1 }
+        hasVoiceDescription: { type: boolean }
+        voiceDescription: { type: string, maxLength: 500, description: '角色的 voiceDescription（拆解或用户填写），没有则由描述 + 年龄性别拼出；可直接用作音色设计描述' }
+    VoiceReadiness:
+      type: object
+      properties:
+        engine: { $ref: '#/components/schemas/Engine' }
+        ready: { type: boolean }
+        requirement: { type: string, enum: [locked-reference, voice-map] }
+        missingRoles: { type: array, items: { $ref: '#/components/schemas/MissingRole' } }
+    TaskStatus:
+      type: string
+      enum: [queued, running, completed, failed, cancelled]
+    TaskEvent:
+      type: object
+      required: [type, at]
+      properties:
+        at: { type: integer, description: 'epoch ms' }
+        type: { type: string, enum: [queued, started, take, take_failed, completed, failed, cancelled] }
+        seed: { type: integer }
+        queuePosition: { type: [integer, 'null'] }
+        takeId: { type: string }
+        cached: { type: boolean }
+        error: { type: string }
+        code: { type: string }
+      additionalProperties: true
+    Task:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [analyze-novel, direction-lab, one-click, export-project, voice-design, line-take, sound-generate] }
+        projectId: { type: string }
+        sceneId: { type: string }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        message: { type: string }
+        result:
+          type: object
+          properties:
+            events: { type: array, items: { $ref: '#/components/schemas/TaskEvent' } }
+          additionalProperties: true
+        error: { type: string }
+        cancelRequested: { type: boolean }
+        createdAt: { type: integer }
+        startedAt: { type: [integer, 'null'] }
+        completedAt: { type: [integer, 'null'] }
+        queuePosition: { type: [integer, 'null'] }
+    LineTakeJob:
+      type: object
+      properties:
+        jobId: { type: string }
+        lineId: { type: string }
+        projectId: { type: string }
+        seed: { type: integer, minimum: 0, maximum: 2147483647, description: '实际使用的 seed（随机时也立即返回）' }
+        seedSource: { type: string, enum: [request, random] }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        deduplicated: { type: boolean }
+        queuePosition: { type: [integer, 'null'] }
+        task: { $ref: '#/components/schemas/Task' }
+    Take:
+      type: object
+      properties:
+        takeId: { type: string, description: '= 生成它的 jobId' }
+        lineId: { type: string }
+        sceneId: { type: string }
+        seed: { type: integer, description: '上游回的 X-Seed；缓存命中时为请求的 seed' }
+        requestedSeed: { type: integer }
+        audioUrl: { type: string }
+        engine: { $ref: '#/components/schemas/Engine' }
+        cached: { type: boolean }
+        createdAt: { type: integer }
+    LineTakes:
+      type: object
+      properties:
+        projectId: { type: string }
+        sceneId: { type: string }
+        lineId: { type: string }
+        currentAudioUrl: { type: [string, 'null'] }
+        audioSeed: { type: [integer, 'null'] }
+        acceptedTakeId: { type: [string, 'null'] }
+        takes: { type: array, maxItems: 5, items: { $ref: '#/components/schemas/Take' } }
+        line: { $ref: '#/components/schemas/Line' }
+    Line:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string, enum: [dialogue, sfx, ambient, music] }
+        audioUrl: { type: string }
+        audioSeed: { type: integer }
+        stale: { type: boolean, description: '已有音频与当前文本 / 参数不一致，需要重新生成（只在响应里，不落盘）' }
+        staleReason: { type: [string, 'null'], enum: [text, params, null] }
+    Segment:
+      type: object
+      required: [lineId, startMs, endMs]
+      properties:
+        lineId: { type: string }
+        sceneId: { type: [string, 'null'] }
+        type: { type: string, enum: [dialogue, sfx, ambient, music] }
+        startMs: { type: integer, minimum: 0, example: 1500 }
+        endMs: { type: integer, minimum: 0, example: 3500 }
+    SceneSpan:
+      type: object
+      properties:
+        sceneId: { type: string }
+        title: { type: string }
+        startMs: { type: integer }
+        endMs: { type: integer }
+        durationMs: { type: integer }
+    LufsReason:
+      type: [string, 'null']
+      description: lufs 为 null 时的原因
+      enum: [FFMPEG_UNAVAILABLE, LOUDNESS_MEASURE_FAILED, LOUDNESS_UNPARSEABLE, SILENT, NOT_EXPORTED, NOT_MEASURED, null]
+    ExportResult:
+      type: object
+      properties:
+        url: { type: string, example: /media/exports/p1-整集.mp3 }
+        name: { type: string }
+        durationMs: { type: integer }
+        trackCount: { type: integer }
+        missingLineIds: { type: array, items: { type: string } }
+        segments: { type: array, items: { $ref: '#/components/schemas/Segment' } }
+        scenes: { type: array, items: { $ref: '#/components/schemas/SceneSpan' }, description: '仅整集' }
+        lufs: { type: [number, 'null'], description: '成片实测综合响度（EBU R128，保留 1 位小数）', example: -16.1 }
+        lufsReason: { $ref: '#/components/schemas/LufsReason' }
+        targetLufs: { type: number, example: -16 }
+    ProjectTimeline:
+      type: object
+      properties:
+        projectId: { type: string }
+        durationMs: { type: integer }
+        scenes: { type: array, items: { $ref: '#/components/schemas/SceneSpan' } }
+        segments: { type: array, items: { $ref: '#/components/schemas/Segment' } }
+        missingLineIds: { type: array, items: { type: string } }
+        skippedScenes:
+          type: array
+          items:
+            type: object
+            properties:
+              sceneId: { type: string }
+              reason: { type: string, enum: [NO_DIALOGUE_AUDIO, TIMELINE_INVALID] }
+              message: { type: string }
+        lufs: { type: [number, 'null'] }
+        lufsReason: { $ref: '#/components/schemas/LufsReason' }
+        lastExport:
+          type: [object, 'null']
+          properties:
+            taskId: { type: string }
+            kind: { type: string, enum: [export-project, one-click] }
+            completedAt: { type: integer }
+            url: { type: string }
+            lufs: { type: [number, 'null'] }
+            lufsReason: { $ref: '#/components/schemas/LufsReason' }
+            targetLufs: { type: [number, 'null'] }

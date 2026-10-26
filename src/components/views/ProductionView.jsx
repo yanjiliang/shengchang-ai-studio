@@ -1,10 +1,14 @@
-import { AlertCircle, BookType, Check, Download, LoaderCircle, Music2, PauseCircle, PlayCircle, RefreshCcw, RotateCcw, Save, SlidersHorizontal, Trash2, Volume2, WandSparkles, Waves, XCircle } from 'lucide-react';
+import { AlertCircle, BookType, Headphones, Check, Download, LoaderCircle, Music2, PauseCircle, PlayCircle, RefreshCcw, RotateCcw, Save, SlidersHorizontal, Trash2, Volume2, WandSparkles, Waves, XCircle } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../lib/api';
+import { billingSummary, billingText, missingUsageText, resultBilledCharacters, resultVoiceId } from '../../lib/billing';
 import { defaultMix, rulerTicks, timelinePreview } from '../../lib/timeline';
+import { ReviewMode } from '../review/ReviewMode';
+import { singleAudio } from '../../lib/single-audio.js';
 
 const tabs = [
   { id: 'mix', label: '混音编排', icon: SlidersHorizontal },
+  { id: 'review', label: '审听修句', icon: Headphones },
   { id: 'tasks', label: '任务历史', icon: RefreshCcw },
   { id: 'dictionary', label: '发音词典', icon: BookType },
 ];
@@ -12,7 +16,7 @@ const tabs = [
 const typeNames = { dialogue: '对白', ambient: '环境', sfx: '音效', music: '音乐' };
 const typeIcons = { dialogue: Volume2, ambient: Waves, sfx: PlayCircle, music: Music2 };
 const statusNames = { queued: '排队中', running: '处理中', completed: '已完成', failed: '失败', cancelled: '已取消' };
-const kindNames = { 'analyze-novel': '小说拆解', 'export-project': '整集导出', 'one-click': '一键成片', scene: '场景生成', line: '单句生成', 'batch-missing': '缺失对白补全', 'batch-stale': '过期对白重生成' };
+const kindNames = { 'analyze-novel': '小说拆解', 'export-project': '整集导出', 'one-click': '一键成片', scene: '场景生成', line: '单句生成', 'batch-missing': '缺失对白补全', 'batch-stale': '过期对白重生成', 'voice-design': '音色设计试听', 'line-take': '单句换一条', 'sound-generate': '声音素材生成', 'direction-lab': '演法试听' };
 
 function numberValue(value, fallback) {
   const number = Number(value);
@@ -120,14 +124,44 @@ function MixWorkspace({ project, mediaReport, currentSceneId, onSceneChange, onU
   );
 }
 
-function TaskHistory({ projectId, refreshToken, onToast }) {
+// 0005 计费汇总：新生成 / 复用缓存 / 计费字数，加逐句来源。旧任务推不出来就不显示。
+function TaskBilling({ result, voiceContext }) {
+  // Breeze 本地生成不计费：不显示计费汇总。
+  if (voiceContext?.hideBilling) return null;
+  const summary = billingSummary(result);
+  if (!summary) return null;
+  const missing = missingUsageText(summary);
+  const lines = Array.isArray(result.results) ? result.results : [];
+  // 用 section 而不是 div：.task-copy > div 是进度条的样式。
+  return (
+    <section className="task-billing">
+      <p className={summary.cacheHits ? 'has-cache' : ''}>{billingText(summary)}</p>
+      {missing ? <p className="task-billing-warning"><AlertCircle size={11} />{missing}</p> : null}
+      {lines.length ? <details className="task-failures is-attention"><summary>逐句来源 · {lines.length} 句</summary><ul>{lines.map((item) => <TaskLineSource key={`${item.sceneId}-${item.lineId}`} item={item} voiceContext={voiceContext} />)}</ul></details> : null}
+    </section>
+  );
+}
+
+// 逐句来源一行。生成任务的 results 带 text / usage；一键成片（0007）的 results 只有
+// lineId / voiceId / cached / billedCharacters，文本从当前项目里按 lineId 找。
+// 以后的 voiceDrift（音色偏离）也挂在这一行上。
+function TaskLineSource({ item, voiceContext }) {
+  const voiceId = resultVoiceId(item, voiceContext);
+  const billed = resultBilledCharacters(item);
+  const text = item.text || voiceContext?.textByLine?.get(item.lineId) || item.lineId;
+  const missingUsage = !item.cached && billed === null && item.usageExpected;
+  const label = item.cached ? '复用缓存 · 不计费' : billed !== null ? `新生成 · ${billed} 字` : missingUsage ? '新生成 · 未返回计费字数' : '新生成';
+  return <li><strong>{text.slice(0, 24)}{voiceId ? <small>{voiceId}</small> : null}</strong><span className={item.cached ? 'is-cached' : missingUsage ? 'is-missing-usage' : 'is-fresh'}>{label}</span></li>;
+}
+
+function TaskHistory({ projectId, voiceContext, refreshToken, onToast }) {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const load = async () => { try { const result = await api.listTasks(projectId); setTasks(result.tasks); } catch (error) { onToast(error.message); } finally { setLoading(false); } };
   useEffect(() => { load(); const timer = window.setInterval(() => { if (tasks.some((task) => ['queued', 'running'].includes(task.status))) load(); }, 1500); return () => window.clearInterval(timer); }, [projectId, refreshToken, tasks.some((task) => ['queued', 'running'].includes(task.status))]);
   const action = async (task, kind) => { try { if (kind === 'cancel') await api.cancelTask(task.id); else await api.retryTask(task.id); await load(); } catch (error) { onToast(error.message); } };
   if (loading) return <div className="tasks-loading"><LoaderCircle size={18} className="spin" />正在读取本地任务</div>;
-  return <section className="task-history"><div className="task-history-head"><div><h3>持久任务</h3><p>小说拆解、语音生成和整集导出都会保留状态，服务重启后可恢复。</p></div><button className="button secondary-button" type="button" onClick={load}><RefreshCcw size={14} />刷新</button></div>{tasks.length ? tasks.map((task) => <article className={`task-row is-${task.status}`} key={task.id}><span className="task-status-icon">{task.status === 'completed' ? <Check size={16} /> : task.status === 'failed' ? <AlertCircle size={16} /> : task.status === 'cancelled' ? <XCircle size={16} /> : task.status === 'running' ? <LoaderCircle size={16} className="spin" /> : <PauseCircle size={16} />}</span><div className="task-copy"><strong>{kindNames[task.kind] || task.kind}<small>{statusNames[task.status]}</small></strong><p>{task.error || task.message}</p>{task.result?.failures?.length ? <details className="task-failures"><summary>失败明细 · {task.result.failures.length} 句</summary><ul>{task.result.failures.map((failure) => <li key={failure.lineId}><strong>{failure.text?.slice(0, 24) || failure.lineId}</strong><span>{failure.error}</span></li>)}</ul><p>重试任务时，成功句会直接命中缓存，只为失败句重新付费。</p></details> : null}{task.result?.attention?.length ? <details className="task-failures is-attention"><summary>注意事项 · {task.result.attention.length} 项</summary><ul>{task.result.attention.map((item, index) => <li key={index}><strong>{item}</strong></li>)}</ul></details> : null}<div><span style={{ width: `${task.progress}%` }} /></div></div><time>{new Date(task.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</time><div className="task-actions">{['queued', 'running'].includes(task.status) ? <button type="button" onClick={() => action(task, 'cancel')}>取消</button> : null}{['failed', 'cancelled'].includes(task.status) ? <button type="button" onClick={() => action(task, 'retry')}><RotateCcw size={13} />重试</button> : null}{task.result?.url ? <a href={task.result.url} download={task.result.name}><Download size={13} />下载</a> : null}{task.result?.attributionUrl ? <a href={task.result.attributionUrl} download><BookType size={13} />来源清单</a> : null}</div></article>) : <div className="empty-project"><h2>还没有制作任务</h2><p>生成对白、拆解小说或导出整集后，任务会出现在这里。</p></div>}</section>;
+  return <section className="task-history"><div className="task-history-head"><div><h3>持久任务</h3><p>小说拆解、语音生成和整集导出都会保留状态，服务重启后可恢复。</p></div><button className="button secondary-button" type="button" onClick={load}><RefreshCcw size={14} />刷新</button></div>{tasks.length ? tasks.map((task) => <article className={`task-row is-${task.status}`} key={task.id}><span className="task-status-icon">{task.status === 'completed' ? <Check size={16} /> : task.status === 'failed' ? <AlertCircle size={16} /> : task.status === 'cancelled' ? <XCircle size={16} /> : task.status === 'running' ? <LoaderCircle size={16} className="spin" /> : <PauseCircle size={16} />}</span><div className="task-copy"><strong>{kindNames[task.kind] || task.kind}<small>{statusNames[task.status]}</small></strong><p>{task.error || task.message}</p><TaskBilling result={task.result} voiceContext={voiceContext} />{task.result?.failures?.length ? <details className="task-failures"><summary>失败明细 · {task.result.failures.length} 句</summary><ul>{task.result.failures.map((failure) => <li key={failure.lineId}><strong>{failure.text?.slice(0, 24) || failure.lineId}</strong><span>{failure.error}</span></li>)}</ul><p>{voiceContext?.hideBilling ? '重试任务时，成功句会直接命中缓存，只重新生成失败句。' : '重试任务时，成功句会直接命中缓存，只为失败句重新付费。'}</p></details> : null}{task.result?.attention?.length ? <details className="task-failures is-attention"><summary>注意事项 · {task.result.attention.length} 项</summary><ul>{task.result.attention.map((item, index) => <li key={index}><strong>{item}</strong></li>)}</ul></details> : null}<div><span style={{ width: `${task.progress}%` }} /></div></div><time>{new Date(task.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</time><div className="task-actions">{['queued', 'running'].includes(task.status) ? <button type="button" onClick={() => action(task, 'cancel')}>取消</button> : null}{['failed', 'cancelled'].includes(task.status) ? <button type="button" onClick={() => action(task, 'retry')}><RotateCcw size={13} />重试</button> : null}{task.result?.url ? <a href={task.result.url} download={task.result.name}><Download size={13} />下载</a> : null}{task.result?.attributionUrl ? <a href={task.result.attributionUrl} download><BookType size={13} />来源清单</a> : null}</div></article>) : <div className="empty-project"><h2>还没有制作任务</h2><p>生成对白、拆解小说或导出整集后，任务会出现在这里。</p></div>}</section>;
 }
 
 function PronunciationDictionary({ entries, onChange }) {
@@ -136,11 +170,16 @@ function PronunciationDictionary({ entries, onChange }) {
   return <section className="dictionary-view"><div className="dictionary-head"><div><h3>项目发音词典</h3><p>合成前按顺序替换文本，用于多音字、人名、地名和特殊读法。替换后的文本参与缓存计算。</p></div><span>{entries.length} 条规则</span></div><div className="dictionary-form"><label><span>原文词语</span><input value={term} placeholder="例如：重庆" onChange={(event) => setTerm(event.target.value)} /></label><label><span>送入模型的读法</span><input value={replacement} placeholder="例如：重 庆" onChange={(event) => setReplacement(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') add(); }} /></label><button className="button primary-button" type="button" disabled={!term.trim() || !replacement.trim()} onClick={add}><Save size={14} />添加规则</button></div><div className="dictionary-table"><div className="dictionary-table-head"><span>原文</span><span>合成读法</span><span>作用范围</span><span /></div>{entries.map((entry) => <article key={entry.id}><strong>{entry.term}</strong><span>{entry.replacement}</span><small>当前作品全部场景</small><button type="button" aria-label={`删除${entry.term}`} onClick={() => onChange(entries.filter((item) => item.id !== entry.id))}><Trash2 size={14} /></button></article>)}{entries.length === 0 ? <div className="dictionary-empty"><BookType size={22} /><p>还没有发音规则。没有规则时，原文将直接送入语音模型。</p></div> : null}</div></section>;
 }
 
-export function ProductionView({ project, mediaReport, currentSceneId, onSceneChange, onUpdateLine, onUpdateDictionary, onExportScene, onExportEpisode, onOneClick, oneClickToken, onGenerateMissing, generating, exporting, taskRefreshToken, onToast }) {
-  const [tab, setTab] = useState('mix');
+export function ProductionView({ project, mediaReport, currentSceneId, onSceneChange, onUpdateLine, onUpdateDictionary, onExportScene, onExportEpisode, onOneClick, oneClickToken, onGenerateMissing, generating, exporting, taskRefreshToken, onToast, onUpdateAnyLine, onLineAccepted, onSaveNow, onRegenerateLines, initialTab = 'mix', hideBilling = false, breezeMode = false, breeze = null, onOpenStudio }) {
+  const [tab, setTab] = useState(initialTab);
+  useEffect(() => { setTab(initialTab); }, [initialTab]);
+  // 同一时间只播一段：切换标签页就停。
+  useEffect(() => { singleAudio.stop(); }, [tab]);
   const tabTitle = useMemo(() => tabs.find((item) => item.id === tab)?.label, [tab]);
+  // 旧任务结果没有 voiceId 时，用当前项目的 voiceMap 推断逐句音色（0007 起结果自带实际音色）。
+  const voiceContext = useMemo(() => ({ hideBilling, voiceMap: project.state.voiceMap || {}, speakerByLine: new Map((project.state.scenes || []).flatMap((scene) => scene.lines || []).map((line) => [line.id, line.speakerId])), textByLine: new Map((project.state.scenes || []).flatMap((scene) => scene.lines || []).map((line) => [line.id, line.text || ''])) }), [hideBilling, project.state.voiceMap, project.state.scenes]);
   // The 一键成片 button lives in the mix tab but progress renders in the
   // tasks tab; a click with zero visible feedback reads as broken (OV-8).
   useEffect(() => { if (oneClickToken) setTab('tasks'); }, [oneClickToken]);
-  return <main className="asset-view production-view"><header className="view-header"><div><span className="view-kicker">从场景音频到完整成片</span><h2>制作中心</h2><p>时间轴混音、整集导出、持久任务与发音控制。</p></div><strong className="production-current">{tabTitle}</strong></header><nav className="production-tabs" aria-label="制作中心功能">{tabs.map(({ id, label, icon: Icon }) => <button className={tab === id ? 'is-active' : ''} type="button" key={id} onClick={() => setTab(id)}><Icon size={14} />{label}</button>)}</nav>{tab === 'mix' ? <MixWorkspace project={project} mediaReport={mediaReport} currentSceneId={currentSceneId} onSceneChange={onSceneChange} onUpdateLine={onUpdateLine} onExportScene={onExportScene} onExportEpisode={onExportEpisode} onOneClick={onOneClick} onGenerateMissing={onGenerateMissing} generating={generating} exporting={exporting} onToast={onToast} /> : null}{tab === 'tasks' ? <TaskHistory projectId={project.id} refreshToken={taskRefreshToken} onToast={onToast} /> : null}{tab === 'dictionary' ? <PronunciationDictionary entries={project.state.pronunciationDictionary || []} onChange={onUpdateDictionary} /> : null}</main>;
+  return <main className={`asset-view production-view ${tab === 'review' ? 'is-review' : ''}`}><header className="view-header"><div><span className="view-kicker">从场景音频到完整成片</span><h2>制作中心</h2><p>时间轴混音、整集导出、持久任务与发音控制。</p></div><strong className="production-current">{tabTitle}</strong></header><nav className="production-tabs" aria-label="制作中心功能">{tabs.map(({ id, label, icon: Icon }) => <button className={tab === id ? 'is-active' : ''} type="button" key={id} aria-current={tab === id ? 'page' : undefined} onClick={() => setTab(id)}><Icon size={14} />{label}</button>)}</nav>{tab === 'review' ? <ReviewMode project={project} breezeMode={breezeMode} breeze={breeze} batchRunning={generating} onUpdateAnyLine={onUpdateAnyLine} onAccepted={onLineAccepted} onSaveNow={onSaveNow} onGoProduce={onOpenStudio} onRegenerateLines={onRegenerateLines} /> : null}{tab === 'mix' ? <MixWorkspace project={project} mediaReport={mediaReport} currentSceneId={currentSceneId} onSceneChange={onSceneChange} onUpdateLine={onUpdateLine} onExportScene={onExportScene} onExportEpisode={onExportEpisode} onOneClick={onOneClick} onGenerateMissing={onGenerateMissing} generating={generating} exporting={exporting} onToast={onToast} /> : null}{tab === 'tasks' ? <TaskHistory projectId={project.id} voiceContext={voiceContext} refreshToken={taskRefreshToken} onToast={onToast} /> : null}{tab === 'dictionary' ? <PronunciationDictionary entries={project.state.pronunciationDictionary || []} onChange={onUpdateDictionary} /> : null}</main>;
 }

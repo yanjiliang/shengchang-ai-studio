@@ -6,7 +6,7 @@ import { resolveProjectTimeline } from './media-store.js';
 import { sendError } from './breeze-routes.js';
 import { acceptLineTake, listLineTakes } from './line-takes.js';
 import { applyResultsToProject, cancelTask, enqueueLineTake, getTask, taskWithQueuePosition, waitForTaskToSettle } from './task-manager.js';
-import { annotateStaleness, staleLineCount, voiceReadiness } from './voice-references.js';
+import { annotateStaleness, exportPrecheck, staleLineCount, voiceReadiness } from './voice-references.js';
 
 const httpError = (status, code, message, details) => Object.assign(new Error(message), { status, code, ...(details ? { details } : {}) });
 
@@ -85,6 +85,17 @@ export function registerProductionRoutes(app) {
       const project = getProject(request.params.projectId);
       if (!project) throw httpError(404, 'PROJECT_NOT_FOUND', '项目不存在');
       response.json({ projectId: project.id, ...(await projectTimeline(project, await readConfig())) });
+    } catch (error) { sendError(response, error, next); }
+  });
+
+  // 导出前检查：staleLineCount / staleLines / missingAudioLineCount（?sceneId= 只看一场）。
+  app.get('/api/projects/:projectId/export-precheck', async (request, response, next) => {
+    try {
+      const project = getProject(request.params.projectId);
+      if (!project) throw httpError(404, 'PROJECT_NOT_FOUND', '项目不存在');
+      const sceneId = typeof request.query.sceneId === 'string' && request.query.sceneId ? request.query.sceneId : null;
+      if (sceneId && !(project.state.scenes || []).some((scene) => scene.id === sceneId)) throw httpError(404, 'SCENE_NOT_FOUND', '场景不存在');
+      response.json(exportPrecheck(await readConfig(), project, { sceneId }));
     } catch (error) { sendError(response, error, next); }
   });
 

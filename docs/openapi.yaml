@@ -212,6 +212,24 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/VoiceReadiness' }
         '404': { $ref: '#/components/responses/Error' }
+  /api/projects/{projectId}/export-precheck:
+    get:
+      operationId: getProjectsExportPrecheck
+      tags: [export]
+      summary: 导出前检查（只读，不渲染）——过期句数与缺音频句数，供导出前提示
+      description: |
+        staleLineCount 与导出结果 / 时间轴里的同名字段同一算法（缓存键推导的 stale）。
+        带 sceneId 只看那一场（对应 export-scene），否则整集（export-episode / one-click）。
+      parameters:
+        - { $ref: '#/components/parameters/projectId' }
+        - { name: sceneId, in: query, required: false, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExportPrecheck' }
+        '404': { $ref: '#/components/responses/Error' }
   /api/projects/{projectId}/one-click-estimate:
     post:
       operationId: postProjectsOneClickEstimate
@@ -445,11 +463,31 @@ components:
     Engine:
       type: string
       enum: [breeze, volcengine, custom, demo]
+    ExportPrecheck:
+      type: object
+      required: [projectId, sceneId, dialogueLineCount, staleLineCount, staleLines, missingAudioLineCount, ok]
+      properties:
+        projectId: { type: string }
+        sceneId: { type: [string, 'null'], description: '请求的场景；null = 整集' }
+        dialogueLineCount: { type: integer, minimum: 0 }
+        staleLineCount: { type: integer, minimum: 0, description: '有音频但已过期（导出会用旧音频）的对白句数' }
+        staleLines:
+          type: array
+          items:
+            type: object
+            required: [sceneId, lineId, staleReason]
+            properties:
+              sceneId: { type: string }
+              lineId: { type: string }
+              staleReason: { type: string, enum: [text, params] }
+        missingAudioLineCount: { type: integer, minimum: 0, description: '还没有音频的对白句数（导出时会被跳过）' }
+        ok: { type: boolean, description: 'staleLineCount 与 missingAudioLineCount 都为 0' }
     ErrorCode:
       type: string
       description: 稳定机器码。括号内为 HTTP 状态。
       enum:
         - PROJECT_NOT_FOUND        # 404
+        - SCENE_NOT_FOUND          # 404
         - ROLE_NOT_FOUND           # 404
         - JOB_NOT_FOUND            # 404
         - JOB_NOT_CANCELLABLE      # 409，details.status

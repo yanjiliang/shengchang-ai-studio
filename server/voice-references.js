@@ -276,6 +276,27 @@ export function staleLineCount(config, project, { sceneIds = null } = {}) {
   return count;
 }
 
+// 导出前检查（只读，不渲染）：会进入导出的旧音频（stale）和还没有音频的对白，
+// 让前端在点导出前提示。sceneId 给定时只看这一场（对应导出单场），否则整集。
+export function exportPrecheck(config, project, { sceneId = null } = {}) {
+  const state = project?.state || {};
+  const voiceMap = effectiveVoiceMap(config, state);
+  const staleLines = [];
+  let dialogueLineCount = 0;
+  let missingAudioLineCount = 0;
+  for (const scene of state.scenes || []) {
+    if (sceneId && scene.id !== sceneId) continue;
+    for (const line of scene.lines || []) {
+      if (line.type !== 'dialogue') continue;
+      dialogueLineCount += 1;
+      if (!line.audioUrl) { missingAudioLineCount += 1; continue; }
+      const { stale, staleReason } = lineStaleness(config, state, line, voiceMap);
+      if (stale) staleLines.push({ sceneId: scene.id, lineId: line.id, staleReason });
+    }
+  }
+  return { projectId: project?.id ?? null, sceneId, dialogueLineCount, staleLineCount: staleLines.length, staleLines, missingAudioLineCount, ok: staleLines.length === 0 && missingAudioLineCount === 0 };
+}
+
 // 影响范围（只读）：该角色已有音频的对白里，按当前参考 + 当前引擎配置重新算出的
 // 缓存键 ≠ 台词上存的 audioHash 的，就是“需要重新生成”的句子。
 export function referenceImpact(config, project, roleId) {

@@ -2,6 +2,14 @@
 // server-side one-click orchestrator (OV-7): one copy of the math means the
 // manual flows and the orchestrated flow can never drift apart.
 
+// 数值缺省：只有“没填”（undefined / null / '' / 非数字）才用缺省值；0 是合法值
+// （情绪强度 0 = 最弱，之前 `|| 40` 把它变成了 0.4）。
+export function numberOr(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
 export function buildGenerationRequest(line, voiceMap) {
   return {
     lineId: line.id,
@@ -10,8 +18,9 @@ export function buildGenerationRequest(line, voiceMap) {
     text: line.text,
     subtext: line.subtext || '',
     emotion: line.emotion,
-    emotionScale: Math.max(0.1, (line.intensity || 40) / 100),
-    speed: (line.pace || 90) / 100,
+    emotionScale: Math.min(1, Math.max(0.1, numberOr(line.intensity, 40) / 100)),
+    // 语速 0 不是合法值（界面 70–120%），0 / 缺省都按 90%。
+    speed: (numberOr(line.pace, 90) || 90) / 100,
     distance: line.distance || '',
   };
 }

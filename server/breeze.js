@@ -5,11 +5,16 @@
 // 健康检查与 /voices 注册。台词合成本身仍走 model-adapters.js 里的 custom
 // 适配器（breezeCustomConfig 把预设翻译成 custom 配置），不另起一套。
 
+import { breezeLane } from './breeze-lane.js';
+
 export const BREEZE_DEFAULT_ENDPOINT = 'http://127.0.0.1:4180';
 export const BREEZE_DEFAULT_TIMEOUT_MS = 180_000;
 export const BREEZE_MIN_TIMEOUT_MS = 5_000;
 export const BREEZE_MAX_TIMEOUT_MS = 900_000;
-const HEALTH_TIMEOUT_MS = 3_000;
+// Breeze 生成时 GET /voices 会被阻塞（服务单线程），3 秒的探测超时在生成期间必然误报。
+// 空闲时才探测，超时放宽到 10 秒；忙（有在飞请求或 30 秒内刚成功过）时直接报可达。
+export const HEALTH_TIMEOUT_MS = 10_000;
+export const HEALTH_BUSY_WINDOW_MS = 30_000;
 
 // /tts 的请求体模板（custom 适配器的 customBodyTemplate 语法）。seed 不在模板
 // 里：只有显式指定种子时才注入（injectSeed），否则由 Breeze 用默认种子 42。
@@ -154,21 +159,30 @@ export async function registerBreezeVoice(config, { id, transcript, wavBase64 })
   return { id };
 }
 
-// 健康检查：真的请求一次 GET /voices（轻量、只读、不占生成槽）并解析结果。永远不抛。
+// 健康检查。永远不抛。
+// - 忙（Breeze 通道有在飞请求，或 HEALTH_BUSY_WINDOW_MS 内刚有请求成功返回）：不探测，直接
+//   status ok / reachable true / via 'busy'（latencyMs、voiceCount 为 null）。
+// - 空闲：真的请求一次 GET /voices（HEALTH_TIMEOUT_MS 超时）并解析结果，via 'probe'。
 // status：ok | unreachable（连不上）| timeout | invalid（连上了但 /voices 报错或格式不认）
-// | misconfigured（地址无效）。reachable 只有 status = ok 时为 true——“端口开着但接口坏了”
-// 不算健康（0020 起；以前那种情况 reachable 也是 true）。
-export async function breezeHealth(config) {
+// | misconfigured（地址无效，via 'config'）。reachable 只有 status = ok 时为 true。
+export async function breezeHealth(config, { lane = breezeLane, now = Date.now(), busyWindowMs = HEALTH_BUSY_WINDOW_MS, timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
   let endpoint;
   try { endpoint = breezeSettings(config).endpoint; } catch (error) {
-    return { engine: 'breeze', status: 'misconfigured', reachable: false, endpoint: String(config.breezeEndpoint || ''), latencyMs: null, voiceCount: null, error: error.message };
+    return { engine: 'breeze', status: 'misconfigured', reachable: false, via: 'config', endpoint: String(config.breezeEndpoint || ''), latencyMs: null, voiceCount: null, error: error.message };
+  }
+  const activity = lane?.activity?.() || { inFlight: 0, lastSuccessAt: null };
+  if (activity.inFlight > 0 || (activity.lastSuccessAt !== null && now - activity.lastSuccessAt <= busyWindowMs)) {
+    return { engine: 'breeze', status: 'ok', reachable: true, via: 'busy', endpoint, latencyMs: null, voiceCount: null, error: '', inFlightCount: activity.inFlight, lastSuccessAt: activity.lastSuccessAt };
   }
   const started = Date.now();
   try {
-    const voices = await listBreezeVoices(config, { timeoutMs: HEALTH_TIMEOUT_MS });
-    return { engine: 'breeze', status: 'ok', reachable: true, endpoint, latencyMs: Date.now() - started, voiceCount: voices.length, error: '' };
+    const voices = await listBreezeVoices(config, { timeoutMs });
+    return { engine: 'breeze', status: 'ok', reachable: true, via: 'probe', endpoint, latencyMs: Date.now() - started, voiceCount: voices.length, error: '', inFlightCount: 0, lastSuccessAt: activity.lastSuccessAt };
   } catch (error) {
     const status = error?.code === 'BREEZE_UNREACHABLE' ? 'unreachable' : error?.code === 'BREEZE_TIMEOUT' ? 'timeout' : 'invalid';
-    return { engine: 'breeze', status, reachable: false, endpoint, latencyMs: Date.now() - started, voiceCount: null, error: error.message };
+    return { engine: 'breeze', status, reachable: false, via: 'probe', endpoint, latencyMs: Date.now() - started, voiceCount: null, error: error.message, inFlightCount: 0, lastSuccessAt: activity.lastSuccessAt };
   }
 }
+
+// 连接类失败（连不上 / 连接被重置 / 超时）：值得退避重试，重试后仍失败说明服务挂了。
+export const isBreezeConnectionError = (error) => ['BREEZE_UNREACHABLE', 'BREEZE_TIMEOUT'].includes(error?.code);

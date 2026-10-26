@@ -153,9 +153,20 @@ async function registerReference(config, reference, wav) {
 // 合成前调用：这个参考的 voice 在 Breeze 里不在就从本地存的参考音频 + 参考文本补注册。
 // 每个进程第一次用到时核对一次（声场重启 → 重新核对）；Breeze 自己重启后进程内记录会
 // 过期，那种情况由 healReferenceRegistration 在 /tts 报错时兜底。
-export async function ensureReferenceRegistered(config, reference, { force = false } = {}) {
+// 同一个 voice 的并发调用（比如两句同时开始、或单句试听 + 整场批量）合并成一次核对 / 注册：
+// 在飞期间后来的调用直接等同一个 promise，结束（成功或失败）就清掉，失败不缓存。
+const inflightRegistrations = new Map();
+export function ensureReferenceRegistered(config, reference, { force = false } = {}) {
   const key = `${config.breezeEndpoint}|${reference.breezeVoiceId}`;
-  if (!force && registered.has(key)) return { registered: false };
+  if (!force && registered.has(key)) return Promise.resolve({ registered: false });
+  const pending = inflightRegistrations.get(key);
+  if (pending) return pending;
+  const promise = checkAndRegister(config, reference, key).finally(() => { inflightRegistrations.delete(key); });
+  inflightRegistrations.set(key, promise);
+  return promise;
+}
+
+async function checkAndRegister(config, reference, key) {
   registered.delete(key);
   const voices = await listBreezeVoices(config);
   if (voices.some((voice) => voice.id === reference.breezeVoiceId)) { registered.add(key); return { registered: false }; }
@@ -163,6 +174,8 @@ export async function ensureReferenceRegistered(config, reference, { force = fal
     throw new ReferenceError(`角色参考音频文件丢失（${reference.audioUrl}），无法在 Breeze 重新注册，请重新锁定参考音`, { status: 409, code: 'REFERENCE_FILE_MISSING' });
   }
   try { await registerReference(config, reference); } catch (error) {
+    // 连不上 / 超时原样抛：调用方据此退避重试、或判定 Breeze 挂了。
+    if (['BREEZE_UNREACHABLE', 'BREEZE_TIMEOUT'].includes(error?.code)) throw error;
     throw new BreezeError(`Breeze 里没有这个角色的音色（${reference.breezeVoiceId}），自动重新注册失败：${error.message}`, { status: error.status || 502, code: 'BREEZE_VOICE_REGISTER_FAILED' });
   }
   return { registered: true };

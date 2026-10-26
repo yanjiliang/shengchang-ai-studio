@@ -125,6 +125,9 @@ describe('GET /api/engines/breeze/health', () => {
     assert.equal(body.active, true);
     assert.equal(body.voiceCount, 1);
     assert.ok(Number.isFinite(body.latencyMs));
+    assert.equal(body.via, 'probe', '空闲时真的探测');
+    assert.equal(body.inFlightCount, 0);
+    assert.equal(body.queue.inFlight, null);
   });
   test('服务不在：仍是 200，reachable=false 并给出原因', async () => {
     writeConfigFile({ provider: 'demo', breezeEndpoint: 'http://127.0.0.1:1' });

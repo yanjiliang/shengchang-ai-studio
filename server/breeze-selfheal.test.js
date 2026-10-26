@@ -105,7 +105,8 @@ describe('Breeze 地址规范化', () => {
     const before = mock.state.requests.length;
     const outcome = await runGenerationRequests({ provider: 'breeze', breezeEndpoint: `${mock.endpoint}/tts` }, [{ ...request(), speakerId: 'nobody', voiceId: 'preset-x' }], { projectId, sceneId: 's1' });
     assert.equal(outcome.failures.length, 0, JSON.stringify(outcome.failures));
-    assert.deepEqual(calls(before), ['POST /tts']);
+    // 本文件第一次生成、Breeze 通道空闲：先预检一次 GET /voices（0036），再 POST /tts。
+    assert.deepEqual(calls(before), ['GET /voices', 'POST /tts']);
   });
 });
 

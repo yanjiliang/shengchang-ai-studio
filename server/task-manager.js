@@ -11,6 +11,7 @@ import { buildAttribution } from './attribution.js';
 import { ensureBuiltinAssets } from './builtin-assets.js';
 import { ensureReferenceRegistered, healReferenceRegistration, isBreezeRejection, resolveReferenceRequest, applyPronunciation, staleLineCount } from './voice-references.js';
 import { cancelJobEverywhere, laneFor, PRIORITY, queuePositionOf } from './breeze-lane.js';
+import { BreezeError, breezeHealth, isBreezeConnectionError } from './breeze.js';
 import { createVoiceDesignJob, runVoiceDesignTask } from './voice-design.js';
 import { createLineTakeJob, runLineTakeTask } from './line-takes.js';
 
@@ -139,11 +140,48 @@ export { applyPronunciation };
 // jobId / priority：合成请求经过该引擎的生成通道（breeze-lane.js），同一引擎的
 // 并发受 engineConcurrency 限制，交互任务插到批量任务前面；取消任务时通道里的
 // 排队项被移除、在飞项结果被丢弃（TASK_CANCELLED → 本函数返回 cancelled）。
-export async function runGenerationRequests(config, requests, { projectId, sceneId, onProgress, onLaneStart, shouldCancel, jobId = '', priority = PRIORITY.batch, synthesize: synthesizeLine = synthesize } = {}) {
+//
+// Breeze 连接类失败（0036）：
+// - 预检：第一句真的要发给 Breeze 之前（缓存命中的句子不需要 Breeze）做一次健康检查；
+//   连不上 / 超时 → 整个任务一次性返回 status 'unreachable'（code BREEZE_UNREACHABLE），
+//   不再给每一句都记一条 ECONNREFUSED。
+// - 运行中：参考音核对 / 合成遇到连接错误（ECONNREFUSED / ECONNRESET / 超时）按 retryDelaysMs
+//   退避重试（默认 2 次）；仍失败 → 停掉本任务剩下的句子，同样返回 'unreachable'。
+// - 退避等待期间取消立即生效（TASK_CANCELLED → cancelled）。
+// 'unreachable' 结果：{ status, code, causeCode, error, results, failures, skippedCount, skippedLineIds }。
+export const BREEZE_RETRY_DELAYS_MS = [2_000, 5_000];
+
+function cancelledError() { return Object.assign(new Error('任务已取消'), { code: 'TASK_CANCELLED' }); }
+
+async function waitUnlessCancelled(ms, shouldCancel) {
+  const until = Date.now() + ms;
+  for (;;) {
+    if (shouldCancel?.()) throw cancelledError();
+    const left = until - Date.now();
+    if (left <= 0) return;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(left, 100)));
+  }
+}
+
+export async function runGenerationRequests(config, requests, { projectId, sceneId, onProgress, onLaneStart, shouldCancel, jobId = '', priority = PRIORITY.batch, synthesize: synthesizeLine = synthesize, retryDelaysMs = BREEZE_RETRY_DELAYS_MS, preflight = breezeHealth } = {}) {
   const results = [];
   const failures = [];
   const projectState = getProject(projectId)?.state || {};
   const projectDictionary = projectState.pronunciationDictionary || [];
+  let preflightPending = config.provider === 'breeze';
+  const stopUnreachable = (index, error) => ({
+    status: 'unreachable', code: 'BREEZE_UNREACHABLE', causeCode: error.code || '',
+    error: `Breeze 服务连不上，任务已停止，剩余 ${requests.length - index} 句未生成：${error.message}`,
+    results, failures, skippedCount: requests.length - index, skippedLineIds: requests.slice(index).map((item) => item.lineId),
+  });
+  const withConnectionRetry = async (fn) => {
+    for (let attempt = 0; ; attempt += 1) {
+      try { return await fn(); } catch (error) {
+        if (!isBreezeConnectionError(error) || attempt >= retryDelaysMs.length) throw error;
+        await waitUnlessCancelled(retryDelaysMs[attempt], shouldCancel);
+      }
+    }
+  };
   for (let index = 0; index < requests.length; index += 1) {
     if (shouldCancel?.()) return { status: 'cancelled', results, failures };
     const request = requests[index];
@@ -165,8 +203,16 @@ export async function runGenerationRequests(config, requests, { projectId, scene
           cacheAudio({ contentHash, url: recovered.url, mime: recovered.mime, provider: config.provider || '', model: config.model || '', voiceId: resolved.voiceId || '' });
           results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: recovered.url, mime: recovered.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', engine: config.provider || '', cached: true, createdAt: Date.now() });
         } else {
+          if (preflightPending) {
+            preflightPending = false;
+            const health = await preflight(config, { lane: laneFor('breeze', config) });
+            if (shouldCancel?.()) return { status: 'cancelled', results, failures };
+            if (!health.reachable && ['unreachable', 'timeout'].includes(health.status)) {
+              return stopUnreachable(index, new BreezeError(health.error || 'Breeze 服务连不上', { code: health.status === 'timeout' ? 'BREEZE_TIMEOUT' : 'BREEZE_UNREACHABLE' }));
+            }
+          }
           const reference = resolved.referenceHash ? projectState.voiceReferences[request.speakerId] : null;
-          if (reference) await ensureReferenceRegistered(config, reference);
+          if (reference) await withConnectionRetry(() => ensureReferenceRegistered(config, reference));
           // 取消可能发生在上面的 await 期间（此时还不在通道里，cancelJobEverywhere 摸不到）：
           // 进通道前同步再查一次；轮到它时再查一次，已取消的绝不发给引擎。
           if (shouldCancel?.()) return { status: 'cancelled', results, failures };
@@ -177,12 +223,12 @@ export async function runGenerationRequests(config, requests, { projectId, scene
             return synthesizeLine(config, resolved);
           } });
           let audio;
-          try { audio = await synthesizeOnce(); } catch (error) {
+          try { audio = await withConnectionRetry(synthesizeOnce); } catch (error) {
             // 自愈：Breeze 重启后注册表是空的，/tts 拒收这个 voiceId。重新核对 GET /voices，
             // 确实不在就用本地参考音补注册，然后重试一次（只一次）；voice 在则原样报错。
-            if (!reference || !isBreezeRejection(error) || !(await healReferenceRegistration(config, reference))) throw error;
+            if (!reference || !isBreezeRejection(error) || !(await withConnectionRetry(() => healReferenceRegistration(config, reference)))) throw error;
             if (shouldCancel?.()) return { status: 'cancelled', results, failures };
-            audio = await synthesizeOnce();
+            audio = await withConnectionRetry(synthesizeOnce);
           }
           const extension = extensionForMime(audio.mime, config.audioFormat);
           const saved = await saveMedia(contentHash, extension, audio.buffer);
@@ -192,6 +238,8 @@ export async function runGenerationRequests(config, requests, { projectId, scene
       }
     } catch (error) {
       if (error.code === 'TASK_CANCELLED') return { status: 'cancelled', results, failures };
+      // 重试过仍连不上：Breeze 挂了，剩下的句子不再逐句失败。
+      if (config.provider === 'breeze' && isBreezeConnectionError(error)) return stopUnreachable(index, error);
       failures.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, text: request.text, error: error.name === 'AbortError' ? '模型请求超时' : error.message, ...(error.code ? { code: error.code } : {}) });
     }
   }
@@ -239,6 +287,16 @@ async function runGenerationTask(task, config) {
       updatePersistentTask(task.id, { status: 'cancelled', message: '任务已取消', result: { results: outcome.results }, completedAt: Date.now() });
       return;
     }
+    if (outcome.status === 'unreachable') {
+      // 已生成的句子照常写入项目（重试时缓存命中、不再付费）；任务整体失败一次，code 在 result.code。
+      if (!isDirectionLab && outcome.results.length) applyResultsToProject(task.projectId, task.sceneId, outcome.results);
+      updatePersistentTask(task.id, {
+        status: 'failed', message: `Breeze 服务连不上，任务已停止（${outcome.results.length} 句已完成，${outcome.skippedCount} 句未生成）`, error: outcome.error,
+        result: { code: outcome.code, causeCode: outcome.causeCode, results: outcome.results, failures: outcome.failures, skippedCount: outcome.skippedCount, skippedLineIds: outcome.skippedLineIds, ...summarizeBilling(outcome.results) },
+        completedAt: Date.now(),
+      });
+      return;
+    }
     if (!isDirectionLab) applyResultsToProject(task.projectId, task.sceneId, outcome.results);
     await evictAudioCacheIfNeeded(config.cacheLimitGb);
     const { results, failures } = outcome;
@@ -279,7 +337,7 @@ async function runTask(task) {
       await runOneClickPipeline(task, config);
     } catch (error) {
       if (error.code === 'TASK_CANCELLED') updatePersistentTask(task.id, { status: 'cancelled', message: '一键成片已取消', error: '', completedAt: Date.now() });
-      else updatePersistentTask(task.id, { status: 'failed', message: error.code === 'VOICE_NOT_READY' ? '一键成片暂停：有角色缺少参考音' : '一键成片失败', error: error.message, completedAt: Date.now(), ...(error.details ? { result: { code: error.code, ...error.details } } : {}) });
+      else updatePersistentTask(task.id, { status: 'failed', message: error.code === 'VOICE_NOT_READY' ? '一键成片暂停：有角色缺少参考音' : error.code === 'BREEZE_UNREACHABLE' ? '一键成片已停止：Breeze 服务连不上' : '一键成片失败', error: error.message, completedAt: Date.now(), ...(error.details ? { result: { code: error.code, ...error.details } } : {}) });
     }
     return;
   }

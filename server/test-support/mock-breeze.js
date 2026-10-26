@@ -27,7 +27,13 @@ export async function startMockBreeze({ port = 0, delayMs = 0, clipSeconds = 1.2
     // GET /voices 的返回形状。真 Breeze 返回 { id: transcript }（'object'）；
     // 'array' = [{id, transcript}]，'wrapped' = { voices: [...] }，'garbage' = 无法识别。
     voicesShape: 'object',
+    // resetNext: n —— 接下来 n 个生成请求直接断开连接（客户端看到 ECONNRESET / socket hang up）。
+    resetNext: 0,
+    // voicesBlockWhileGenerating: true 时 GET /voices 要等所有生成结束才回（真 Breeze 单线程的样子）。
+    voicesBlockWhileGenerating: false,
   };
+  const idleWaiters = [];
+  const notifyIdle = () => { if (state.inFlight === 0) for (const resume of idleWaiters.splice(0)) resume(); };
   const release = () => { const pending = state.held.splice(0); for (const resume of pending) resume(); };
   const server = http.createServer((request, response) => {
     const chunks = [];
@@ -42,6 +48,7 @@ export async function startMockBreeze({ port = 0, delayMs = 0, clipSeconds = 1.2
       const fail = state.failNext && state.failNext.path === url.pathname && (!state.failNext.method || state.failNext.method === request.method) ? state.failNext : null;
       if (fail) { state.failNext = null; response.writeHead(fail.status, { 'Content-Type': 'text/plain' }); return response.end(fail.text || 'mock failure'); }
       if (url.pathname === '/voices' && request.method === 'GET') {
+        if (state.voicesBlockWhileGenerating && state.inFlight > 0) await new Promise((resume) => idleWaiters.push(resume));
         const list = [...state.voices.values()].map(({ id, transcript }) => ({ id, transcript }));
         const payload = state.voicesShape === 'array' ? list
           : state.voicesShape === 'wrapped' ? { voices: list }
@@ -61,10 +68,12 @@ export async function startMockBreeze({ port = 0, delayMs = 0, clipSeconds = 1.2
         if (url.pathname === '/tts' && body.voiceId && !state.voices.has(body.voiceId) && !String(body.voiceId).startsWith('preset-')) {
           response.writeHead(400, { 'Content-Type': 'text/plain' }); return response.end(`unknown voiceId: ${body.voiceId}`);
         }
+        if (state.resetNext > 0) { state.resetNext -= 1; request.socket.destroy(); return; }
         state.inFlight += 1; state.inFlightPeak = Math.max(state.inFlightPeak, state.inFlight);
         if (state.hold) await new Promise((resume) => state.held.push(resume));
         if (state.delayMs) await new Promise((resume) => setTimeout(resume, state.delayMs));
         state.inFlight -= 1;
+        notifyIdle();
         const seed = Number.isSafeInteger(body.seed) ? body.seed : 42;
         // 真 Breeze：请求里有 instruction（字符串，含 ''）就用它，缺省 / null 自己拼；
         // X-Instruction-B64 回显实际用的。instructionOverride 用来模拟“没按声场的来”。

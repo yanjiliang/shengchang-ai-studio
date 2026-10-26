@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { normalizeAge, normalizeGender } from './character-meta.js';
 import { llmChatUrl, sameEndpoint, sameLlmEndpoint } from '../shared/endpoint.mjs';
+import { numberOr } from '../shared/generation-requests.mjs';
 
 const SCHEMA_INSTRUCTION = `
 将输入小说改编成可制作的中文多人广播剧场景。只返回 JSON，不要 Markdown。
@@ -24,7 +25,7 @@ function normalizeLine(line, characterIds) {
   const speaker = String(line.speaker || '旁白').trim();
   let speakerId = String(line.speakerId || (speaker === '旁白' ? 'narrator' : speaker)).trim();
   if (!characterIds.has(speakerId)) speakerId = speaker === '旁白' ? 'narrator' : speakerId.toLowerCase().replace(/\s+/g, '-');
-  return { id: randomUUID(), type: 'dialogue', speaker, speakerId, text: String(line.text || '').trim(), subtext: String(line.subtext || '按当前剧情上下文表达。'), emotion: String(line.emotion || '克制'), intensity: Math.min(100, Math.max(0, Number(line.intensity) || 40)), pace: Math.min(120, Math.max(70, Number(line.pace) || 90)), distance: String(line.distance || '近讲') };
+  return { id: randomUUID(), type: 'dialogue', speaker, speakerId, text: String(line.text || '').trim(), subtext: String(line.subtext || '按当前剧情上下文表达。'), emotion: String(line.emotion || '克制'), intensity: Math.min(100, Math.max(0, numberOr(line.intensity, 40))), pace: Math.min(120, Math.max(70, Number(line.pace) || 90)), distance: String(line.distance || '近讲') };
 }
 
 function normalizeResult(result, fallbackName) {

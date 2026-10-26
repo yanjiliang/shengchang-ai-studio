@@ -171,7 +171,19 @@ describe('单句试听（seed）', () => {
     assert.equal(b.status, 200);
     assert.equal(b.body.deduplicated, true);
     assert.equal(b.body.jobId, a.body.jobId);
+    // 0036：POST 响应带 progress / startedAt，刚提交时 0 / null。
+    assert.equal(a.body.progress, 0);
+    assert.equal(a.body.startedAt, null);
     await waitFor(() => mock.state.held.length === 1);
+    // 已经轮到引擎：再 POST 一次（去重）与 GET /api/jobs/:jobId 同一口径。
+    const c = await postJson('/api/lines/pl1/takes', { projectId, seed: 777 });
+    const polled = (await api(`/api/jobs/${a.body.jobId}`)).body;
+    assert.equal(c.body.deduplicated, true);
+    assert.equal(c.body.status, polled.status);
+    assert.equal(c.body.progress, polled.progress);
+    assert.equal(c.body.startedAt, polled.startedAt);
+    assert.ok(Number.isFinite(c.body.startedAt));
+    assert.equal(c.body.status, 'running');
     mock.release(); mock.state.hold = false;
     assert.equal((await waitForTask(a.body.jobId)).status, 'completed');
   });

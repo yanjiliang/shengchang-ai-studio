@@ -166,7 +166,7 @@ export function archiveProject(id) {
 export function createPersistentTask({ kind, projectId, sceneId = '', payload }) {
   const id = randomUUID();
   database.prepare('INSERT INTO tasks(id,kind,project_id,scene_id,status,progress,message,payload_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
-    .run(id, kind, projectId || null, sceneId, 'queued', 1, '任务已进入本地队列', JSON.stringify(payload), Date.now());
+    .run(id, kind, projectId || null, sceneId, 'queued', 0, '任务已进入本地队列', JSON.stringify(payload), Date.now());
   return getPersistentTask(id);
 }
 

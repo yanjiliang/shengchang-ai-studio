@@ -47,10 +47,12 @@ async function parseMultipart(request) {
 
 export function registerBreezeRoutes(app) {
   // 永远 200：reachable 告诉前端服务在不在；active 表示当前是否选用 Breeze。
+  // via：busy = Breeze 正在 / 刚刚生成（不探测，生成期间 GET /voices 会被阻塞）；probe = 空闲时真的探了一次。
   app.get('/api/engines/breeze/health', async (_request, response, next) => {
     try {
       const config = await readConfig();
-      response.json({ ...(await breezeHealth(config)), active: config.provider === 'breeze', timeoutMs: config.breezeTimeoutMs, queue: laneFor('breeze', config).snapshot() });
+      const lane = laneFor('breeze', config);
+      response.json({ ...(await breezeHealth(config, { lane })), active: config.provider === 'breeze', timeoutMs: config.breezeTimeoutMs, queue: lane.snapshot() });
     } catch (error) { next(error); }
   });
 

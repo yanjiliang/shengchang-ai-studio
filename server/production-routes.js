@@ -63,7 +63,9 @@ export function registerProductionRoutes(app) {
       const body = request.body || {};
       const config = await readConfig();
       const { task, deduplicated } = enqueueLineTake(config, { lineId: request.params.lineId, projectId: body.projectId, seed: body.seed });
-      response.status(deduplicated ? 200 : 202).json({ jobId: task.id, lineId: task.payload.lineId, projectId: task.projectId, seed: task.payload.seed, seedSource: task.payload.seedSource, status: task.status, deduplicated, queuePosition: taskWithQueuePosition(task).queuePosition, task: taskWithQueuePosition(task) });
+      // status / progress / startedAt / queuePosition 与 GET /api/jobs/:jobId 同一口径（taskWithQueuePosition）。
+      const view = taskWithQueuePosition(task);
+      response.status(deduplicated ? 200 : 202).json({ jobId: task.id, lineId: task.payload.lineId, projectId: task.projectId, seed: task.payload.seed, seedSource: task.payload.seedSource, status: view.status, progress: view.progress, startedAt: view.startedAt ?? null, deduplicated, queuePosition: view.queuePosition, task: view });
     } catch (error) { sendError(response, error, next); }
   });
 

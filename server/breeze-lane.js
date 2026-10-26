@@ -24,6 +24,9 @@ export function createLane({ concurrency = 1 } = {}) {
   const running = new Set();
   let limit = Math.max(1, Math.floor(concurrency) || 1);
   let sequence = 0;
+  // 最近一次上游真正成功返回的时间（含已被取消丢弃的在飞项：上游确实回了）。健康检查据此判断
+  // “刚刚还在正常出活”，不必在 Breeze 忙着生成时去探 GET /voices（会被生成阻塞）。
+  let lastSuccessAt = null;
 
   function pump() {
     while (running.size < limit && waiting.length) {
@@ -31,7 +34,7 @@ export function createLane({ concurrency = 1 } = {}) {
       const item = waiting.shift();
       running.add(item);
       Promise.resolve().then(item.fn).then(
-        (value) => { if (!item.discarded) item.resolve(value); },
+        (value) => { lastSuccessAt = Date.now(); if (!item.discarded) item.resolve(value); },
         (error) => { if (!item.discarded) item.reject(error); },
       ).finally(() => { running.delete(item); pump(); });
     }
@@ -72,6 +75,8 @@ export function createLane({ concurrency = 1 } = {}) {
       }
       return { removed, discardedInFlight };
     },
+    // inFlight：正在上游跑的请求数（含取消后仍在等上游结束的那一项）。
+    activity() { return { inFlight: running.size, lastSuccessAt }; },
     snapshot() {
       const inFlight = [...running].map((item) => item.jobId);
       return { concurrency: limit, inFlight: inFlight[0] ?? null, inFlightJobs: inFlight, waiting: waiting.length };

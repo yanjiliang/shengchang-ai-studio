@@ -258,6 +258,26 @@ describe('runOneClickPipeline 阶段断点', () => {
     assert.ok(finished.result.attention.some((item) => /缺少性别\/年龄信息/.test(item)), JSON.stringify(finished.result.attention));
   });
 
+  test('0036：Breeze 连不上 → 一键成片整体失败一次（BREEZE_UNREACHABLE），后面的场景不再尝试', async () => {
+    const state = {
+      scenes: ['s1', 's2'].map((id) => ({ id, title: id, status: 'pending', lines: [{ id: `${id}-l1`, type: 'dialogue', speaker: '林夏', speakerId: 'linxia', text: '你好。' }, { id: `${id}-l2`, type: 'dialogue', speaker: '林夏', speakerId: 'linxia', text: '再见。' }] })),
+      assets: [], characters: [{ id: 'linxia', name: '林夏', role: '角色', description: '' }], voiceMap: { linxia: 'preset-x' },
+    };
+    const project = createProject({ name: 'Breeze 挂了', state });
+    const task = createPersistentTask({ kind: 'one-click', projectId: project.id, payload: { completedStages: ['拆解', '音色'] } });
+    let generateCalls = 0;
+    await assert.rejects(runOneClickPipeline(task, { provider: 'demo' }, {
+      runGeneration: async (_config, requests) => {
+        generateCalls += 1;
+        return { status: 'unreachable', code: 'BREEZE_UNREACHABLE', causeCode: 'BREEZE_UNREACHABLE', error: 'Breeze 服务连不上', results: [], failures: [], skippedCount: requests.length, skippedLineIds: requests.map((item) => item.lineId) };
+      },
+      inspectMedia: async () => ({ scenes: [], projectDurationMs: 0 }),
+      exportTimeline: async () => { throw new Error('不应导出'); },
+    }), (error) => error.code === 'BREEZE_UNREACHABLE' && error.details.skippedCount === 4);
+    assert.equal(generateCalls, 1);
+    assert.ok(!getPersistentTask(task.id).payload.completedStages.includes('生成'));
+  });
+
   test('一键成片重新拆解时保留用户设的性别/年龄（id 变了按名字匹配）', async () => {
     const project = createProject({ name: '重拆', sourceText: '“走吧。”唐僧说。', state: { characters: [{ id: 'old-ts', name: '唐僧', gender: '男', genderSource: 'user', age: '青年' }], scenes: [], voiceMap: {} } });
     const task = createPersistentTask({ kind: 'one-click', projectId: project.id, payload: { completedStages: ['音色', '生成'] } });

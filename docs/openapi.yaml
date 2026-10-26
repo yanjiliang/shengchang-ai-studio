@@ -108,7 +108,7 @@ paths:
       operationId: getEnginesBreezeHealth
       tags: [engine]
       summary: Breeze-TTS-2 服务是否可用（永远 200）
-      description: '真的请求一次 Breeze `GET /voices` 并解析结果（`{id: transcript}`、`[{id, transcript}]`、`{voices: [...]}` 三种形状都认）。端口开着但 /voices 报错或格式不认 → `status: invalid`、`reachable: false`。'
+      description: 'Breeze 生成时 `GET /voices` 会被阻塞，所以忙（Breeze 通道有在飞请求，或 30 秒内刚有请求成功返回）时不探测，直接报 `status: ok`、`reachable: true`、`via: busy`（latencyMs / voiceCount 为 null）。空闲时真的请求一次 `GET /voices`（10 秒超时）并解析结果（`{id: transcript}`、`[{id, transcript}]`、`{voices: [...]}` 三种形状都认），`via: probe`。端口开着但 /voices 报错或格式不认 → `status: invalid`、`reachable: false`。'
       responses:
         '200':
           description: OK
@@ -546,7 +546,7 @@ components:
         - REFERENCE_FILE_MISSING   # 409
         - REFERENCE_NOT_FOUND      # 404
         - ASR_NOT_IMPLEMENTED      # 501
-        - BREEZE_UNREACHABLE       # 503
+        - BREEZE_UNREACHABLE       # 503；也是生成 / 一键成片 / 单句试听任务整体停止时的 result.code（预检连不上，或运行中重试 2 次仍连不上）
         - BREEZE_TIMEOUT           # 504
         - BREEZE_UPSTREAM          # 上游 4xx → 422，5xx → 502
         - BREEZE_BAD_RESPONSE      # 502
@@ -643,8 +643,11 @@ components:
       type: object
       properties:
         engine: { const: breeze }
-        status: { enum: [ok, unreachable, timeout, invalid, misconfigured], description: 'ok = GET /voices 成功且格式可识别' }
+        status: { enum: [ok, unreachable, timeout, invalid, misconfigured], description: 'ok = 忙（via busy）或 GET /voices 成功且格式可识别' }
         reachable: { type: boolean, description: '只有 status = ok 时为 true' }
+        via: { enum: [busy, probe, config], description: 'busy = 正在 / 刚刚生成，没有探测；probe = 空闲时探测了一次 GET /voices；config = 地址无效（misconfigured），没发请求' }
+        inFlightCount: { type: integer, minimum: 0, description: 'Breeze 通道里正在上游跑的请求数（含取消后仍在等上游结束的）；misconfigured 时省略' }
+        lastSuccessAt: { type: [integer, 'null'], description: '最近一次 Breeze 生成请求成功返回的时刻（epoch ms，本进程内）；misconfigured 时省略' }
         endpoint: { type: string }
         latencyMs: { type: [integer, 'null'] }
         voiceCount: { type: [integer, 'null'] }
@@ -724,18 +727,21 @@ components:
         status:
           allOf: [{ $ref: '#/components/schemas/TaskStatus' }]
           description: 'line-take 在真正轮到引擎之前（还没有 started 事件）报 queued，哪怕任务泵已领取；排队进度看 queuePosition'
-        progress: { type: integer, minimum: 0, maximum: 100, description: 'queued 时为 0（不要拿它当排队进度，用 queuePosition）' }
+        progress: { type: integer, minimum: 0, maximum: 100, description: '新建 / queued 时为 0（不要拿它当排队进度，用 queuePosition）' }
         startedAt: { type: [integer, 'null'], description: 'line-take 为真正开始生成（轮到引擎或命中缓存）的时刻；queued 时为 null' }
         message: { type: string }
         result:
           type: object
           properties:
             events: { type: array, items: { $ref: '#/components/schemas/TaskEvent' } }
+            code: { type: string, description: '任务级失败码。BREEZE_UNREACHABLE = Breeze 连不上，整个任务失败一次（不逐句失败）；VOICE_NOT_READY = 一键成片缺参考音' }
+            causeCode: { type: string, description: 'code = BREEZE_UNREACHABLE 时的底层原因（BREEZE_UNREACHABLE 或 BREEZE_TIMEOUT）' }
+            skippedCount: { type: integer, minimum: 0, description: 'code = BREEZE_UNREACHABLE 时没生成的句数（含停下时那一句）' }
+            skippedLineIds: { type: array, items: { type: string }, description: '生成任务（非一键成片）code = BREEZE_UNREACHABLE 时没生成的台词 id' }
           additionalProperties: true
         error: { type: string }
         cancelRequested: { type: boolean }
         createdAt: { type: integer }
-        startedAt: { type: [integer, 'null'] }
         completedAt: { type: [integer, 'null'] }
         queuePosition: { type: [integer, 'null'] }
     LineTakeJob:
@@ -747,6 +753,8 @@ components:
         seed: { type: integer, minimum: 0, maximum: 2147483647, description: '实际使用的 seed（随机时也立即返回）' }
         seedSource: { type: string, enum: [request, random] }
         status: { $ref: '#/components/schemas/TaskStatus' }
+        progress: { type: integer, minimum: 0, maximum: 100, description: '与 GET /api/jobs/{jobId} 同一口径（轮到引擎之前为 0）' }
+        startedAt: { type: [integer, 'null'], description: '与 GET /api/jobs/{jobId} 同一口径（轮到引擎之前为 null）' }
         deduplicated: { type: boolean }
         queuePosition: { type: [integer, 'null'] }
         task: { $ref: '#/components/schemas/Task' }

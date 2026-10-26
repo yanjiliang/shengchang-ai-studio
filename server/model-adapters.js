@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { breezeCustomConfig, breezeSettings, explainBreezeFailure, parseSeedHeader, upstreamError } from './breeze.js';
+import { numberOr } from '../shared/generation-requests.mjs';
 
 function requestTimeout(timeoutMs = 90_000) {
   const controller = new AbortController();
@@ -196,7 +197,7 @@ export const STABLE_SPEAKER_CLAUSE = '保持当前基础音色稳定';
 export function voiceInstructions(request, { stableSpeaker = true, pauseWording = true } = {}) {
   const fragments = [];
   if (request.emotion) {
-    const scale = Math.min(1, Math.max(0.1, Number(request.emotionScale) || 0.4));
+    const scale = Math.min(1, Math.max(0.1, numberOr(request.emotionScale, 0.4)));
     const degree = EMOTION_DEGREE.find((item) => scale >= item.min).word;
     fragments.push(`用${degree}${request.emotion}的语气说`);
   }
@@ -223,7 +224,7 @@ export const BREEZE_INSTRUCTION_MAX_CHARS = 300;
 export function breezeInstruction(request = {}) {
   const parts = [];
   if (request.emotion) {
-    const scale = Math.min(1, Math.max(0.1, Number(request.emotionScale) || 0.4));
+    const scale = Math.min(1, Math.max(0.1, numberOr(request.emotionScale, 0.4)));
     const degree = EMOTION_DEGREE.find((item) => scale >= item.min).word;
     parts.push(`用${degree}${request.emotion}的语气说`);
   }
@@ -285,7 +286,7 @@ async function synthesizeCustom(config, request) {
     if (config.accessKey && !Object.values(headers).some((value) => String(value).includes(config.accessKey))) headers.Authorization ||= `Bearer ${config.accessKey}`;
     let body = interpolateTemplate(config.customBodyTemplate, {
       text: request.text, voiceId: request.voiceId, emotion: request.emotion || '',
-      emotionScale: request.emotionScale || 1, speed: request.speed || 1, model: config.model, resourceId: config.resourceId,
+      emotionScale: numberOr(request.emotionScale, 1), speed: request.speed || 1, model: config.model, resourceId: config.resourceId,
       subtext: request.subtext || '', distance: request.distance || '',
       // 同一套情绪/节奏指令（与豆包 seed-tts-2.0 同源，含 TTS_INSTRUCTION_VERSION）。
       // Breeze：声场的指令为准（breezeInstruction，可能是 '' = 纯克隆）。其他 custom 服务

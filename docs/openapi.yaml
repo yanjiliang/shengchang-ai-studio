@@ -238,9 +238,10 @@ paths:
     get:
       operationId: getProjectsExportPrecheck
       tags: [export]
-      summary: 导出前检查（只读，不渲染）——过期句数与缺音频句数，供导出前提示
+      summary: 导出前检查（只读，不渲染）——过期句数、缺音频句数、音频文件丢失句数，供导出前提示
       description: |
         staleLineCount 与导出结果 / 时间轴里的同名字段同一算法（缓存键推导的 stale）。
+        pendingLineCount 是「还要配几句」的唯一口径：一键成片预估（one-click-estimate）和一键成片生成阶段配的正是这些句子。
         带 sceneId 只看那一场（对应 export-scene），否则整集（export-episode / one-click）。
       parameters:
         - { $ref: '#/components/parameters/projectId' }
@@ -257,6 +258,9 @@ paths:
       operationId: postProjectsOneClickEstimate
       tags: [production]
       summary: 一键成片预估（句数、字数、缓存命中、音色就绪）
+      description: |
+        要配的句子与 export-precheck 的 pendingLineCount 同一判断：没有音频、音频文件丢了、已过期（缓存键推导）。
+        没有引擎记录的旧句子（升级前生成）缓存键对不上时只按文本判断，参数变化不算过期，避免升级后整批重配。
       parameters: [ { $ref: '#/components/parameters/projectId' } ]
       responses:
         '200':
@@ -431,11 +435,17 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ExportResult' }
+        '409':
+          description: 'AUDIO_FILE_MISSING：本场有对白的音频文件不见了（details.missingFileLines），先重新生成再导出'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /api/projects/{projectId}/export-episode:
     post:
       operationId: postProjectsExportEpisode
       tags: [export]
       summary: 导出整集（异步任务；完成后 task.result 为 ExportResult + scenes / sceneCount / attributionUrl）
+      description: 有对白的音频文件丢失时任务失败，code 为 AUDIO_FILE_MISSING，details.missingFileLines 列出这些句子；不会少一句悄悄导出。
       parameters: [ { $ref: '#/components/parameters/projectId' } ]
       responses:
         '202': { description: '已入队，返回任务' }
@@ -487,7 +497,7 @@ components:
       enum: [breeze, volcengine, custom, demo]
     ExportPrecheck:
       type: object
-      required: [projectId, sceneId, dialogueLineCount, staleLineCount, staleLines, missingAudioLineCount, pendingLineCount, pendingCharCount, ok]
+      required: [projectId, sceneId, dialogueLineCount, staleLineCount, staleLines, missingAudioLineCount, missingFileLineCount, missingFileLines, pendingLineCount, pendingCharCount, ok]
       properties:
         projectId: { type: string }
         sceneId: { type: [string, 'null'], description: '请求的场景；null = 整集' }
@@ -503,9 +513,18 @@ components:
               lineId: { type: string }
               staleReason: { type: string, enum: [text, params] }
         missingAudioLineCount: { type: integer, minimum: 0, description: '还没有音频的对白句数（导出时会被跳过）' }
-        pendingLineCount: { type: integer, minimum: 0, description: '要渲染才能导出的对白句数 = 没有音频 + 过期（文本为空的不算）' }
+        missingFileLineCount: { type: integer, minimum: 0, description: '有 audioUrl 但音频文件已不在磁盘上的对白句数；不为 0 时导出返回 409 AUDIO_FILE_MISSING' }
+        missingFileLines:
+          type: array
+          items:
+            type: object
+            required: [sceneId, lineId]
+            properties:
+              sceneId: { type: string }
+              lineId: { type: string }
+        pendingLineCount: { type: integer, minimum: 0, description: '要渲染才能导出的对白句数 = 没有音频 + 过期 + 音频文件丢失（文本为空的不算）；与一键成片预估 / 生成的句子一致' }
         pendingCharCount: { type: integer, minimum: 0, description: '这些句子发给语音引擎的字符数：套过发音词典后的文本（即豆包 req_params.text），按 Unicode 码位计。豆包实际计费以返回的 usage.text_words 为准，这是估算' }
-        ok: { type: boolean, description: 'staleLineCount 与 missingAudioLineCount 都为 0' }
+        ok: { type: boolean, description: 'staleLineCount、missingAudioLineCount、missingFileLineCount 都为 0' }
     ErrorCode:
       type: string
       description: 稳定机器码。括号内为 HTTP 状态。
@@ -526,6 +545,7 @@ components:
         - LINE_AMBIGUOUS           # 409，需带 projectId
         - TAKE_NOT_FOUND           # 404
         - TAKE_EXPIRED             # 410
+        - AUDIO_FILE_MISSING       # 409，导出时有对白的音频文件不见了（details.missingFileLines）
         - DESIGN_DESCRIPTION_REQUIRED
         - DESIGN_DESCRIPTION_TOO_LONG
         - DESIGN_TEST_LINES_REQUIRED
@@ -570,6 +590,7 @@ components:
         rule: { type: string, description: '没过的校验规则', example: transcript }
         status: { $ref: '#/components/schemas/TaskStatus' }
         missingVoiceRoles: { type: array, items: { $ref: '#/components/schemas/MissingRole' } }
+        details: { type: object, additionalProperties: true, description: '附加信息，例如 AUDIO_FILE_MISSING 时的 missingFileLines: [{ sceneId, lineId }]' }
       additionalProperties: true
     TestLlmCode:
       type: [string, 'null']

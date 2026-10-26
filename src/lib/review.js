@@ -1,4 +1,4 @@
-// 审听修句 + 导出（/workspace/shengchang-review-mode/handoff.md）的纯逻辑。界面在 components/review/。
+// 审听修句 + 导出的纯逻辑。界面在 components/review/。
 import { driftState } from './drift.js';
 
 export const MARK_REASONS = ['串字/漏字', '不像这个角色', '情绪不对', '停顿/截断', '其他'];

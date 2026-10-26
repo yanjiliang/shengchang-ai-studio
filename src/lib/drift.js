@@ -1,5 +1,4 @@
 // 音色偏离（voiceDrift）的显示逻辑。判定在服务端做（渲染完成后计算），前端只显示。
-// 规则见 /workspace/shengchang-drift-mock/handoff.md。
 
 export const DRIFT_REASONS = ['drift', 'nearest_other', 'short_line'];
 export const INSUFFICIENT_TEXT = '样本不足，未检查';

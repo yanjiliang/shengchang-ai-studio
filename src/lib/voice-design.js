@@ -1,5 +1,5 @@
 // 角色声音设计（本地 Breeze-TTS-2）的纯逻辑：试听任务状态、排队文案、取消、
-// 上传检查、锁定影响、需重渲判定。规则见 /workspace/shengchang-voice-design/handoff.md。
+// 上传检查、锁定影响、需重渲判定。
 import { SECONDS_PER_CHAR, BREEZE_RATIO, formatSeconds } from './engine.js';
 
 export const TAKE_COUNT = 3;

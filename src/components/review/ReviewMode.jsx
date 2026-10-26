@@ -28,7 +28,7 @@ function ReviewToast({ toast, onHide }) {
   );
 }
 
-// 审听修句（handoff：/workspace/shengchang-review-mode/handoff.md）。一个项目 = 一集，episodeId = projectId。
+// 审听修句。一个项目 = 一集，episodeId = projectId。
 export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, batchRunning = false, onUpdateAnyLine, onSaveNow, onAccepted, onGoProduce, onRegenerateLines, onFinishPending = null, refreshToken = 0 }) {
   const projectId = project.id;
   const scenes = project.state?.scenes || [];

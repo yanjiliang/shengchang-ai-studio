@@ -69,6 +69,95 @@ Everything runs on loopback (`127.0.0.1`); credentials never leave `~/.shengchan
 - 某句音频文件丢了，导出会被拦住，并列出是哪几句，可以直接重新生成这几句。
 - 导出失败时直接告诉你失败了，可以「重试」，「详情」里有原始报错，可一键复制。
 
+## 安装 Breeze
+
+声场的「本地 Breeze-TTS-2」引擎需要你在自己电脑上跑一个 Breeze 服务，默认地址是 `http://127.0.0.1:4180`，只监听本机。仓库 `breeze/` 目录里有服务脚本，但**不包含模型权重**，权重要你自己下载。
+
+> **许可**：Breeze TTS 2 的权重采用 BreezeBlue Research and Non-Commercial License，**仅限研究和非商业用途**，而且不是开源许可。声场代码是 MIT，但权重不适用 MIT。权重请自己下载，不要提交进仓库，也不要随项目再分发。
+
+### 硬件和系统
+
+- 需要 Apple Silicon 的 Mac（M 系列芯片）。服务用 MLX，跑在 Metal GPU 上，不用 PyTorch / CUDA。Intel Mac、Linux、Windows **未验证**，大概率跑不了，因为 `mlx` 只支持 Apple Silicon。
+- 建议 24 GB 以上内存，16 GB 未测试。（实测机器：Apple M4 Pro、48 GB、macOS 26.7.1。配完一整集后，MLX 的峰值显存约 11.7 GB。）
+- 磁盘：bf16 权重约 7.1 GB。
+
+### 1. 准备环境
+
+需要 [uv](https://docs.astral.sh/uv/)（实测用 uv 0.9.24，Homebrew 安装：`brew install uv`），以及 Python 3.12（实测 3.12.11，uv 会自动下载）。
+
+```sh
+cd breeze
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -r requirements.txt
+```
+
+`requirements.txt` 里的版本是从实际运行的环境里逐个锁定的（mlx-audio 0.6.1、mlx 0.32.4、transformers 5.20.2、fastapi 0.162.0、uvicorn 0.54.0 等）。mlx-audio 原样使用，没有打补丁。
+（未验证：没有在一台干净的机器上用这份 requirements.txt 从零装过一遍。）
+
+### 2. 自己下载权重（仅限非商用）
+
+用的是 MLX 转换版：[mlx-community/Breeze-TTS-2-mlx](https://huggingface.co/mlx-community/Breeze-TTS-2-mlx)（bf16，非官方转换）。原始模型是 [BreezeBlue/Breeze-TTS-2](https://huggingface.co/BreezeBlue/Breeze-TTS-2)，下载前请先读它的许可。
+
+```sh
+cd breeze
+.venv/bin/hf download mlx-community/Breeze-TTS-2-mlx --local-dir models/Breeze-TTS-2-mlx
+```
+
+下载不用登录 Hugging Face（实测时没有登录，只会提示“unauthenticated requests”）。下载完，`models/Breeze-TTS-2-mlx/` 里应该有 `config.json`、`model-00001-of-00002.safetensors`、`model-00002-of-00002.safetensors`、`audio_tokenizer/`、`tokenizer.json`、`LICENSE` 等文件。`breeze/.gitignore` 已经忽略了 `models/`。
+
+权重放在别的地方也可以，启动时用 `BREEZE_MODEL_DIR=/你的路径 ./start.sh` 指定。
+（未验证：8bit 版 `mlx-community/Breeze-TTS-2-mlx-8bit` 可以省内存，但还没测过音质和稳定性。）
+
+### 3. 启动
+
+```sh
+cd breeze
+./start.sh
+# 输出：started pid 12345; log: logs/server.log
+```
+
+服务在后台运行，日志写到 `logs/server.log`，每次生成的耗时和内存记录在 `logs/requests.jsonl`。加载模型约 3 秒（实测 `load_seconds` 为 2.6）。如果 4180 端口已经被占用，脚本会报 `port 4180 already in use` 并退出。要换端口，就用 `BREEZE_PORT=4280 ./start.sh` 启动，声场里的地址也要跟着改。
+
+### 4. 确认 4180 能连上
+
+```sh
+curl -s http://127.0.0.1:4180/health
+```
+
+正常时返回 HTTP 200 和一段 JSON，`"ok":true`，`device` 是 GPU。实测输出如下（路径做了脱敏，voices 列表做了截断）：
+
+```json
+{"ok":true,"model":"<你的路径>/breeze/models/Breeze-TTS-2-mlx","runtime":"mlx-audio","pause_backstop_default":true,"device":"Device(gpu, 0)","load_seconds":2.6,"voices":["bajie","laoweng", …],"requests":143,"errors":0,"max_peak_gb":11.65…}
+```
+
+刚装好时 `voices` 是 `[]`，`requests` 是 0。声场在设置页判断“已连接”时，调用的是 `GET /voices`（返回 `{音色id: 参考文本}`）：
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4180/voices   # 期望 200
+```
+
+如果连不上：先看 `logs/server.log` 里有没有 `Uvicorn running on http://127.0.0.1:4180`，再确认权重路径对不对。
+
+### 5. 停止
+
+```sh
+cd breeze
+./stop.sh
+# 输出：stopped 12345
+```
+
+`stop.sh` 只会停掉 `logs/server.pid` 里记录的那个进程。
+
+### 6. 在声场里连上 Breeze
+
+打开声场的设置页，语音引擎选「本地 Breeze-TTS-2」，「Breeze 服务地址」填 `http://127.0.0.1:4180`（这也是默认值），只填 `http://主机:端口`，不用加 `/tts`，然后保存。这个地址是声场服务端去连的，浏览器不会直接连 Breeze。
+
+注意：Breeze 地址也是配音缓存的一部分。已经配过音的项目如果改了这个地址（哪怕只改端口），所有 Breeze 配过的句子都会被标成需要重配。重配在本机进行，不花钱，但要等全部重新生成。所以地址定下来以后就别再改了。
+
+### 角色音色存在哪里
+
+角色音色由声场通过 `POST /voices` 注册，保存在 `breeze/voices/<id>.wav` 和 `<id>.txt` 里。这些是你本机的音频，已经被 `.gitignore` 忽略。删了它们，对应角色就得重新设计音色。
+
 ## 环境要求
 
 - Node.js 22.5+（数据库使用内置 `node:sqlite`）

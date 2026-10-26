@@ -1,0 +1,13 @@
+# Breeze weights (BreezeBlue Research and Non-Commercial License) — each user downloads them; never commit
+models/
+*.safetensors
+*.gguf
+*.bin
+.cache/
+# local runtime
+.venv/
+logs/
+# reference voices registered at runtime (user audio)
+voices/
+__pycache__/
+*.pyc

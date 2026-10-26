@@ -37,7 +37,7 @@ export const DEFAULT_CONFIG = {
   // seed-tts-2.0 指令末尾追加“保持当前基础音色稳定”（见 model-adapters.js）。
   ttsStableSpeaker: true,
   targetLufs: -16,
-  llmEndpoint: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
+  llmEndpoint: '', // 0048：不预填任何服务商，用户自己填 Base URL（Product 定）
   llmApiKey: '',
   llmModel: '',
   llmSystemPrompt: '你是一位专业广播剧编剧和声音导演。忠于原作，不凭空新增关键剧情。',
@@ -70,7 +70,7 @@ export function sanitizeConfig(input = {}) {
     engineTimeoutMs: normalizeEngineTimeouts(config.engineTimeoutMs),
     ttsStableSpeaker: config.ttsStableSpeaker !== false && config.ttsStableSpeaker !== 'false',
     targetLufs: Number(config.targetLufs) || -16,
-    llmEndpoint: String(config.llmEndpoint || DEFAULT_CONFIG.llmEndpoint),
+    llmEndpoint: String(config.llmEndpoint ?? DEFAULT_CONFIG.llmEndpoint).trim(),
     llmApiKey: String(config.llmApiKey || ''),
     llmModel: String(config.llmModel || ''),
     // 本地大模型拆一段 24k 字可能很慢：10 秒–30 分钟，默认 180 秒。

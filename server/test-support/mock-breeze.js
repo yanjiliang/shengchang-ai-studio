@@ -35,7 +35,7 @@ export async function startMockBreeze({ port = 0, delayMs = 0, clipSeconds = 1.2
       if (chunks.length) {
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { response.writeHead(400, { 'Content-Type': 'text/plain' }); return response.end('invalid json'); }
       }
-      state.requests.push({ method: request.method, path: url.pathname, body, at: Date.now() });
+      state.requests.push({ method: request.method, path: url.pathname, body, headers: { authorization: request.headers.authorization }, at: Date.now() });
       const fail = state.failNext && state.failNext.path === url.pathname ? state.failNext : null;
       if (fail) { state.failNext = null; response.writeHead(fail.status, { 'Content-Type': 'text/plain' }); return response.end(fail.text || 'mock failure'); }
       if (url.pathname === '/voices' && request.method === 'GET') {

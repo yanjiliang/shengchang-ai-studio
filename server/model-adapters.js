@@ -303,7 +303,6 @@ export function validateSoundConfig(config) {
   if (provider === 'demo') return;
   if (provider === 'custom') {
     if (!config.sfxEndpoint) throw new Error('请填写音效生成接口地址');
-    if (!config.sfxAccessKey) throw new Error('请填写音效生成访问凭证');
     if (!String(config.sfxCustomBodyTemplate || '').includes('{{prompt}}')) throw new Error('音效请求体模板需包含 {{prompt}}');
     return;
   }
@@ -368,7 +367,9 @@ export function validateProviderConfig(config) {
   // 本地 Breeze 服务不需要凭证，只要地址合法。
   if (config.provider === 'breeze') { breezeSettings(config); return; }
   if (!config.endpoint) throw new Error('请填写接口地址');
-  if (!config.accessKey) throw new Error('请填写访问凭证');
+  // 只有豆包强制要凭证；custom 可以是本机/内网不鉴权的服务（如 Breeze、本地 TTS），
+  // 有 accessKey 时照常带 Authorization: Bearer。
+  if (config.provider === 'volcengine-api-key' && !config.accessKey) throw new Error('请填写访问凭证');
   if (config.provider === 'volcengine-api-key' && !config.resourceId) throw new Error('请选择豆包语音模型');
 }
 

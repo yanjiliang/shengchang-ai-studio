@@ -67,7 +67,7 @@ describe('Breeze 预设走 custom 适配器', () => {
   test('Breeze 不需要凭证；地址非法时报错', () => {
     assert.doesNotThrow(() => validateProviderConfig({ provider: 'breeze', breezeEndpoint: 'http://127.0.0.1:4180' }));
     assert.throws(() => validateProviderConfig({ provider: 'breeze', breezeEndpoint: 'ftp://x' }), /Breeze 服务地址无效/);
-    assert.throws(() => validateProviderConfig({ provider: 'custom', endpoint: 'http://x' }), /访问凭证/, 'custom 仍要求凭证');
+    assert.doesNotThrow(() => validateProviderConfig({ provider: 'custom', endpoint: 'http://x' }), 'custom 不再强制凭证');
   });
 });
 
@@ -139,4 +139,16 @@ test('publicConfig.voiceReady：Breeze 无凭证即就绪，豆包缺 Key 不就
   assert.equal(publicConfig(sanitizeConfig({ provider: 'breeze' })).voiceReady, true);
   assert.equal(publicConfig(sanitizeConfig({ provider: 'volcengine-api-key', endpoint: 'https://x', accessKey: '' })).voiceReady, false);
   assert.equal(publicConfig(sanitizeConfig({ provider: 'demo' })).voiceReady, true);
+});
+
+test('custom 适配器可以不填凭证（本机 / 内网不鉴权服务）；有凭证才带 Authorization', async () => {
+  const custom = sanitizeConfig({ provider: 'custom', endpoint: `${mock.endpoint}/tts`, accessKey: '', customBodyTemplate: '{"text":"{{text}}","voiceId":"{{voiceId}}"}' });
+  assert.doesNotThrow(() => validateProviderConfig(custom));
+  const audio = await synthesize(custom, line);
+  assert.equal(audio.buffer.subarray(0, 4).toString(), 'RIFF');
+  assert.equal(mock.state.requests.at(-1).headers?.authorization, undefined);
+  const { publicConfig } = await import('./config-store.js');
+  assert.equal(publicConfig(custom).voiceReady, true);
+  assert.throws(() => validateProviderConfig(sanitizeConfig({ provider: 'custom', endpoint: '' })), /接口地址/);
+  assert.throws(() => validateProviderConfig(sanitizeConfig({ provider: 'volcengine-api-key', endpoint: 'https://x', accessKey: '' })), /访问凭证/);
 });

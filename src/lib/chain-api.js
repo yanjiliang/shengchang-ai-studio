@@ -17,7 +17,7 @@ const finalStatus = (status) => ['cancelled', 'completed', 'failed'].includes(st
 export function breezeHealthPayload(health = {}) {
   const queue = health.queue || {};
   const queueLength = Number(queue.waiting) || 0;
-  return { connected: health.reachable === true, endpoint: health.endpoint || '', latencyMs: health.latencyMs, error: health.error || '', queueLength, busy: queueLength > 0 || Boolean(queue.inFlight), voiceCount: health.voiceCount ?? null, active: health.active === true };
+  return { connected: health.reachable === true, endpoint: health.endpoint || '', latencyMs: health.latencyMs, error: health.error || '', queueLength, busy: queueLength > 0 || Boolean(queue.inFlight), voiceCount: health.voiceCount ?? null, active: health.active === true, ...(health.status ? { status: health.status } : {}) };
 }
 
 // LineTakes → { takes, activeTakeId, currentAudioUrl, audioSeed, line }。

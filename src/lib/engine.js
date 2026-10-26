@@ -129,9 +129,13 @@ export function normalizeBreezeStatus(payload, { httpStatus } = {}) {
   const busy = payload.via === 'busy' || payload.busy === true || Number(payload.queueLength) > 0 || Number(payload.inFlightCount) > 0;
   // 服务端的健康检查真的请求了 Breeze 的 /voices；带回音色数就显示出来。
   const voiceCount = Array.isArray(payload.voices) ? payload.voices.length : Number.isFinite(payload.voiceCount) ? payload.voiceCount : null;
+  // N4：服务端探测超时（status: 'timeout'）= 连上了端口但 Breeze 不回话（卡住 / 正忙）。仍算不可用
+  // （state 'disconnected'，所有「连不上」的判断照旧生效），cause 'timeout' 只用来换文案。
+  const timedOut = !connected && payload.status === 'timeout';
   return {
     state: connected ? 'connected' : 'disconnected',
-    label: connected ? (busy ? '生成中' : '已连接') : '未连接',
+    ...(timedOut ? { cause: 'timeout' } : {}),
+    label: connected ? (busy ? '生成中' : '已连接') : timedOut ? '没有响应' : '未连接',
     detail: connected ? [payload.model, payload.device, voiceCount !== null ? `已读到 ${voiceCount} 个音色` : '', Number.isFinite(payload.latencyMs) ? `${payload.latencyMs} ms` : ''].filter(Boolean).join(' · ') : String(payload.error || payload.message || ''),
     endpoint: payload.endpoint || payload.url || '',
     via: payload.via || '',

@@ -51,3 +51,41 @@ test('一键成片：Breeze 断开 / 音色没定有自己的提示，不当成�
   assert.equal(exportTaskFailure({ kind: 'one-click', status: 'failed', code: 'BREEZE_UNREACHABLE', payload: stages }), null);
   assert.equal(exportTaskFailure({ kind: 'one-click', status: 'failed', payload: { ...stages, code: 'VOICE_NOT_READY' } }), null);
 });
+
+// ---- 0049 B4：音频文件丢了 / B2：一键成片在跑 ----
+import { isAudioFileMissing, missingLineLabel, resolveMissingLines } from './export-failure.js';
+const MISSING_TEXT = '有 1 句台词的音频文件不见了（老陈：「你又来了」），请先重新生成这几句再导出';
+
+test('AUDIO_FILE_MISSING（同步 409）：主文案用服务端那句，列出句子，不给重试', () => {
+  const error = Object.assign(new Error(MISSING_TEXT), { status: 409, code: 'AUDIO_FILE_MISSING', payload: { code: 'AUDIO_FILE_MISSING', error: MISSING_TEXT, details: { missingFileLines: [{ sceneId: 's1', lineId: 'l2', speaker: '老陈', text: '你又来了' }] } } });
+  const view = exportFailureView(error);
+  assert.equal(view.locked, false);
+  assert.equal(view.missing, true);
+  assert.equal(view.text, MISSING_TEXT);
+  assert.notEqual(view.text, EXPORT_FAILED_TEXT);
+  assert.deepEqual(view.lines, [{ sceneId: 's1', lineId: 'l2', speaker: '老陈', text: '你又来了' }]);
+  assert.match(view.detail, /l2 {2}老陈：「你又来了」/);
+  assert.equal(isAudioFileMissing(error), true);
+});
+
+test('整集导出任务因文件丢失失败：认 task.error 那句话（任务里没有 code）', () => {
+  const view = exportTaskFailure({ kind: 'export-project', status: 'failed', message: '整集导出失败', error: MISSING_TEXT });
+  assert.equal(view.missing, true);
+  assert.equal(view.text, MISSING_TEXT);
+  assert.deepEqual(view.lines, []);
+  assert.equal(exportFailureView(new Error(MISSING_TEXT)).missing, true);
+});
+
+test('409 ONE_CLICK_RUNNING → 「正在配音，配完再导出」', () => {
+  const view = exportFailureView(Object.assign(new Error('正在配音，配完再导出'), { status: 409, code: 'ONE_CLICK_RUNNING' }));
+  assert.equal(view.locked, true);
+  assert.equal(view.text, EXPORT_LOCK_TEXT);
+});
+
+test('precheck 的 missingFileLines 只有 id：从作品里补角色和台词开头', () => {
+  const scenes = [{ id: 's1', lines: [{ id: 'l1', speaker: '林舟', text: '灯塔今晚又亮了一整夜，海上什么都没有。' }] }];
+  const lines = resolveMissingLines([{ sceneId: 's1', lineId: 'l1' }, { lineId: '' }], scenes);
+  assert.deepEqual(lines, [{ lineId: 'l1', sceneId: 's1', speaker: '林舟', text: '灯塔今晚又亮了一整夜，海上什么都没有。'.slice(0, 20) }]);
+  assert.equal(missingLineLabel(lines[0]).startsWith('林舟：「灯塔'), true);
+  assert.equal(missingLineLabel({ lineId: 'x' }), '「x」');
+});

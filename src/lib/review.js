@@ -185,8 +185,14 @@ export function takeTags(take, { activeTakeId, mixTakeId, pendingTakeId }) {
 // 导出前置检查：需重新混音 → 只给「重新混音并导出」；还有标记或换人句 → 不挡，按钮「仍然导出」。
 // staleLineCount 来自服务端 GET /export-precheck（和导出结果同一算法）。有过期句时先问：
 // 重配这几句，还是按现在的版本导出（不拦）。
-export function exportPrecheck({ mixStale, markedCount = 0, driftCount = 0, staleLineCount = 0 }) {
+// 0049：missingFileLineCount = 有 audioUrl 但文件丢了的句子。服务端导出会拒绝（AUDIO_FILE_MISSING），
+// 所以这时不给「导出」，只给「先重配这 N 句」（N = 过期 + 文件丢失），不让人走到一次注定失败的导出。
+export const missingFilesText = (count) => `有 ${count} 句音频文件丢了，需要重新生成`;
+export const MISSING_FILES_BLOCK = '先重新生成这几句才能导出';
+export function exportPrecheck({ mixStale, markedCount = 0, driftCount = 0, staleLineCount = 0, missingFileLineCount = 0 }) {
   const stale = Number(staleLineCount) > 0 ? Number(staleLineCount) : 0;
+  const missing = Number(missingFileLineCount) > 0 ? Number(missingFileLineCount) : 0;
+  if (missing) return { primary: '导出', blocked: true, remixFirst: Boolean(mixStale), warning: null, missing: { count: missing, title: missingFilesText(missing) }, stale: { count: stale, title: stale ? staleExportText(stale) : '', fix: `先重配这 ${stale + missing} 句` } };
   if (stale) return { primary: '按现在的版本导出', remixFirst: Boolean(mixStale), warning: null, stale: { count: stale, title: staleExportText(stale), fix: `先重配这 ${stale} 句` } };
   if (mixStale) return { primary: '重新混音并导出', remixFirst: true, warning: null };
   const issues = markedCount + driftCount;
@@ -198,6 +204,8 @@ export function exportNotes({ sfxUnbound, breeze }) {
   return [sfxUnbound ? SFX_UNBOUND : null, breeze ? BREEZE_NONCOMMERCIAL : null].filter(Boolean);
 }
 
+// 0046：采用某一条时它的试听文件已经被清掉 → 410 TAKE_EXPIRED（「试听音频文件已不存在，请重新生成」）。
+export const isTakeExpired = (error) => Number(error?.status) === 410 || (error?.code || error?.payload?.code) === 'TAKE_EXPIRED';
 export const staleExportText = (count) => `还有 ${count} 句改过但没重新配音`;
 // 0037 export-precheck：pendingLineCount = 没音频 + 过期（文本非空），pendingCharCount = 发给引擎的字数（估算）。
 export function pendingRenderText(pendingLineCount, pendingCharCount) {

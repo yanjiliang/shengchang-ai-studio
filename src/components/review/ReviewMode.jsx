@@ -1,12 +1,14 @@
 import { AlertTriangle, ChevronLeft, ChevronRight, Download, Flag, LoaderCircle, Pause, Play, RefreshCw, Wrench } from 'lucide-react';
 import { EXPORT_LOCK_TEXT } from '../../lib/export-lock.js';
-import { exportFailureView } from '../../lib/export-failure.js';
+import { exportFailureView, resolveMissingLines } from '../../lib/export-failure.js';
 import { ExportFailure } from '../ExportFailure';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { finishPendingLabel, mixFreshText } from '../../lib/one-click.js';
 import { chainApi } from '../../lib/chain-api.js';
 import {
   OFFLINE_REGEN, OVERSCAN, ROW_HEIGHT, driftBanner, filterLines, formatClock, indexAt, isDrifted, isMarked,
   doubaoRegenConfirm, lineAriaLabel, lineBadges, mixTimeline, randomSeed, readingLinesText, reviewLines, rowWindow, staleMixLineIds, stepLine,
+  isTakeExpired,
 } from '../../lib/review.js';
 import { ModalShell } from '../ModalShell';
 import { singleAudio } from '../../lib/single-audio.js';
@@ -27,7 +29,7 @@ function ReviewToast({ toast, onHide }) {
 }
 
 // 审听修句（handoff：/workspace/shengchang-review-mode/handoff.md）。一个项目 = 一集，episodeId = projectId。
-export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, batchRunning = false, onUpdateAnyLine, onSaveNow, onAccepted, onGoProduce, onRegenerateLines }) {
+export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, batchRunning = false, onUpdateAnyLine, onSaveNow, onAccepted, onGoProduce, onRegenerateLines, onFinishPending = null, refreshToken = 0 }) {
   const projectId = project.id;
   const scenes = project.state?.scenes || [];
   const lines = useMemo(() => reviewLines(scenes), [scenes]);
@@ -43,6 +45,10 @@ export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, 
   const breezeOnline = !breezeMode || breeze?.status?.state === 'connected';
 
   const mix = useEpisodeMix(projectId, { hasAudio, lines });
+  // B1：一键成片跑完（App 从任务轮询里看到）→ 重新读混音和时间轴。
+  const mixRef = useRef(mix);
+  mixRef.current = mix;
+  useEffect(() => { if (refreshToken) mixRef.current.reload().catch(() => {}); }, [refreshToken]);
   const timeline = useMemo(() => mixTimeline(mix.mix, lines), [mix.mix, lines]);
   const staleIds = useMemo(() => staleMixLineIds(lines, mix.mix), [lines, mix.mix]);
   const totalSec = (mix.mix?.durationMs || 0) / 1000;
@@ -217,12 +223,20 @@ export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, 
       draftState.reset();
       // 第一次换新版前的原音频不是一条 take，服务端没法换回去，所以只有原来就是 take 时才给「撤销」。
       const undo = previous?.takeId && !previous.original ? { label: '撤销', run: async () => {
-        await chainApi.acceptLineTake(line.id, previous.takeId, { projectId });
+        try { await chainApi.acceptLineTake(line.id, previous.takeId, { projectId }); }
+        catch (error) { showToast(`没能撤销：${error.message}`); if (isTakeExpired(error)) setTakesKey((value) => value + 1); return; }
         onUpdateAnyLine(line.id, { ...before, ...(fromCompare ? { pendingTakeId: take.takeId } : {}) });
         await onAccepted?.(); setTakesKey((value) => value + 1);
       } } : null;
       showToast(`第 ${number} 句已换成新版，整集需要重新混音`, undo);
-    } catch (error) { showToast(`没能换成新版：${error.message}`); }
+    } catch (error) {
+      showToast(`没能换成新版：${error.message}`);
+      // 0046：410 TAKE_EXPIRED = 这条试听文件已经没了。重新读这句的版本列表，待定的那条也撤掉，免得一直挂着点不动的「换成新版」。
+      if (isTakeExpired(error)) {
+        if (line.pendingTakeId && line.pendingTakeId === take.takeId) onUpdateAnyLine(line.id, { pendingTakeId: null });
+        setTakesKey((value) => value + 1);
+      }
+    }
     setBusy(false);
     focusInspector();
   };
@@ -275,17 +289,38 @@ export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, 
     setPrecheck({ loading: true });
     try {
       const result = await chainApi.exportPrecheck(projectId);
-      setPrecheck({ loading: false, staleLineCount: Number(result.staleLineCount) || 0, missingAudioLineCount: Number(result.missingAudioLineCount) || 0, pendingLineCount: result.pendingLineCount ?? null, pendingCharCount: result.pendingCharCount ?? null, staleLineIds: (result.staleLines || []).map((item) => item.lineId) });
-    } catch (error) { setPrecheck({ loading: false, staleLineCount: 0, missingAudioLineCount: 0, staleLineIds: [], error: error.message }); }
+      // 0049：missingFileLines = 有 audioUrl 但文件丢了的句子（导出会被拒绝），补上角色和台词开头。
+      const missingFileLines = resolveMissingLines(result.missingFileLines || [], scenesRef.current);
+      if (result.pendingLineCount !== undefined) setHeadPending(result.pendingLineCount);
+      setPrecheck({ loading: false, staleLineCount: Number(result.staleLineCount) || 0, missingAudioLineCount: Number(result.missingAudioLineCount) || 0, missingFileLineCount: Number(result.missingFileLineCount) || missingFileLines.length, missingFileLines, pendingLineCount: result.pendingLineCount ?? null, pendingCharCount: result.pendingCharCount ?? null, staleLineIds: (result.staleLines || []).map((item) => item.lineId) });
+      return missingFileLines;
+    } catch (error) { setPrecheck({ loading: false, staleLineCount: 0, missingAudioLineCount: 0, missingFileLineCount: 0, missingFileLines: [], staleLineIds: [], error: error.message }); return []; }
   }, [projectId]);
+  const scenesRef = useRef(scenes);
+  scenesRef.current = scenes;
+  // N2：顶部「整集混音是不是最新的」也以 export-precheck 的 pendingLineCount 为准（服务端的判断：
+  // 过期 + 没音频 + 文件丢了）。打开审听、台词有变化（改了情绪 / 文本 / 重配完）、一键成片结束后都重新问一次。
+  const [headPending, setHeadPending] = useState(null);
+  const linesKey = useMemo(() => lines.map((line) => `${line.id}:${line.audioUrl || ''}:${line.audioHash || ''}:${line.stale ? 1 : 0}:${line.emotion || ''}:${line.intensity ?? ''}:${line.text || ''}`).join('|'), [lines]);
+  useEffect(() => {
+    if (!projectId) return undefined;
+    let alive = true;
+    const timer = window.setTimeout(() => {
+      chainApi.exportPrecheck(projectId).then((result) => { if (alive) setHeadPending(result.pendingLineCount ?? null); }).catch(() => { if (alive) setHeadPending(null); });
+    }, 400);
+    return () => { alive = false; window.clearTimeout(timer); };
+  }, [projectId, refreshToken, linesKey]);
   const openExport = () => {
     if (exportState.phase !== 'running') loadPrecheck();
     setExportState((current) => ({ ...current, open: true, phase: current.phase === 'running' ? 'running' : 'check' }));
   };
+  // 「先重配这 N 句」= 过期的 + 文件丢了的（走 App 的手动生成，B3 修过的音色判断）。
   const fixStale = () => {
-    const ids = precheck?.staleLineIds || [];
+    const ids = [...new Set([...(precheck?.staleLineIds || []), ...(precheck?.missingFileLines || []).map((item) => item.lineId)])];
     setExportState((current) => ({ ...current, open: false }));
-    if (onRegenerateLines && ids.length) onRegenerateLines(ids);
+    // 只有要重配的句子（没有缺音频的）时，precheck 的 pendingCharCount 正好就是这几句的字数（豆包确认用）。
+    const charCount = precheck?.missingAudioLineCount === 0 && precheck?.pendingCharCount !== null ? precheck?.pendingCharCount : null;
+    if (onRegenerateLines && ids.length) onRegenerateLines(ids, { charCount });
     else setFilter('all');
   };
   const startExport = async (remixFirst) => {
@@ -304,6 +339,8 @@ export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, 
     } catch (error) {
       const view = exportFailureView(error);
       setExportState((current) => ({ ...current, phase: 'failed', error: view.detail, failure: view }));
+      // 整集导出任务失败只带一句话，丢了文件的是哪几句从 export-precheck 补。
+      if (view.missing && !view.lines.length) loadPrecheck().then((found) => { if (found.length) setExportState((current) => current.failure?.missing ? { ...current, failure: { ...current.failure, lines: found } } : current); });
       if (!exportOpenRef.current) showToast(view.text, { label: '查看', run: () => setExportState((current) => ({ ...current, open: true })) });
     }
   };
@@ -360,7 +397,7 @@ export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, 
   const playIndex = currentIndex >= 0 ? currentIndex : selectedIndex;
   const playLine = lines[playIndex];
   const remixing = mix.status === 'remixing';
-  const mixStatus = remixing ? `正在重新混音 ${Math.round((mix.progress || 0) * 100)}%` : !mix.mix ? (remixFailure ? '还没有整集混音' : mix.error ? `还没有整集混音：${mix.error}` : (mix.status === 'loading' ? readingLinesText(lines.length) : '正在准备整集混音')) : staleIds.length ? `需重新混音 · 已换 ${staleIds.length} 句` : '整集混音是最新的';
+  const mixStatus = remixing ? `正在重新混音 ${Math.round((mix.progress || 0) * 100)}%` : !mix.mix ? (remixFailure ? '还没有整集混音' : mix.error ? `还没有整集混音：${mix.error}` : (mix.status === 'loading' ? readingLinesText(lines.length) : '正在准备整集混音')) : headPending > 0 ? mixFreshText(headPending) : staleIds.length ? `需重新混音 · 已换 ${staleIds.length} 句` : mixFreshText(0);
   const prevLine = selectedIndex > 0 ? lines[selectedIndex - 1] : null;
   const selectedStart = startOf(selected);
   const tailSegment = mix.mix?.url && Number.isFinite(selectedStart) && prevLine ? { url: mix.mix.url, from: Math.max(0, selectedStart - 2), to: selectedStart } : null;
@@ -406,8 +443,9 @@ export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, 
           </div>
         </div>
         <div className="playbar-mix">
-          <span className={`mix-status ${staleIds.length ? 'is-stale' : ''}`} aria-live="polite">{remixing ? <LoaderCircle size={13} className="spin" aria-hidden="true" /> : null}{mixStatus}</span>
+          <span className={`mix-status ${staleIds.length || headPending > 0 ? 'is-stale' : ''}`} aria-live="polite">{remixing ? <LoaderCircle size={13} className="spin" aria-hidden="true" /> : null}{mixStatus}</span>
           {staleIds.length || (!mix.mix && !remixing) ? <button type="button" className="button secondary-button" disabled={remixing || exportLocked} aria-describedby={exportLocked ? 'review-export-lock' : undefined} onClick={() => doRemix().catch(() => {})}><RefreshCw size={13} />重新混音</button> : null}
+          {headPending > 0 && onFinishPending ? <button type="button" className="button secondary-button review-finish-pending" disabled={remixing || exportLocked} onClick={onFinishPending} title="打开一键成片：先把这些句子配好，再体检、导出整集">{finishPendingLabel(headPending)}</button> : null}
           <button type="button" className="button primary-button" disabled={!mix.mix || remixing || (exportLocked && exportState.phase !== 'running')} aria-describedby={exportLocked ? 'review-export-lock' : undefined} onClick={openExport}>{exportState.phase === 'running' ? <LoaderCircle size={13} className="spin" /> : <Download size={13} />}导出 mp3</button>
           {exportLocked ? <span id="review-export-lock" className="export-lock-note" role="status">{EXPORT_LOCK_TEXT}</span> : null}
         </div>
@@ -495,6 +533,8 @@ export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, 
           episodeLabel={project.name || project.title || '本集'} phase={exportState.phase} mixStale={staleIds.length > 0} markedCount={issueCount} driftCount={0}
           sfxUnbound={sfxUnbound} breeze={breezeNote} progress={exportState.progress} message={exportState.message} result={exportState.result} error={exportState.error} failure={exportState.failure || null}
           precheck={precheck} locked={exportLocked} onStart={startExport} onFixStale={onRegenerateLines ? fixStale : null}
+          onRegenerateLines={onRegenerateLines ? (ids) => { setExportState((current) => ({ ...current, open: false })); onRegenerateLines(ids); } : null}
+          onLocateLine={(item) => { setExportState((current) => ({ ...current, open: false })); setFilter('all'); goTo(lines.find((line) => line.id === item.lineId)); }}
           onReview={() => { setExportState((current) => ({ ...current, open: false })); setFilter(counts.marked ? 'marked' : 'drift'); }}
           onClose={() => setExportState((current) => ({ ...current, open: false }))}
         />

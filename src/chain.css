@@ -332,3 +332,11 @@ p.export-lock-note { display: block; margin: 6px 0 0; white-space: normal; }
 .task-copy > .export-failure p { margin: 0; }
 .review-remix-failure { margin: 8px 0 0; }
 .review-list-loading { display: flex; align-items: center; gap: 8px; padding: 16px 14px; color: var(--color-muted); font-size: 12px; }
+/* fe-0011：一键成片进行中 —— 不是主按钮（不用亮橙），只是进度，点开任务历史 */
+.button.one-click-busy { color: var(--color-text-soft); border-color: var(--color-line-strong); background: var(--color-paper-3); font-variant-numeric: tabular-nums; cursor: pointer; }
+.button.one-click-busy:hover { color: var(--color-text); }
+.task-row.is-highlighted { background: var(--color-paper-3); box-shadow: inset 3px 0 0 var(--color-accent); }
+/* 0049：音频文件丢了的句子 */
+.missing-file-lines { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 3px; font-size: 12px; }
+.missing-file-lines .link-button { text-align: left; }
+.export-missing-files p { margin: 6px 0 0; }

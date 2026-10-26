@@ -19,6 +19,9 @@ test('Key 占位文字跟 llmApiKeyRequired 走', () => {
 
 test('模型名必填；需要 Key 时没填也没存过才报', () => {
   assert.deepEqual(llmFieldErrors({ llmEndpoint: 'https://x/v1', llmModel: 'qwen-plus' }), {});
+  // 0048：地址留空可以保存（不用文本模型），不报地址 / 模型。
+  assert.deepEqual(llmFieldErrors({ llmEndpoint: '', llmModel: '' }), {});
+  assert.deepEqual(llmFieldErrors({ llmEndpoint: '  ', llmModel: '' }, { keyRequired: true }), {});
   assert.equal(llmFieldErrors({ llmEndpoint: 'https://x/v1', llmModel: ' ' }).llmModel, '填一下模型名');
   assert.ok(llmFieldErrors({ llmEndpoint: 'https://x/v1', llmModel: 'm' }, { keyRequired: true }).llmApiKey);
   assert.equal(llmFieldErrors({ llmEndpoint: 'https://x/v1', llmModel: 'm', hasLlmApiKey: true }, { keyRequired: true }).llmApiKey, undefined);
@@ -34,6 +37,9 @@ test('测试结果：看 ok 和 code，不看 HTTP 状态', () => {
   const invalid = Object.assign(new Error('请在设置中填写文本理解模型名称'), { status: 400, payload: { ok: false, latencyMs: null, code: 'LLM_CONFIG_INVALID', message: '请在设置中填写文本理解模型名称', field: 'llmModel' } });
   assert.deepEqual(llmTestOutcome(invalid), { ok: false, text: '请在设置中填写文本理解模型名称', field: 'llmModel' });
   assert.equal(llmTestOutcome({ ok: false, code: 'LLM_CONFIG_INVALID', message: 'm', field: 'nope' }).field, null);
+  // 0048：地址留空点「测试连接」→ 400，提示落在 Base URL 框下。
+  const empty = Object.assign(new Error('请填写服务地址（Base URL）'), { status: 400, code: 'LLM_CONFIG_INVALID', field: 'llmEndpoint', payload: { code: 'LLM_CONFIG_INVALID', field: 'llmEndpoint', message: '请填写服务地址（Base URL）' } });
+  assert.deepEqual(llmTestOutcome(empty), { ok: false, text: '请填写服务地址（Base URL）', field: 'llmEndpoint' });
   // 0033 之前的服务端：400 + 「文本模型返回 401: …」
   assert.equal(llmTestOutcome(Object.assign(new Error('文本模型返回 403: forbidden'), { status: 400, payload: { error: '文本模型返回 403: forbidden' } })).text, 'Key 不对或已过期');
   assert.equal(llmErrorText({ message: 'fetch failed' }), '连不上这个地址');

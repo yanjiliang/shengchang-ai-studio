@@ -1,16 +1,17 @@
 import { Download, LoaderCircle, RotateCcw } from 'lucide-react';
 import { EXPORT_LOCK_TEXT } from '../../lib/export-lock.js';
 import { useEffect, useRef } from 'react';
-import { exportNotes, exportPrecheck, exportSummary, pendingRenderText, staleExportText } from '../../lib/review.js';
+import { MISSING_FILES_BLOCK, exportNotes, exportPrecheck, exportSummary, pendingRenderText, staleExportText } from '../../lib/review.js';
 import { ModalShell } from '../ModalShell';
-import { ExportFailure } from '../ExportFailure';
+import { ExportFailure, MissingLineList } from '../ExportFailure';
 import { exportFailureView } from '../../lib/export-failure.js';
 
 // 导出整集（handoff 第 2 节「导出」）。phase: check | running | done | failed。
 // 导出进行中可以关掉窗口，导出会继续，完成后由外面弹 toast「整集已导出」+「查看」。
 // precheck = GET /export-precheck 的结果（打开窗口时取）：{ loading, staleLineCount, missingAudioLineCount, staleLineIds, error }。
-export function ReviewExportDialog({ episodeLabel, phase, mixStale, markedCount, driftCount, precheck, sfxUnbound, breeze, progress, message, result, error, failure = null, locked = false, onStart, onFixStale, onReview, onClose }) {
-  const check = exportPrecheck({ mixStale, markedCount, driftCount, staleLineCount: precheck?.staleLineCount || 0 });
+export function ReviewExportDialog({ episodeLabel, phase, mixStale, markedCount, driftCount, precheck, sfxUnbound, breeze, progress, message, result, error, failure = null, locked = false, onStart, onFixStale, onRegenerateLines = null, onLocateLine = null, onReview, onClose }) {
+  const check = exportPrecheck({ mixStale, markedCount, driftCount, staleLineCount: precheck?.staleLineCount || 0, missingFileLineCount: precheck?.missingFileLineCount || 0 });
+  const failureView = failure || exportFailureView(error);
   const checking = phase === 'check' && precheck?.loading;
   const notes = exportNotes({ sfxUnbound, breeze });
   const summary = exportSummary(result);
@@ -29,7 +30,8 @@ export function ReviewExportDialog({ episodeLabel, phase, mixStale, markedCount,
         <p className="muted">{episodeLabel} · 只导出 mp3（这一版不含字幕）</p>
         {checking ? <p className="muted" aria-live="polite"><LoaderCircle size={13} className="spin" aria-hidden="true" />正在检查有没有改过没重配的句子</p> : null}
         {phase === 'check' && !checking ? <>
-          {check.stale ? <div className="export-box is-warning" role="note"><strong>{check.stale.title}</strong><p>直接导出会用这些句子原来的音频。</p></div> : null}
+          {check.missing ? <div className="export-box is-warning export-missing-files" role="note"><strong>{check.missing.title}</strong><MissingLineList lines={precheck?.missingFileLines || []} onLocate={onLocateLine} /><p id="export-missing-block">{MISSING_FILES_BLOCK}</p></div> : null}
+          {check.stale?.title ? <div className="export-box is-warning" role="note"><strong>{check.stale.title}</strong><p>直接导出会用这些句子原来的音频。</p></div> : null}
           {precheck?.missingAudioLineCount > 0 ? <div className="export-box" role="note"><strong>还有 {precheck.missingAudioLineCount} 句没有音频</strong><p>导出时会跳过这些句子。</p></div> : null}
           {pendingRenderText(precheck?.pendingLineCount, precheck?.pendingCharCount) ? <p className="muted export-pending">{pendingRenderText(precheck.pendingLineCount, precheck.pendingCharCount)}</p> : null}
           {precheck?.error ? <p className="muted">没能检查过期句子（{precheck.error}），仍可以导出。</p> : null}
@@ -41,7 +43,7 @@ export function ReviewExportDialog({ episodeLabel, phase, mixStale, markedCount,
           <div className="review-progress" role="progressbar" aria-label="导出进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((progress || 0) * 100)}><span style={{ width: `${Math.round((progress || 0) * 100)}%` }} /></div>
           <p className="muted">可以关掉这个窗口，导出会继续，完成后会提示。</p>
         </div> : null}
-        {phase === 'failed' ? <div className="export-box is-error"><ExportFailure {...(failure || exportFailureView(error))} /><p className="muted">整集混音不受影响，可以直接重试。</p></div> : null}
+        {phase === 'failed' ? <div className="export-box is-error"><ExportFailure {...failureView} onLocate={onLocateLine} /><p className="muted">{failureView.missing ? '重新生成这几句之后再导出。' : '整集混音不受影响，可以直接重试。'}</p></div> : null}
         {phase === 'done' && summary?.staleLineCount ? <div className="export-box is-warning" role="note"><strong>{staleExportText(summary.staleLineCount)}</strong><p>这些句子按原来的音频导出了；重配之后可以再导出一次。</p></div> : null}
         {phase === 'done' && summary ? <dl className="export-result">
           <dt>文件</dt><dd>{summary.name}</dd>
@@ -55,8 +57,9 @@ export function ReviewExportDialog({ episodeLabel, phase, mixStale, markedCount,
       <footer className="dialog-actions" ref={footerRef}>
         <button type="button" className="button ghost-button" onClick={onClose}>关闭</button>
         {phase === 'check' && !checking && check.stale && onFixStale ? <button type="button" className="button secondary-button" disabled={locked} aria-describedby={locked ? 'export-dialog-lock' : undefined} onClick={onFixStale}>{check.stale.fix}</button> : null}
-        {phase === 'check' && !checking ? <button type="button" className="button primary-button" disabled={locked} aria-describedby={locked ? 'export-dialog-lock' : undefined} onClick={() => onStart(check.remixFirst)}>{check.primary}</button> : null}
-        {phase === 'failed' ? <button type="button" className="button primary-button" disabled={locked} aria-describedby={locked ? 'export-dialog-lock' : undefined} onClick={() => onStart(mixStale)}><RotateCcw size={13} />重试</button> : null}
+        {phase === 'check' && !checking ? <button type="button" className="button primary-button" disabled={locked || check.blocked} aria-describedby={locked ? 'export-dialog-lock' : check.blocked ? 'export-missing-block' : undefined} onClick={() => onStart(check.remixFirst)}>{check.primary}</button> : null}
+        {phase === 'failed' && failureView.missing && onRegenerateLines && failureView.lines?.length ? <button type="button" className="button primary-button" disabled={locked} onClick={() => onRegenerateLines(failureView.lines.map((item) => item.lineId))}><RotateCcw size={13} />重新生成这几句</button> : null}
+        {phase === 'failed' && !failureView.missing ? <button type="button" className="button primary-button" disabled={locked} aria-describedby={locked ? 'export-dialog-lock' : undefined} onClick={() => onStart(mixStale)}><RotateCcw size={13} />重试</button> : null}
         {phase === 'done' && result?.url ? <a className="button primary-button" href={`${result.url}${result.url.includes('?') ? '&' : '?'}download=${encodeURIComponent(result.name || 'episode.mp3')}`} download={result.name}><Download size={13} />下载 mp3</a> : null}
       </footer>
     </ModalShell>

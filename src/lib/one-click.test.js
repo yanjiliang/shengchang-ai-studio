@@ -42,3 +42,28 @@ test('oneClickNothingPending：0 句要配且有场景才直接导出整集', ()
   assert.equal(oneClickNothingPending({ sceneCount: 8, requestCount: null }), false);
   assert.equal(oneClickNothingPending(null), false);
 });
+
+test('N1：待配句数只用 export-precheck 的 pendingLineCount，K = pending − 没音频', async () => {
+  const { oneClickPlan, pendingFromPrecheck, mixFreshText, pendingLinesText } = await import('./one-click.js');
+  const estimate = { sceneCount: 2, requestCount: 3 };
+  const precheck = { pendingLineCount: 3, missingAudioLineCount: 0, staleLineCount: 2, missingFileLineCount: 1 };
+  assert.deepEqual(pendingFromPrecheck(precheck), { pending: 3, redub: 3 });
+  const plan = oneClickPlan(estimate, precheck);
+  assert.equal(plan.linesText, '3 句待生成（其中 3 句要重配）');
+  assert.equal(plan.confirmLabel, '先配完这 3 句');
+  assert.equal(plan.nothingPending, false);
+  // 只有没音频的：不写括号。
+  assert.equal(oneClickPlan(estimate, { pendingLineCount: 4, missingAudioLineCount: 4 }).linesText, '4 句待生成');
+  assert.equal(pendingLinesText({ pending: 5, redub: 2 }), '5 句待生成（其中 2 句要重配）');
+  // 0：台词都已配好，主按钮导出整集（即使老 estimate 还说有句子要配，也以 precheck 为准）。
+  const zero = oneClickPlan({ sceneCount: 2, requestCount: 1 }, { pendingLineCount: 0, missingAudioLineCount: 0 });
+  assert.equal(zero.nothingPending, true);
+  assert.equal(zero.confirmLabel, '导出整集');
+  // precheck 读不到：退回 estimate.requestCount。
+  assert.equal(oneClickPlan({ sceneCount: 2, requestCount: 0 }, null).confirmLabel, '导出整集');
+  assert.equal(oneClickPlan({ sceneCount: 2, requestCount: 2 }, null).confirmLabel, '先配完这 2 句');
+  // 还要先拆解：不看 precheck。
+  assert.equal(oneClickPlan({ sceneCount: 0, requestCount: 0, needsLlm: true }, { pendingLineCount: 0 }).confirmLabel, '开始');
+  assert.equal(mixFreshText(0), '整集混音是最新的');
+  assert.equal(mixFreshText(3), '有 3 句改过，整集混音不是最新的');
+});

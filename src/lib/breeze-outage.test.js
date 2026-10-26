@@ -64,3 +64,20 @@ test('doubaoSwitchDialog：标题只写上限「最多约扣 X 字额度」，X 
   assert.equal(doubaoSwitchDialog({ requestCount: 0, characters: 10 }), null);
   assert.ok(!JSON.stringify(doubaoSwitchDialog({ requestCount: 19, characters: 390 })).includes('缓存'));
 });
+
+test('N4：健康检查超时 = 没有响应横幅（同样的重试 / 去设置），连不上照旧', async () => {
+  const { breezeHealthOutage, NO_RESPONSE_TEXT } = await import('./breeze-outage.js');
+  const { normalizeBreezeStatus } = await import('./engine.js');
+  const { breezeHealthPayload } = await import('./chain-api.js');
+  assert.equal(NO_RESPONSE_TEXT, 'Breeze 没有响应，可能正忙或卡住了。可以在 Mac 上重启 Breeze，再点重试。');
+  const timedOut = normalizeBreezeStatus(breezeHealthPayload({ status: 'timeout', reachable: false, error: 'Breeze 超时' }));
+  assert.equal(timedOut.state, 'disconnected');
+  assert.equal(timedOut.cause, 'timeout');
+  assert.equal(timedOut.label, '没有响应');
+  assert.deepEqual(breezeHealthOutage(timedOut), { phase: 'before', causeCode: 'BREEZE_TIMEOUT', text: NO_RESPONSE_TEXT, actions: ['retry', 'settings'] });
+  assert.ok(!/自动/.test(NO_RESPONSE_TEXT));
+  const down = normalizeBreezeStatus(breezeHealthPayload({ status: 'unreachable', reachable: false }));
+  assert.equal(down.cause, undefined);
+  assert.equal(breezeHealthOutage(down).text, BEFORE_START_TEXT);
+  assert.equal(breezeHealthOutage(normalizeBreezeStatus(breezeHealthPayload({ status: 'ok', reachable: true }))), null);
+});

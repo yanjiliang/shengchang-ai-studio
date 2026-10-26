@@ -23,10 +23,12 @@ export const llmBaseHint = (value) => (normalizeLlmBase(value).stripped ? LLM_ST
 
 export const llmKeyPlaceholder = (keyRequired) => (keyRequired ? '必填' : '本地服务可以不填');
 
-// 保存前检查：只有模型名必填（Key 由 llmApiKeyRequired 决定；测试不是保存的前提）。
+// 保存前检查：填了服务地址才要求模型名（Key 由 llmApiKeyRequired 决定；测试不是保存的前提）。
+// 0048：地址留空 = 不用文本模型（只用豆包 / 只手动拆解的人），服务端允许这样保存，这里也不拦；
+// 留空时点「测试连接」由服务端回 400 LLM_CONFIG_INVALID field llmEndpoint「请填写服务地址（Base URL）」，显示在地址框下。
 export function llmFieldErrors(draft = {}, { keyRequired = false } = {}) {
   const errors = {};
-  if (!normalizeLlmBase(draft.llmEndpoint).base) errors.llmEndpoint = '填一下服务地址';
+  if (!normalizeLlmBase(draft.llmEndpoint).base) return errors;
   if (!String(draft.llmModel || '').trim()) errors.llmModel = '填一下模型名';
   if (keyRequired && !String(draft.llmApiKey || '').trim() && !draft.hasLlmApiKey) errors.llmApiKey = '这个服务需要 API Key';
   return errors;

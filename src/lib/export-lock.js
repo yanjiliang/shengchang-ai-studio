@@ -24,6 +24,8 @@ export function exportLockState({ tasks = null, pendingTaskId = '' } = {}) {
 // 竞态下服务端仍可能 409（例如导出前自动保存撞上一键成片：「一键成片运行中，完成后可继续编辑」）。
 // 导出路径上的 409 一律换成人话，不把原始报错丢给用户。
 export function exportErrorText(error) {
-  if (Number(error?.status) === 409) return EXPORT_LOCK_TEXT;
+  // 409 AUDIO_FILE_MISSING（0049）不是锁：用服务端那句（写了是哪几句文件丢了）。
+  const code = error?.code || error?.payload?.code || '';
+  if (Number(error?.status) === 409 && code !== 'AUDIO_FILE_MISSING') return EXPORT_LOCK_TEXT;
   return error?.message || '导出失败';
 }

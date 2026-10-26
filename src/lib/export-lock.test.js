@@ -48,3 +48,9 @@ test('导出路径上的 409 换成人话，其它错误原样', () => {
   assert.equal(exportErrorText(Object.assign(new Error('磁盘满了'), { status: 500 })), '磁盘满了');
   assert.equal(exportErrorText(null), '导出失败');
 });
+
+test('0049：409 ONE_CLICK_RUNNING 是锁；409 AUDIO_FILE_MISSING 不是锁，用服务端原话', () => {
+  assert.equal(exportErrorText(Object.assign(new Error('正在配音，配完再导出'), { status: 409, code: 'ONE_CLICK_RUNNING' })), EXPORT_LOCK_TEXT);
+  assert.equal(exportErrorText(Object.assign(new Error('有 1 句台词的音频文件不见了'), { status: 409, code: 'AUDIO_FILE_MISSING' })), '有 1 句台词的音频文件不见了');
+  assert.equal(exportErrorText(Object.assign(new Error('x'), { status: 409, payload: { code: 'AUDIO_FILE_MISSING' } })), 'x');
+});

@@ -134,3 +134,22 @@ test('readingLinesText：知道句数就写句数，不知道不写数字', () =
   assert.equal(readingLinesText(undefined), '正在读取台词');
   assert.equal(readingLinesText('12'), '正在读取 12 句台词');
 });
+
+import { isTakeExpired, missingFilesText } from './review.js';
+test('0049：有音频文件丢了 → 不给导出，「先重配这 N 句」包括丢了文件的', () => {
+  const check = exportPrecheck({ mixStale: false, staleLineCount: 0, missingFileLineCount: 2 });
+  assert.equal(check.blocked, true);
+  assert.equal(check.missing.title, '有 2 句音频文件丢了，需要重新生成');
+  assert.equal(check.stale.fix, '先重配这 2 句');
+  assert.equal(check.stale.title, '');
+  const both = exportPrecheck({ mixStale: true, staleLineCount: 3, missingFileLineCount: 1 });
+  assert.equal(both.stale.fix, '先重配这 4 句');
+  assert.equal(both.stale.title, '还有 3 句改过但没重新配音');
+  assert.equal(missingFilesText(1), '有 1 句音频文件丢了，需要重新生成');
+  assert.equal(exportPrecheck({ mixStale: false, staleLineCount: 1 }).blocked, undefined);
+});
+test('0046：410 TAKE_EXPIRED 认得出来', () => {
+  assert.equal(isTakeExpired(Object.assign(new Error('试听音频文件已不存在，请重新生成'), { status: 410, code: 'TAKE_EXPIRED' })), true);
+  assert.equal(isTakeExpired({ status: 400, payload: { code: 'TAKE_EXPIRED' } }), true);
+  assert.equal(isTakeExpired({ status: 404 }), false);
+});

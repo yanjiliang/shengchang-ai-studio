@@ -44,3 +44,32 @@ export function oneClickNothingPending(estimate) {
   if (!estimate || estimate.needsLlm) return false;
   return Number(estimate.requestCount) === 0 && estimate.requestCount !== null && estimate.requestCount !== '' && Number(estimate.sceneCount) > 0;
 }
+
+// N1 + N2：「还剩几句没配好」只有一个来源 —— GET export-precheck 的 pendingLineCount
+// （过期 + 没音频 + 文件丢了，去重，只算有字的台词）。一键成片确认框、审听页顶部、导出前检查都用它。
+// 前端不自己数：N = pendingLineCount；K（要重配 = 已有音频但过期 / 文件丢了）= pendingLineCount − missingAudioLineCount，
+// 都是服务端给的数。0051 起 one-click-estimate.requestCount 和 N 相等，一键成片本身就会重配这些句子。
+// precheck 读不到时退回 estimate.requestCount（老行为），K 不显示。
+export function pendingFromPrecheck(precheck) {
+  if (!precheck || typeof precheck !== 'object' || precheck.pendingLineCount === null || precheck.pendingLineCount === undefined) return null;
+  const pending = Math.max(0, Number(precheck.pendingLineCount) || 0);
+  const redub = Math.min(pending, Math.max(0, pending - (Number(precheck.missingAudioLineCount) || 0)));
+  return { pending, redub };
+}
+
+export const pendingLinesText = ({ pending, redub }) => redub > 0 ? `${pending} 句待生成（其中 ${redub} 句要重配）` : `${pending} 句待生成`;
+export const finishPendingLabel = (pending) => `先配完这 ${pending} 句`;
+export const mixFreshText = (pending) => pending > 0 ? `有 ${pending} 句改过，整集混音不是最新的` : '整集混音是最新的';
+
+// 确认框：pending 为 0 → 「台词都已配好」，主按钮「导出整集」（直接整集导出）；
+// 否则主按钮「先配完这 N 句」= 开始一键成片（服务端按同样的判断重配 / 补配，再体检、导出）。
+export function oneClickPlan(estimate, precheck) {
+  const fromPrecheck = estimate?.needsLlm ? null : pendingFromPrecheck(precheck);
+  if (!fromPrecheck) {
+    const nothingPending = oneClickNothingPending(estimate);
+    const pending = Math.max(0, Number(estimate?.requestCount) || 0);
+    return { pending, redub: 0, nothingPending, linesText: pendingLinesText({ pending, redub: 0 }), confirmLabel: nothingPending ? '导出整集' : estimate?.needsLlm ? '开始' : finishPendingLabel(pending), source: 'estimate' };
+  }
+  const nothingPending = fromPrecheck.pending === 0 && Number(estimate?.sceneCount) > 0;
+  return { ...fromPrecheck, nothingPending, linesText: pendingLinesText(fromPrecheck), confirmLabel: nothingPending ? '导出整集' : finishPendingLabel(fromPrecheck.pending), source: 'precheck' };
+}

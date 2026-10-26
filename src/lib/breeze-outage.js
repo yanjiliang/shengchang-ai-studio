@@ -36,6 +36,15 @@ export function breezeOutage(source, context = {}) {
 }
 export const TIMEOUT_DETAIL = '原因：Breeze 太久没有响应';
 
+// N4：一键成片开始前的健康检查。连不上和「没有响应」（探测超时）都不开始、都给同样的横幅
+// （重试连接 / 去设置），只是文案不同；不承诺自动重试，也绝不换引擎。health 是 normalizeBreezeStatus 的结果。
+export const NO_RESPONSE_TEXT = 'Breeze 没有响应，可能正忙或卡住了。可以在 Mac 上重启 Breeze，再点重试。';
+export function breezeHealthOutage(health) {
+  if (!health || health.state !== 'disconnected') return null;
+  if (health.cause === 'timeout') return { phase: 'before', causeCode: 'BREEZE_TIMEOUT', text: NO_RESPONSE_TEXT, actions: ['retry', 'settings'] };
+  return breezeOutage({ code: BREEZE_UNREACHABLE });
+}
+
 // 单句「换一条」失败事件（0037 带 code / causeCode）：只在这一句上提示，不弹整页横幅，也不换引擎。
 export function lineTakeError(event = {}) {
   if (event.code !== BREEZE_UNREACHABLE) return event.error || '生成失败';

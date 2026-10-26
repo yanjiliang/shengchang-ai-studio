@@ -23,5 +23,5 @@ export function useExportLock(projectId, { pendingTaskId = '', refreshToken = 0,
     const timer = setInterval(load, state.locked ? activeMs : idleMs);
     return () => clearInterval(timer);
   }, [projectId, load, state.locked, activeMs, idleMs]);
-  return { ...state, refresh: load };
+  return { ...state, tasks, refresh: load };
 }

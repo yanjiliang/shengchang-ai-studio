@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -153,7 +153,8 @@ describe('HTTP：/api/config 与 /api/config/test-llm', () => {
       assert.equal(config.llmApiKey, '');
       assert.equal(config.hasLlmApiKey, true);
       assert.ok(!JSON.stringify(config).includes(KEY));
-      assert.equal(config.llmSecretHint, `${KEY.slice(0, 3)}••••${KEY.slice(-3)}`);
+      assert.equal(config.llmSecretHint, `···${KEY.slice(-3)}`, '只露末 3 位');
+      assert.ok(!config.llmSecretHint.includes(KEY.slice(0, 3)));
     }
   });
 
@@ -172,10 +173,18 @@ describe('HTTP：/api/config 与 /api/config/test-llm', () => {
 
   // 方舟缺 Key 的校验在 llm-openai-compat.test.js 里做单元测试：这里不放方舟地址，免得回归时真的打到外网。
   test('测试连接：本地校验失败 → 400 LLM_CONFIG_INVALID（同样是完整形状）', async () => {
-    for (const body of [{ llmEndpoint: '', llmModel: 'm' }, { llmEndpoint: 'not a url', llmModel: 'm' }, { llmEndpoint: `${upstreamBase}/a/v1`, llmModel: '' }]) {
+    const cases = [
+      [{ llmEndpoint: '', llmModel: 'm' }, 'llmEndpoint', /Base URL/],
+      [{ llmEndpoint: 'not a url', llmModel: 'm' }, 'llmEndpoint', /^地址格式不对，应以 http:\/\/ 或 https:\/\/ 开头$/],
+      [{ llmEndpoint: 'ftp://127.0.0.1/v1', llmModel: 'm' }, 'llmEndpoint', /应以 http:\/\/ 或 https:\/\/ 开头/],
+      [{ llmEndpoint: `${upstreamBase}/a/v1`, llmModel: '' }, 'llmModel', /^请填写模型名$/],
+      [{ llmEndpoint: `${upstreamBase}/a/v1`, llmModel: '   ' }, 'llmModel', /^请填写模型名$/],
+    ];
+    for (const [body, field, message] of cases) {
       const result = await probe(body);
       assert.equal(result.status, 400, JSON.stringify(body));
-      assert.deepEqual({ ok: result.body.ok, latencyMs: result.body.latencyMs, code: result.body.code }, { ok: false, latencyMs: null, code: 'LLM_CONFIG_INVALID' });
+      assert.deepEqual({ ok: result.body.ok, latencyMs: result.body.latencyMs, code: result.body.code, field: result.body.field }, { ok: false, latencyMs: null, code: 'LLM_CONFIG_INVALID', field });
+      assert.match(result.body.message, message);
       assert.equal(typeof result.body.message, 'string');
     }
     assert.equal(seen.length, 0, '校验没过不发请求');
@@ -195,5 +204,47 @@ describe('HTTP：/api/config 与 /api/config/test-llm', () => {
     assert.equal(moved.hasLlmApiKey, false, '换地址后旧 Key 不再保留');
     await probe({ llmEndpoint: `${upstreamBase}/b/v1`, llmApiKey: '', llmModel: 'm2' });
     assert.equal(seen.at(-1).authorization, undefined);
+  });
+  test('保存：TTS accessKey 同规则——地址没变保留，换地址且没填新 Key 清空', async () => {
+    const tts = 'tts-SECRET-key-987654';
+    const first = await put({ provider: 'custom', endpoint: 'http://127.0.0.1:9/tts', accessKey: tts });
+    assert.equal(first.hasAccessKey, true);
+    assert.equal(first.secretHint, '···654');
+    assert.equal(first.accessKey, '');
+    const kept = await put({ provider: 'custom', endpoint: 'http://127.0.0.1:9/tts/', accessKey: '' });
+    assert.equal(kept.hasAccessKey, true, '只多了末尾 / → 视为同一地址');
+    const moved = await put({ provider: 'custom', endpoint: 'http://127.0.0.1:10/tts', accessKey: '' });
+    assert.equal(moved.hasAccessKey, false);
+    assert.equal(moved.secretHint, '');
+    const fresh = await put({ provider: 'custom', endpoint: 'http://127.0.0.1:10/tts', accessKey: 'abc' });
+    assert.equal(fresh.secretHint, '···', '短 Key 不露字符');
+  });
+
+  test('保存：音效 sfxAccessKey 不再被每次保存清掉；换地址才清空', async () => {
+    const sfx = 'sfx-SECRET-key-111222';
+    const first = await put({ sfxProvider: 'custom', sfxEndpoint: 'http://127.0.0.1:9/sfx', sfxAccessKey: sfx });
+    assert.equal(first.hasSfxAccessKey, true);
+    assert.equal(first.sfxSecretHint, '···222');
+    const kept = await put({ sfxProvider: 'custom', sfxEndpoint: 'http://127.0.0.1:9/sfx', sfxAccessKey: '' });
+    assert.equal(kept.hasSfxAccessKey, true, '前端回传的 "" 不能抹掉已保存的音效 Key');
+    const moved = await put({ sfxProvider: 'custom', sfxEndpoint: 'http://127.0.0.1:11/sfx', sfxAccessKey: '' });
+    assert.equal(moved.hasSfxAccessKey, false);
+  });
+
+  test('请求头密钥：customHeaders / sfxCustomHeaders 都脱敏；换地址后占位符不还原旧值', async () => {
+    const secretHeaders = JSON.stringify({ Authorization: 'Bearer HDR-SECRET-1', 'X-Trace': 'keep' });
+    const saved = await put({ provider: 'custom', endpoint: 'http://127.0.0.1:9/tts', customHeaders: secretHeaders, sfxProvider: 'custom', sfxEndpoint: 'http://127.0.0.1:9/sfx', sfxCustomHeaders: secretHeaders });
+    assert.ok(!JSON.stringify(saved).includes('HDR-SECRET-1'), '两组请求头都不能明文回传');
+    assert.equal(JSON.parse(saved.sfxCustomHeaders).Authorization, '__SAVED_SECRET__');
+    // 地址不变，回传占位符 → 服务端还原（读不到明文，只能看脱敏结果仍是占位符且 hasX 不变）
+    const same = await put({ endpoint: 'http://127.0.0.1:9/tts', customHeaders: saved.customHeaders, sfxEndpoint: 'http://127.0.0.1:9/sfx', sfxCustomHeaders: saved.sfxCustomHeaders });
+    assert.equal(JSON.parse(same.customHeaders).Authorization, '__SAVED_SECRET__');
+    assert.equal(JSON.parse(same.sfxCustomHeaders).Authorization, '__SAVED_SECRET__');
+    // 换地址 → 占位符落成空串（脱敏后空值仍按 key 名显示占位符，所以直接读配置文件确认）
+    await put({ endpoint: 'http://127.0.0.1:12/tts', customHeaders: same.customHeaders, sfxEndpoint: 'http://127.0.0.1:12/sfx', sfxCustomHeaders: same.sfxCustomHeaders });
+    const file = JSON.parse(readFileSync(path.join(scratch, '.shengchang', 'config.json'), 'utf8'));
+    assert.equal(JSON.parse(file.customHeaders).Authorization, '');
+    assert.equal(JSON.parse(file.sfxCustomHeaders).Authorization, '');
+    assert.equal(JSON.parse(file.customHeaders)['X-Trace'], 'keep');
   });
 });

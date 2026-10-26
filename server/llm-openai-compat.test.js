@@ -66,8 +66,8 @@ describe('OpenAI 兼容文本模型', () => {
     assert.equal(llmRequiresApiKey('http://127.0.0.1:11434/v1'), false);
     assert.throws(() => validateLlmConfig({ llmEndpoint: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions', llmApiKey: '', llmModel: 'm' }), /API Key/);
     assert.doesNotThrow(() => validateLlmConfig(localConfig()));
-    assert.throws(() => validateLlmConfig({ ...localConfig(), llmModel: '' }), /模型名称/);
-    assert.throws(() => validateLlmConfig({ ...localConfig(), llmEndpoint: 'not a url' }), /URL/);
+    assert.throws(() => validateLlmConfig({ ...localConfig(), llmModel: '' }), /请填写模型名/);
+    assert.throws(() => validateLlmConfig({ ...localConfig(), llmEndpoint: 'not a url' }), /应以 http:\/\/ 或 https:\/\/ 开头/);
   });
 
   test('本地免 Key：不发 Authorization；拆解保留 voiceDescription', async () => {

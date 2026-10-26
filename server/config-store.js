@@ -122,6 +122,13 @@ export async function writeConfig(input) {
   return config;
 }
 
+// 已保存密钥的提示只露末 3 位（'···abc'）；短于 8 位的不露任何字符（'···'），未保存为 ''。
+export function secretHint(secret) {
+  const value = String(secret || '');
+  if (!value) return '';
+  return value.length >= 8 ? `···${value.slice(-3)}` : '···';
+}
+
 export function publicConfig(config) {
   let safeCustomHeaders = config.customHeaders;
   const redactHeaders = (value) => {
@@ -132,12 +139,14 @@ export function publicConfig(config) {
     } catch { return '{}'; }
   };
   safeCustomHeaders = redactHeaders(safeCustomHeaders);
+  // 音效请求头同样可能带 Authorization，之前原样回传给了浏览器。
   // voiceReady：前端判断“能不能开始生成”的唯一依据（Breeze 没有凭证也就绪）。
   let voiceReady = true;
   try { validateProviderConfig(config); } catch { voiceReady = false; }
   return {
     ...config,
     customHeaders: safeCustomHeaders,
+    sfxCustomHeaders: redactHeaders(config.sfxCustomHeaders),
     accessKey: '',
     llmApiKey: '',
     sfxAccessKey: '',
@@ -147,8 +156,9 @@ export function publicConfig(config) {
     llmApiKeyRequired: llmRequiresApiKey(config.llmEndpoint),
     hasSfxAccessKey: Boolean(config.sfxAccessKey),
     voiceReady,
-    llmSecretHint: config.llmApiKey ? `${config.llmApiKey.slice(0, 3)}••••${config.llmApiKey.slice(-3)}` : '',
-    secretHint: config.accessKey ? `${config.accessKey.slice(0, 3)}••••${config.accessKey.slice(-3)}` : '',
+    llmSecretHint: secretHint(config.llmApiKey),
+    secretHint: secretHint(config.accessKey),
+    sfxSecretHint: secretHint(config.sfxAccessKey),
     configPath: CONFIG_PATH,
   };
 }

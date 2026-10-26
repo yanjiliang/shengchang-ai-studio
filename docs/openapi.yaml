@@ -67,7 +67,7 @@ paths:
       operationId: postConfigTestLlm
       tags: [engine]
       summary: 设置页「测试连接」，真实发一次很短的 chat/completions 请求
-      description: '只验证地址、Key、模型名能否连通（max_tokens 16，超时 20 秒），不跑拆解。请求体是设置页的草稿（llmEndpoint、llmApiKey、llmModel）。llmApiKey 留空时，只有规范化后的地址与已保存的一致才沿用已保存的 Key，换了地址就不带 Key（保存配置 PUT /api/config 同样规则，换地址会清空已保存的 Key）。上游失败也回 200，看 ok 和 code；本地校验没过回 400。message 不会包含 Key 或 Authorization 头。'
+      description: '只验证地址、Key、模型名能否连通（max_tokens 16，超时 20 秒），不跑拆解。请求体是设置页的草稿（llmEndpoint、llmApiKey、llmModel）。llmApiKey 留空时，只有规范化后的地址与已保存的一致才沿用已保存的 Key，换了地址就不带 Key（保存配置 PUT /api/config 同样规则，换地址会清空已保存的 Key；TTS accessKey 按 endpoint、音效 sfxAccessKey 按 sfxEndpoint 同理）。上游失败也回 200，看 ok 和 code；本地校验没过回 400。message 不会包含 Key 或 Authorization 头。'
       requestBody:
         content:
           application/json:
@@ -84,7 +84,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TestLlmResult' }
         '400':
-          description: '本地校验没过（缺地址、地址不是合法 URL、缺模型名、方舟缺 Key），code 为 LLM_CONFIG_INVALID，latencyMs 为 null，不发请求'
+          description: '本地校验没过，code 为 LLM_CONFIG_INVALID，field 指出出错的输入项，latencyMs 为 null，不发请求。field 与 message 对应：llmEndpoint「请填写服务地址（Base URL）」或「地址格式不对，应以 http:// 或 https:// 开头」（非 http/https 协议也算）；llmModel「请填写模型名」；llmApiKey「请填写 API Key（火山方舟必须填写）」'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TestLlmResult' }
@@ -564,6 +564,14 @@ components:
         - LLM_NOT_FOUND            # 上游 404：地址或模型名不对
         - LLM_UNREACHABLE          # 超时、DNS 失败、连接被拒等网络错误
         - LLM_UPSTREAM             # 其他非 2xx，或 2xx 但不是 chat/completions 的 JSON
+    SecretHint:
+      type: string
+      description: '已保存密钥只露末 3 位，形如 ···abc（三个 U+00B7）；密钥短于 8 位时为 ···；未保存为空串'
+      example: ···abc
+    LlmConfigField:
+      type: string
+      description: 'LLM_CONFIG_INVALID 时出错的输入项'
+      enum: [llmEndpoint, llmModel, llmApiKey]
     TestLlmResult:
       type: object
       required: [ok, latencyMs, code, message]
@@ -573,6 +581,7 @@ components:
         code: { $ref: '#/components/schemas/TestLlmCode' }
         message: { type: string, description: '成功为「连接正常」；失败为中文说明或上游原始报错（截断到约 300 字，已抹掉 Key）', example: The API key is invalid }
         status: { type: integer, description: '上游 HTTP 状态码；网络错误和本地校验失败时没有' }
+        field: { $ref: '#/components/schemas/LlmConfigField' }
         error: { type: string, description: '仅 400 时附带，同 message（兼容旧的前端错误处理）' }
     PublicConfig:
       type: object
@@ -587,6 +596,15 @@ components:
         llmModel: { type: string }
         llmTimeoutMs: { type: integer, minimum: 10000, maximum: 1800000, default: 180000 }
         llmApiKeyRequired: { type: boolean, description: '只有火山方舟（*.volces.com）为 true' }
+        accessKey: { type: string, const: '', description: '密钥永不回传（llmApiKey、sfxAccessKey 同样恒为空串）' }
+        hasAccessKey: { type: boolean }
+        hasLlmApiKey: { type: boolean }
+        hasSfxAccessKey: { type: boolean }
+        secretHint: { $ref: '#/components/schemas/SecretHint' }
+        llmSecretHint: { $ref: '#/components/schemas/SecretHint' }
+        sfxSecretHint: { $ref: '#/components/schemas/SecretHint' }
+        customHeaders: { type: string, description: 'JSON 字符串；名字含 authorization/token/key/secret 的头值显示为 __SAVED_SECRET__，原样回传即保留（地址没变时）' }
+        sfxCustomHeaders: { type: string, description: '同 customHeaders 的脱敏规则' }
         targetLufs: { type: number, example: -16 }
     BreezeHealth:
       type: object

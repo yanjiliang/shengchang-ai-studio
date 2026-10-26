@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { normalizeAge, normalizeGender } from './character-meta.js';
+import { llmChatUrl, sameEndpoint, sameLlmEndpoint } from '../shared/endpoint.mjs';
 
 const SCHEMA_INSTRUCTION = `
 将输入小说改编成可制作的中文多人广播剧场景。只返回 JSON，不要 Markdown。
@@ -85,12 +86,7 @@ function mergeAnalysis(target, result) {
 // 文本模型走 OpenAI 兼容的 chat/completions：火山方舟（默认）、DeepSeek、OpenAI，
 // 以及本地的 Ollama / LM Studio / vLLM / llama.cpp server。llmEndpoint 可以是完整的
 // .../chat/completions，也可以只填 base URL（如 http://127.0.0.1:11434/v1）。
-export function llmChatUrl(endpoint) {
-  const value = String(endpoint || '').trim().replace(/\/+$/, '');
-  if (!value) return '';
-  if (/\/chat\/completions$/i.test(value)) return value;
-  return `${value}/chat/completions`;
-}
+export { llmChatUrl };
 
 // API Key 只有托管服务需要；本地 OpenAI 兼容服务通常不校验，留空即可。方舟默认地址
 // 仍要求 Key（没填 Key 时走规则拆解，而不是打一个必然 401 的请求）。
@@ -98,11 +94,16 @@ export function llmRequiresApiKey(endpoint) {
   try { return /(^|\.)volces\.com$/i.test(new URL(llmChatUrl(endpoint)).hostname); } catch { return true; }
 }
 
+// 本地校验错误：code LLM_CONFIG_INVALID + field 指出哪一项（前端据此把错误标到对应输入框）。
+const configInvalid = (field, message) => Object.assign(new Error(message), { status: 400, code: 'LLM_CONFIG_INVALID', field });
+
 export function validateLlmConfig(config) {
-  if (!config.llmEndpoint) throw new Error('请在设置中填写文本理解模型地址');
-  try { new URL(llmChatUrl(config.llmEndpoint)); } catch { throw new Error('文本理解模型地址不是合法 URL'); }
-  if (!config.llmApiKey && llmRequiresApiKey(config.llmEndpoint)) throw new Error('请在设置中填写文本理解模型 API Key');
-  if (!config.llmModel) throw new Error('请在设置中填写文本理解模型名称');
+  if (!String(config.llmEndpoint || '').trim()) throw configInvalid('llmEndpoint', '请填写服务地址（Base URL）');
+  let url;
+  try { url = new URL(llmChatUrl(config.llmEndpoint)); } catch { url = null; }
+  if (!url || !['http:', 'https:'].includes(url.protocol)) throw configInvalid('llmEndpoint', '地址格式不对，应以 http:// 或 https:// 开头');
+  if (!config.llmApiKey && llmRequiresApiKey(config.llmEndpoint)) throw configInvalid('llmApiKey', '请填写 API Key（火山方舟必须填写）');
+  if (!String(config.llmModel || '').trim()) throw configInvalid('llmModel', '请填写模型名');
 }
 
 // --- Offline rule-based fallback (TODO-1) -------------------------------
@@ -251,10 +252,15 @@ const truncate = (text) => (text.length > LLM_TEST_MESSAGE_MAX ? `${text.slice(0
 
 // 测试请求时，请求体没带 Key → 只有地址（规范化后）和已保存的一致才沿用已保存的 Key，
 // 否则把用户的 Key 发给了另一家服务。保存配置时同样用这条规则。
+// 通用版：TTS accessKey、音效 sfxAccessKey 同一规则（地址用 normalizeEndpoint 比较）。
+export function resolveSavedSecret(incoming, saved, { secretField, endpointField, same = sameEndpoint }) {
+  if (incoming?.[secretField]) return String(incoming[secretField]);
+  const endpoint = incoming?.[endpointField] === undefined ? saved?.[endpointField] : incoming[endpointField];
+  return same(endpoint, saved?.[endpointField]) ? String(saved?.[secretField] || '') : '';
+}
+
 export function resolveLlmApiKey(incoming, saved) {
-  if (incoming?.llmApiKey) return String(incoming.llmApiKey);
-  const endpoint = incoming?.llmEndpoint === undefined ? saved?.llmEndpoint : incoming.llmEndpoint;
-  return llmChatUrl(endpoint) === llmChatUrl(saved?.llmEndpoint) ? String(saved?.llmApiKey || '') : '';
+  return resolveSavedSecret(incoming, saved, { secretField: 'llmApiKey', endpointField: 'llmEndpoint', same: sameLlmEndpoint });
 }
 
 export async function testLlm(config, { fetchImpl = fetch, timeoutMs = LLM_TEST_TIMEOUT_MS } = {}) {

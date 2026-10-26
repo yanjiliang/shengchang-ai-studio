@@ -12,7 +12,8 @@ import { taskWithQueuePosition, cancelTask, enqueueGeneration, enqueueNovelAnaly
 import { seedSampleProject } from './sample-project.js';
 import { ensureBuiltinAssets, listBuiltinAssets } from './builtin-assets.js';
 import { recommendForEvent } from './asset-recommend.js';
-import { redactLlmSecret, resolveLlmApiKey, testLlm, validateLlmConfig } from './story-analyzer.js';
+import { redactLlmSecret, resolveLlmApiKey, resolveSavedSecret, testLlm, validateLlmConfig } from './story-analyzer.js';
+import { sameEndpoint, sameLlmEndpoint } from '../shared/endpoint.mjs';
 import { registerBreezeRoutes, sendError } from './breeze-routes.js';
 import { oneClickMissingVoiceRoles, voiceNotReadyError } from './one-click.js';
 import { annotateStaleness, generationVoiceMap, staleLineCount } from './voice-references.js';
@@ -75,23 +76,40 @@ app.get('/api/config', async (_request, response) => response.json(publicConfig(
 // Redacted secret headers round-trip as __SAVED_SECRET__. Merge per key so
 // editing a non-secret header no longer discards the edit (the old behavior
 // restored the entire saved JSON whenever any secret was present).
-function mergeRedactedHeaders(incoming, saved) {
+// keepSaved=false（接口地址换了）→ 占位符落成空串，已保存的头部密钥不带到新地址。
+function mergeRedactedHeaders(incoming, saved, keepSaved = true) {
   try {
     const merged = JSON.parse(incoming);
     const previous = JSON.parse(saved || '{}');
-    for (const key of Object.keys(merged)) if (merged[key] === '__SAVED_SECRET__') merged[key] = previous[key] ?? '';
+    for (const key of Object.keys(merged)) if (merged[key] === '__SAVED_SECRET__') merged[key] = keepSaved ? previous[key] ?? '' : '';
     return JSON.stringify(merged);
   } catch { return incoming; }
 }
+
+// 已保存的密钥：没填新值时，只有对应接口地址（规范化后）没变才沿用；地址换了就清空，
+// 不能把旧 Key 带到另一家服务。preserveSecret:false = 明确要求按请求体原样保存。
+const SAVED_SECRETS = [
+  { secretField: 'accessKey', endpointField: 'endpoint' },
+  { secretField: 'llmApiKey', endpointField: 'llmEndpoint', same: sameLlmEndpoint },
+  { secretField: 'sfxAccessKey', endpointField: 'sfxEndpoint' },
+];
+const SECRET_HEADERS = [
+  { headersField: 'customHeaders', endpointField: 'endpoint' },
+  { headersField: 'sfxCustomHeaders', endpointField: 'sfxEndpoint' },
+];
 
 app.put('/api/config', async (request, response, next) => {
   try {
     const current = await readConfig();
     const nextConfig = { ...current, ...request.body };
-    if (!request.body.accessKey && current.accessKey && request.body.preserveSecret !== false) nextConfig.accessKey = current.accessKey;
-    // 没填新 Key 时，只有地址没变才沿用已保存的 Key；换了地址就清空，不能把 Key 带到另一家服务。
-    if (request.body.preserveSecret !== false) nextConfig.llmApiKey = resolveLlmApiKey(request.body, current);
-    if (request.body.customHeaders?.includes('__SAVED_SECRET__')) nextConfig.customHeaders = mergeRedactedHeaders(request.body.customHeaders, current.customHeaders);
+    if (request.body.preserveSecret !== false) {
+      for (const rule of SAVED_SECRETS) nextConfig[rule.secretField] = resolveSavedSecret(request.body, current, rule);
+    }
+    for (const { headersField, endpointField } of SECRET_HEADERS) {
+      if (!String(request.body[headersField] ?? '').includes('__SAVED_SECRET__')) continue;
+      const endpoint = request.body[endpointField] === undefined ? current[endpointField] : request.body[endpointField];
+      nextConfig[headersField] = mergeRedactedHeaders(request.body[headersField], current[headersField], sameEndpoint(endpoint, current[endpointField]));
+    }
     response.json(publicConfig(await writeConfig(nextConfig)));
   } catch (error) { next(error); }
 });
@@ -104,7 +122,7 @@ app.post('/api/config/test-llm', async (request, response) => {
     config = { ...current, ...request.body, llmApiKey: resolveLlmApiKey(request.body, current) };
     validateLlmConfig(config);
   } catch (error) {
-    return response.status(400).json({ ok: false, latencyMs: null, code: 'LLM_CONFIG_INVALID', message: error.message, error: error.message });
+    return response.status(400).json({ ok: false, latencyMs: null, code: 'LLM_CONFIG_INVALID', message: error.message, ...(error.field ? { field: error.field } : {}), error: error.message });
   }
   try { response.json(await testLlm(config)); }
   catch (error) { response.status(500).json({ ok: false, latencyMs: null, code: 'LLM_UPSTREAM', message: redactLlmSecret(error.message, config.llmApiKey).slice(0, 300), error: '测试连接失败' }); }

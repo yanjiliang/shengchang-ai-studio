@@ -86,7 +86,7 @@ paths:
       operationId: getEnginesBreezeHealth
       tags: [engine]
       summary: Breeze-TTS-2 服务是否可用（永远 200）
-      description: 真的请求一次 Breeze `GET /voices` 并解析结果（`{id: transcript}`、`[{id, transcript}]`、`{voices: [...]}` 三种形状都认）。端口开着但 /voices 报错或格式不认 → `status: invalid`、`reachable: false`。
+      description: '真的请求一次 Breeze `GET /voices` 并解析结果（`{id: transcript}`、`[{id, transcript}]`、`{voices: [...]}` 三种形状都认）。端口开着但 /voices 报错或格式不认 → `status: invalid`、`reachable: false`。'
       responses:
         '200':
           description: OK

@@ -35,3 +35,12 @@ test('服务端抛出的错误码都在 ErrorCode 枚举里', () => {
   thrown.delete('TASK_CANCELLED'); // 内部控制流，不会出现在 HTTP 响应里
   for (const code of thrown) assert.ok(documented.has(code), `${code} 不在 openapi.yaml 的 ErrorCode 里`);
 });
+
+test('openapi.yaml 没有会让 YAML 解析失败的未加引号的 ": "', () => {
+  // 仓库里没有 YAML 解析器；这条挡住最常见的坏法：description/summary 的纯文本值里又出现 "key: value"。
+  // 有冒号的文本请用单引号包起来。
+  const bad = spec.split('\n')
+    .map((line, index) => ({ line, number: index + 1 }))
+    .filter(({ line }) => /^\s*(?:- )?(?:description|summary): (?!['"|>{[])/.test(line) && /: /.test(line.replace(/^\s*(?:- )?(?:description|summary): /, '')));
+  assert.deepEqual(bad.map(({ number, line }) => `${number}: ${line.trim()}`), []);
+});

@@ -164,7 +164,7 @@ export async function runLineTakeTask(task, config, { runGeneration }) {
     // 缓存命中不进引擎通道：这里补一个 started，事件序列保持 queued → started → take → completed。
     if (outcome.status !== 'cancelled') markStarted('命中缓存');
     if (outcome.status === 'cancelled' || getPersistentTask(task.id)?.cancelRequested) return finishCancelled();
-    if (outcome.status === 'unreachable') throw Object.assign(new Error(outcome.error), { code: outcome.code });
+    if (outcome.status === 'unreachable') throw Object.assign(new Error(outcome.error), { code: outcome.code, details: { causeCode: outcome.causeCode, completedLineCount: outcome.completedLineCount, remainingLineCount: outcome.remainingLineCount } });
     if (outcome.failures.length || !outcome.results.length) throw Object.assign(new Error(outcome.failures[0]?.error || '生成失败'), { code: outcome.failures[0]?.code || 'GENERATION_FAILED' });
     const result = outcome.results[0];
     // 缓存命中且这句已有同一缓存键（同文本/参数/seed/参考音）的试听：不再新增一段（不占
@@ -195,7 +195,7 @@ export async function runLineTakeTask(task, config, { runGeneration }) {
     });
   } catch (error) {
     if (error.code === 'TASK_CANCELLED') return finishCancelled();
-    appendEvent(task.id, { type: 'failed', error: error.message, code: error.code || '' }, { status: 'failed', message: '单句试听失败', error: error.message, completedAt: Date.now() });
+    appendEvent(task.id, { type: 'failed', error: error.message, code: error.code || '', ...(error.details || {}) }, { status: 'failed', message: '单句试听失败', error: error.message, completedAt: Date.now() });
   }
 }
 

@@ -3,22 +3,17 @@
 // 顶层的 endpoint / accessKey / customHeaders … 仍然保留，永远等于当前引擎那一槽（兼容旧 UI 和所有读取方）。
 // 文本模型（llm*）和音效（sfx*）不在这里，结构不变。
 import { normalizeEndpoint, sameEndpoint } from '../shared/endpoint.mjs';
+import { TTS_UI_PRESETS, VOLCENGINE_DEFAULT_ENDPOINT } from '../shared/tts-presets.mjs';
 
 export const TTS_PROVIDER_IDS = ['demo', 'volcengine-api-key', 'breeze', 'custom'];
 export const TTS_SLOT_FIELDS = ['endpoint', 'accessKey', 'resourceId', 'model', 'audioFormat', 'sampleRate', 'responseMode', 'customHeaders', 'customBodyTemplate'];
-export const VOLCENGINE_DEFAULT_ENDPOINT = 'https://openspeech.bytedance.com/api/v3/tts/unidirectional';
 const DEFAULT_BODY_TEMPLATE = '{"text":"{{text}}","voice_id":"{{voiceId}}","emotion":"{{emotion}}","speed":{{speed}}}';
 const SECRET_HEADER = /authorization|token|key|secret/i;
 export const SAVED_SECRET = '__SAVED_SECRET__';
 
-// 设置页切引擎时往草稿里填的预设值（与 SettingsView 的 providerPresets 一致）。切引擎的那次保存里，
+// 设置页切引擎时往草稿里填的预设值（TTS_UI_PRESETS，前后端共用，见 shared/tts-presets.mjs）。切引擎的那次保存里，
 // 等于预设、或只是从上一个引擎原样带过来的字段，视为“没改”，不覆盖目标槽已保存的值。
-export const TTS_UI_PRESETS = {
-  demo: { endpoint: '本地内置，无外部请求', resourceId: 'demo', model: 'demo-voice-engine', audioFormat: 'wav' },
-  'volcengine-api-key': { endpoint: VOLCENGINE_DEFAULT_ENDPOINT, resourceId: 'seed-tts-2.0', model: '', audioFormat: 'mp3' },
-  custom: { endpoint: '', resourceId: '', model: '', audioFormat: 'mp3' },
-  breeze: {},
-};
+export { TTS_UI_PRESETS, VOLCENGINE_DEFAULT_ENDPOINT };
 
 export function sanitizeTtsSlot(providerId, raw = {}) {
   const input = raw && typeof raw === 'object' ? raw : {};

@@ -173,11 +173,22 @@ export async function runGenerationRequests(config, requests, { projectId, scene
     status: 'unreachable', code: 'BREEZE_UNREACHABLE', causeCode: error.code || '',
     error: `Breeze 服务连不上，任务已停止，剩余 ${requests.length - index} 句未生成：${error.message}`,
     results, failures, skippedCount: requests.length - index, skippedLineIds: requests.slice(index).map((item) => item.lineId),
+    // 0037：completedLineCount = 本次已拿到音频的句数（含缓存命中）；remainingLineCount = 还需要生成的句数
+    // （总数 − 已完成，含停下之前逐句失败的）。预检就失败且前面没有缓存命中时是 0 / 总数。
+    completedLineCount: results.length, remainingLineCount: requests.length - results.length,
   });
   const withConnectionRetry = async (fn) => {
     for (let attempt = 0; ; attempt += 1) {
       try { return await fn(); } catch (error) {
         if (!isBreezeConnectionError(error) || attempt >= retryDelaysMs.length) throw error;
+        // 超时（不是连不上 / 被重置）：直接重试可能再等满 breezeTimeoutMs（默认 180 秒）两次。先强制
+        // 探一次 GET /voices（lane: null = 不看忙信号，HEALTH_TIMEOUT_MS 10 秒）；探不通就别重试，
+        // 按原超时错误往上抛 → 停掉任务（BREEZE_UNREACHABLE，causeCode BREEZE_TIMEOUT）。
+        if (error.code === 'BREEZE_TIMEOUT' && config.provider === 'breeze') {
+          const health = await preflight(config, { lane: null });
+          if (shouldCancel?.()) throw cancelledError();
+          if (!health.reachable) throw error;
+        }
         await waitUnlessCancelled(retryDelaysMs[attempt], shouldCancel);
       }
     }
@@ -292,7 +303,7 @@ async function runGenerationTask(task, config) {
       if (!isDirectionLab && outcome.results.length) applyResultsToProject(task.projectId, task.sceneId, outcome.results);
       updatePersistentTask(task.id, {
         status: 'failed', message: `Breeze 服务连不上，任务已停止（${outcome.results.length} 句已完成，${outcome.skippedCount} 句未生成）`, error: outcome.error,
-        result: { code: outcome.code, causeCode: outcome.causeCode, results: outcome.results, failures: outcome.failures, skippedCount: outcome.skippedCount, skippedLineIds: outcome.skippedLineIds, ...summarizeBilling(outcome.results) },
+        result: { code: outcome.code, causeCode: outcome.causeCode, results: outcome.results, failures: outcome.failures, skippedCount: outcome.skippedCount, skippedLineIds: outcome.skippedLineIds, completedLineCount: outcome.completedLineCount, remainingLineCount: outcome.remainingLineCount, ...summarizeBilling(outcome.results) },
         completedAt: Date.now(),
       });
       return;

@@ -31,6 +31,9 @@ export async function startMockBreeze({ port = 0, delayMs = 0, clipSeconds = 1.2
     resetNext: 0,
     // voicesBlockWhileGenerating: true 时 GET /voices 要等所有生成结束才回（真 Breeze 单线程的样子）。
     voicesBlockWhileGenerating: false,
+    // dieAfter: n —— 再成功回 n 个生成请求之后“挂掉”：down = true，之后所有请求（含 GET /voices）直接断开连接。
+    // 设 down = false 即“恢复”（真重启还要 restart() 清注册表）。
+    dieAfter: null, down: false, generated: 0,
   };
   const idleWaiters = [];
   const notifyIdle = () => { if (state.inFlight === 0) for (const resume of idleWaiters.splice(0)) resume(); };
@@ -45,6 +48,7 @@ export async function startMockBreeze({ port = 0, delayMs = 0, clipSeconds = 1.2
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { response.writeHead(400, { 'Content-Type': 'text/plain' }); return response.end('invalid json'); }
       }
       state.requests.push({ method: request.method, path: url.pathname, body, headers: { authorization: request.headers.authorization }, at: Date.now() });
+      if (state.down) { request.socket.destroy(); return; }
       const fail = state.failNext && state.failNext.path === url.pathname && (!state.failNext.method || state.failNext.method === request.method) ? state.failNext : null;
       if (fail) { state.failNext = null; response.writeHead(fail.status, { 'Content-Type': 'text/plain' }); return response.end(fail.text || 'mock failure'); }
       if (url.pathname === '/voices' && request.method === 'GET') {
@@ -79,6 +83,8 @@ export async function startMockBreeze({ port = 0, delayMs = 0, clipSeconds = 1.2
         // X-Instruction-B64 回显实际用的。instructionOverride 用来模拟“没按声场的来”。
         const usedInstruction = state.instructionOverride ?? (typeof body.instruction === 'string' ? body.instruction : '[breeze 自拟]');
         response.writeHead(200, { 'Content-Type': 'audio/wav', 'X-Seed': String(seed), ...(state.echoInstruction === false ? {} : { 'X-Instruction-B64': Buffer.from(usedInstruction, 'utf8').toString('base64') }) });
+        state.generated += 1;
+        if (Number.isInteger(state.dieAfter) && (state.dieAfter -= 1) <= 0) { state.dieAfter = null; state.down = true; }
         return response.end(toneWav(state.clipSeconds, { frequency: 180 + (seed % 200) }));
       }
       response.writeHead(404, { 'Content-Type': 'text/plain' }); response.end('not found');

@@ -297,17 +297,28 @@ export function exportPrecheck(config, project, { sceneId = null } = {}) {
   const staleLines = [];
   let dialogueLineCount = 0;
   let missingAudioLineCount = 0;
+  // pending = 要渲染才能导出的句子（没有音频 + 过期），文本非空的才算。pendingCharCount 按发给 TTS 的
+  // 文本计：套过发音词典之后的 text（豆包 req_params.text 就是它），按 Unicode 字符（码位）数。
+  let pendingLineCount = 0;
+  let pendingCharCount = 0;
+  const dictionary = state.pronunciationDictionary || [];
+  const addPending = (line) => {
+    const text = applyPronunciation(String(line.text ?? ''), dictionary);
+    if (!text.trim()) return;
+    pendingLineCount += 1;
+    pendingCharCount += Array.from(text).length;
+  };
   for (const scene of state.scenes || []) {
     if (sceneId && scene.id !== sceneId) continue;
     for (const line of scene.lines || []) {
       if (line.type !== 'dialogue') continue;
       dialogueLineCount += 1;
-      if (!line.audioUrl) { missingAudioLineCount += 1; continue; }
+      if (!line.audioUrl) { missingAudioLineCount += 1; addPending(line); continue; }
       const { stale, staleReason } = lineStaleness(config, state, line, voiceMap);
-      if (stale) staleLines.push({ sceneId: scene.id, lineId: line.id, staleReason });
+      if (stale) { staleLines.push({ sceneId: scene.id, lineId: line.id, staleReason }); addPending(line); }
     }
   }
-  return { projectId: project?.id ?? null, sceneId, dialogueLineCount, staleLineCount: staleLines.length, staleLines, missingAudioLineCount, ok: staleLines.length === 0 && missingAudioLineCount === 0 };
+  return { projectId: project?.id ?? null, sceneId, dialogueLineCount, staleLineCount: staleLines.length, staleLines, missingAudioLineCount, pendingLineCount, pendingCharCount, ok: staleLines.length === 0 && missingAudioLineCount === 0 };
 }
 
 // 影响范围（只读）：该角色已有音频的对白里，按当前参考 + 当前引擎配置重新算出的

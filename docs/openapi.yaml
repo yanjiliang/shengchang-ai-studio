@@ -487,7 +487,7 @@ components:
       enum: [breeze, volcengine, custom, demo]
     ExportPrecheck:
       type: object
-      required: [projectId, sceneId, dialogueLineCount, staleLineCount, staleLines, missingAudioLineCount, ok]
+      required: [projectId, sceneId, dialogueLineCount, staleLineCount, staleLines, missingAudioLineCount, pendingLineCount, pendingCharCount, ok]
       properties:
         projectId: { type: string }
         sceneId: { type: [string, 'null'], description: '请求的场景；null = 整集' }
@@ -503,6 +503,8 @@ components:
               lineId: { type: string }
               staleReason: { type: string, enum: [text, params] }
         missingAudioLineCount: { type: integer, minimum: 0, description: '还没有音频的对白句数（导出时会被跳过）' }
+        pendingLineCount: { type: integer, minimum: 0, description: '要渲染才能导出的对白句数 = 没有音频 + 过期（文本为空的不算）' }
+        pendingCharCount: { type: integer, minimum: 0, description: '这些句子发给语音引擎的字符数：套过发音词典后的文本（即豆包 req_params.text），按 Unicode 码位计。豆包实际计费以返回的 usage.text_words 为准，这是估算' }
         ok: { type: boolean, description: 'staleLineCount 与 missingAudioLineCount 都为 0' }
     ErrorCode:
       type: string
@@ -716,6 +718,9 @@ components:
         reused: { type: boolean }
         error: { type: string }
         code: { type: string }
+        causeCode: { type: string, description: 'failed 且 code = BREEZE_UNREACHABLE 时的底层原因' }
+        completedLineCount: { type: integer, minimum: 0, description: 'failed 且 code = BREEZE_UNREACHABLE 时（单句试听恒为 0）' }
+        remainingLineCount: { type: integer, minimum: 0, description: 'failed 且 code = BREEZE_UNREACHABLE 时（单句试听恒为 1）' }
       additionalProperties: true
     Task:
       type: object
@@ -738,6 +743,8 @@ components:
             causeCode: { type: string, description: 'code = BREEZE_UNREACHABLE 时的底层原因（BREEZE_UNREACHABLE 或 BREEZE_TIMEOUT）' }
             skippedCount: { type: integer, minimum: 0, description: 'code = BREEZE_UNREACHABLE 时没生成的句数（含停下时那一句）' }
             skippedLineIds: { type: array, items: { type: string }, description: '生成任务（非一键成片）code = BREEZE_UNREACHABLE 时没生成的台词 id' }
+            completedLineCount: { type: integer, minimum: 0, description: 'code = BREEZE_UNREACHABLE 时本次任务已拿到音频（含缓存命中）并已写入项目的句数；预检就连不上时为 0' }
+            remainingLineCount: { type: integer, minimum: 0, description: 'code = BREEZE_UNREACHABLE 时本次任务还需要生成的句数（总数 − completedLineCount，含停下前逐句失败的）；预检就连不上时为总数。续跑 = 重新提交同一个一键成片 / 生成任务（或 POST /api/tasks/{id}/retry），已完成的句子缓存命中、不再请求 Breeze，没有单独的续跑接口' }
           additionalProperties: true
         error: { type: string }
         cancelRequested: { type: boolean }

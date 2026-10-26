@@ -275,7 +275,9 @@ describe('导出前检查 GET /api/projects/:projectId/export-precheck', () => {
     const url = `/api/projects/${projectId}/export-precheck`;
     const clean = await api(url);
     assert.equal(clean.status, 200);
-    assert.deepEqual(clean.body, { projectId, sceneId: null, dialogueLineCount: 3, staleLineCount: 0, staleLines: [], missingAudioLineCount: 2, ok: false });
+    assert.deepEqual(clean.body, { projectId, sceneId: null, dialogueLineCount: 3, staleLineCount: 0, staleLines: [], missingAudioLineCount: 2, pendingLineCount: 2, pendingCharCount: clean.body.pendingCharCount, ok: false });
+    const missingChars = clean.body.pendingCharCount;
+    assert.ok(missingChars > 0);
     const original = getProject(projectId).state;
     const edit = (patch) => updateProject(projectId, { state: { ...original, scenes: [{ ...original.scenes[0], lines: original.scenes[0].lines.map((line) => (line.id === 'pl1' ? { ...line, ...patch } : line)) }] } });
     try {
@@ -284,11 +286,20 @@ describe('导出前检查 GET /api/projects/:projectId/export-precheck', () => {
       assert.equal(stale.body.sceneId, 's1');
       assert.equal(stale.body.staleLineCount, 1);
       assert.deepEqual(stale.body.staleLines, [{ sceneId: 's1', lineId: 'pl1', staleReason: 'params' }]);
+      assert.equal(stale.body.pendingLineCount, 1 + stale.body.missingAudioLineCount, '过期的也要渲染');
       edit({ text: '改过的台词。' });
-      assert.deepEqual((await api(url)).body.staleLines, [{ sceneId: 's1', lineId: 'pl1', staleReason: 'text' }]);
+      const edited = (await api(url)).body;
+      assert.deepEqual(edited.staleLines, [{ sceneId: 's1', lineId: 'pl1', staleReason: 'text' }]);
+      assert.equal(edited.pendingLineCount, 3);
+      assert.equal(edited.pendingCharCount, missingChars + '改过的台词。'.length);
       // 与时间轴 / 导出同一算法。
       const { staleLineCount } = await import('./voice-references.js');
       assert.equal(staleLineCount(await readConfig(), getProject(projectId)), 1);
+      // 按发给 TTS 的文本计：套过发音词典（师父 → 师傅父亲，多 2 个字）。
+      updateProject(projectId, { state: { ...original, pronunciationDictionary: [{ term: '师父', replacement: '师傅父亲' }] } });
+      const replaced = (await api(url)).body;
+      assert.equal(replaced.pendingLineCount, 2);
+      assert.equal(replaced.pendingCharCount, missingChars + 2);
     } finally { edit({}); }
     assert.equal((await api(url)).body.staleLineCount, 0, '改回去不再过期');
     assert.equal((await api(`${url}?sceneId=nope`)).body.code, 'SCENE_NOT_FOUND');

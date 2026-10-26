@@ -262,8 +262,11 @@ describe('A 参考音注册并发合并', () => {
 });
 
 describe('情绪强度 0 与任务初始进度', () => {
-  test('buildGenerationRequest：强度 0 → 0.1（不再变成 0.4），缺省 → 0.4；语速 0 / 缺省 → 0.9', () => {
-    assert.equal(buildGenerationRequest({ id: 'a', intensity: 0 }, {}).emotionScale, 0.1);
+  test('buildGenerationRequest：强度 0 → 0（不要情绪，不再变成 0.4），1 → 夹到 0.1，缺省 → 0.4；语速 0 / 缺省 → 0.9', () => {
+    assert.equal(buildGenerationRequest({ id: 'a', intensity: 0 }, {}).emotionScale, 0);
+    assert.equal(buildGenerationRequest({ id: 'a', intensity: '0' }, {}).emotionScale, 0);
+    assert.equal(buildGenerationRequest({ id: 'a', intensity: 1 }, {}).emotionScale, 0.1);
+    assert.equal(buildGenerationRequest({ id: 'a', intensity: '' }, {}).emotionScale, 0.4);
     assert.equal(buildGenerationRequest({ id: 'a' }, {}).emotionScale, 0.4);
     assert.equal(buildGenerationRequest({ id: 'a', intensity: null }, {}).emotionScale, 0.4);
     assert.equal(buildGenerationRequest({ id: 'a', intensity: 100 }, {}).emotionScale, 1);
@@ -273,10 +276,12 @@ describe('情绪强度 0 与任务初始进度', () => {
     assert.equal(buildGenerationRequest({ id: 'a', pace: 110 }, {}).speed, 1.1);
   });
 
-  test('指令构建：emotionScale 0 夹到 0.1（略带一点），缺省仍按 0.4（比较）', () => {
-    assert.match(breezeInstruction({ emotion: '愤怒', emotionScale: 0 }), /^用略带一点愤怒的语气说/);
+  test('指令构建：emotionScale 0 = 不写情绪那句，0.05 夹到 0.1（略带一点），缺省仍按 0.4（比较）', () => {
+    assert.doesNotMatch(breezeInstruction({ emotion: '愤怒', emotionScale: 0 }), /愤怒/);
+    assert.match(breezeInstruction({ emotion: '愤怒', emotionScale: 0.05 }), /^用略带一点愤怒的语气说/);
     assert.match(breezeInstruction({ emotion: '愤怒' }), /^用比较愤怒的语气说/);
-    assert.match(voiceInstructions({ emotion: '愤怒', emotionScale: 0 })[0], /^用略带一点愤怒的语气说/);
+    assert.deepEqual(voiceInstructions({ emotion: '愤怒', emotionScale: 0 }), []);
+    assert.match(voiceInstructions({ emotion: '愤怒', emotionScale: 0.05 })[0], /^用略带一点愤怒的语气说/);
     assert.match(voiceInstructions({ emotion: '愤怒' })[0], /^用比较愤怒的语气说/);
   });
 

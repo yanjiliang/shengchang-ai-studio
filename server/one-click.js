@@ -345,7 +345,7 @@ export async function runOneClickPipeline(task, config, deps = {}) {
         // Breeze 挂了：整个一键成片失败一次（不逐句失败）；已完成的句子照样写入，
         // 重试时缓存命中。生成阶段检查点不写。
         applyResultsToProject(task.projectId, '', results);
-        throw Object.assign(new Error(outcome.error), { code: 'BREEZE_UNREACHABLE', details: { causeCode: outcome.causeCode, skippedCount: outcome.skippedCount + requests.length - processed - sceneRequests.length, failures: outcome.failures } });
+        throw Object.assign(new Error(outcome.error), { code: 'BREEZE_UNREACHABLE', details: { causeCode: outcome.causeCode, skippedCount: outcome.skippedCount + requests.length - processed - sceneRequests.length, completedLineCount: results.length, remainingLineCount: requests.length - results.length, failures: outcome.failures } });
       }
       if (outcome.failures.length) {
         // Successful lines (this scene AND earlier scenes) are applied so a

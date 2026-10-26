@@ -1,4 +1,4 @@
-// 0020：GET /voices 三种返回形状、健康检查真的验 /voices、
+// 0020：GET /voices 三种返回形状、健康检查真的验 /voices、Breeze 地址去掉 /tts、
 // 合成前 / Breeze 重启后的自动补注册。全部打模拟 Breeze。
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
@@ -10,7 +10,8 @@ import { startMockBreeze, toneWav } from './test-support/mock-breeze.js';
 const scratch = mkdtempSync(path.join(tmpdir(), 'shengchang-selfheal-test-'));
 process.env.HOME = scratch;
 process.env.SHENGCHANG_RUNTIME_DIR = path.join(scratch, 'runtime');
-const { parseBreezeVoices, listBreezeVoices, breezeHealth } = await import('./breeze.js');
+const { parseBreezeVoices, listBreezeVoices, breezeHealth, normalizeBreezeEndpoint, breezeCustomConfig } = await import('./breeze.js');
+const { writeConfig, readConfig } = await import('./config-store.js');
 const { createProject } = await import('./database.js');
 const { ensureRuntime, runtimePaths } = await import('./media-store.js');
 const { forgetRegisteredVoices } = await import('./voice-references.js');
@@ -80,6 +81,31 @@ describe('健康检查', () => {
   test('连不上 → unreachable；地址无效 → misconfigured', async () => {
     assert.equal((await breezeHealth({ breezeEndpoint: 'http://127.0.0.1:1' })).status, 'unreachable');
     assert.equal((await breezeHealth({ breezeEndpoint: 'ftp://x' })).status, 'misconfigured');
+  });
+  test('填了 …/tts 的地址：健康检查打 /voices 而不是 /tts/voices', async () => {
+    const before = mock.state.requests.length;
+    const health = await breezeHealth({ breezeEndpoint: `${mock.endpoint}/tts/` });
+    assert.equal(health.status, 'ok');
+    assert.deepEqual(calls(before), ['GET /voices']);
+  });
+});
+
+describe('Breeze 地址规范化', () => {
+  test('去掉末尾 / 和 /tts', () => {
+    assert.equal(normalizeBreezeEndpoint('http://127.0.0.1:4180/tts'), 'http://127.0.0.1:4180');
+    assert.equal(normalizeBreezeEndpoint('http://127.0.0.1:4180/tts/'), 'http://127.0.0.1:4180');
+    assert.equal(normalizeBreezeEndpoint('http://127.0.0.1:4180//'), 'http://127.0.0.1:4180');
+    assert.equal(normalizeBreezeEndpoint('http://host/breeze/TTS'), 'http://host/breeze');
+    assert.equal(normalizeBreezeEndpoint('http://host/ttsx'), 'http://host/ttsx');
+    assert.equal(breezeCustomConfig({ breezeEndpoint: 'http://127.0.0.1:4180/tts' }).endpoint, 'http://127.0.0.1:4180/tts');
+  });
+  test('保存时就规范化，生成请求打 /tts 不打 /tts/tts', async () => {
+    await writeConfig({ provider: 'breeze', breezeEndpoint: `${mock.endpoint}/tts` });
+    assert.equal((await readConfig()).breezeEndpoint, mock.endpoint);
+    const before = mock.state.requests.length;
+    const outcome = await runGenerationRequests({ provider: 'breeze', breezeEndpoint: `${mock.endpoint}/tts` }, [{ ...request(), speakerId: 'nobody', voiceId: 'preset-x' }], { projectId, sceneId: 's1' });
+    assert.equal(outcome.failures.length, 0, JSON.stringify(outcome.failures));
+    assert.deepEqual(calls(before), ['POST /tts']);
   });
 });
 

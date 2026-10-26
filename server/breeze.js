@@ -15,13 +15,16 @@ const HEALTH_TIMEOUT_MS = 3_000;
 // 里：只有显式指定种子时才注入（injectSeed），否则由 Breeze 用默认种子 42。
 export const BREEZE_TTS_TEMPLATE = '{"text":"{{text}}","voiceId":"{{voiceId}}","emotion":"{{emotion}}","subtext":"{{subtext}}","speed":{{speed}},"emotionScale":{{emotionScale}},"instruction":"{{instruction}}"}';
 
+// 保存和使用时都走这里：去掉末尾的 / 和 /tts（用户常把完整的 …/tts 粘进来，
+// 不去掉就会请求到 /tts/tts）。返回 null = 地址无效。
 export function normalizeBreezeEndpoint(value) {
   const raw = String(value ?? '').trim();
   if (!raw) return BREEZE_DEFAULT_ENDPOINT;
   let url;
   try { url = new URL(raw); } catch { return null; }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) return null;
-  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+  const pathname = url.pathname.replace(/\/+$/, '').replace(/\/tts$/i, '').replace(/\/+$/, '');
+  return `${url.origin}${pathname}`;
 }
 
 export function normalizeBreezeTimeout(value) {

@@ -508,7 +508,7 @@ components:
       description: 只列出生产链路相关字段
       properties:
         provider: { $ref: '#/components/schemas/Engine' }
-        breezeEndpoint: { type: string, format: uri, example: 'http://127.0.0.1:8000' }
+        breezeEndpoint: { type: string, format: uri, example: 'http://127.0.0.1:8000', description: '服务根地址；保存时去掉末尾的 / 和 /tts' }
         breezeTimeoutMs: { type: integer }
         engineConcurrency: { type: object, additionalProperties: { type: integer, minimum: 1 } }
         engineTimeoutMs: { type: object, additionalProperties: { type: integer } }

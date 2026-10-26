@@ -576,6 +576,7 @@ components:
         queuePosition: { type: [integer, 'null'] }
         takeId: { type: string }
         cached: { type: boolean }
+        reused: { type: boolean }
         error: { type: string }
         code: { type: string }
       additionalProperties: true
@@ -615,7 +616,7 @@ components:
     Take:
       type: object
       properties:
-        takeId: { type: string, description: '= 生成它的 jobId' }
+        takeId: { type: string, description: '= 生成它的 jobId；reused = true 时是已有那段的 takeId（≠ 本次 jobId）' }
         lineId: { type: string }
         sceneId: { type: string }
         seed: { type: integer, description: '上游回的 X-Seed；缓存命中时为请求的 seed' }
@@ -623,6 +624,7 @@ components:
         audioUrl: { type: string }
         engine: { $ref: '#/components/schemas/Engine' }
         cached: { type: boolean }
+        reused: { type: boolean, description: '缓存命中且这句已有同缓存键的试听：没有新增（不占 5 段名额），返回的是已有那段' }
         createdAt: { type: integer }
     LineTakes:
       type: object

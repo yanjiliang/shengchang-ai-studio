@@ -121,6 +121,24 @@ describe('单句试听（seed）', () => {
     assert.equal(third.task.result.take.contentHash, first.task.result.take.contentHash);
   });
 
+  test('缓存命中不新增重复试听（不占 5 段名额）：返回原来那段，reused=true', async () => {
+    const first = await makeTake({ seed: 7777 });
+    const countBefore = (await api(`/api/lines/pl1/takes?projectId=${projectId}`)).body.takes.length;
+    const again = await makeTake({ seed: 7777 });
+    const take = again.task.result.take;
+    assert.equal(take.cached, true);
+    assert.equal(take.reused, true);
+    assert.equal(take.takeId, first.task.result.take.takeId, 'takeId 指向已有那段');
+    assert.notEqual(take.takeId, again.created.jobId);
+    assert.equal(take.seed, 7777);
+    const listed = (await api(`/api/lines/pl1/takes?projectId=${projectId}`)).body.takes;
+    assert.equal(listed.length, countBefore, '列表长度不变');
+    assert.equal(listed.filter((item) => item.contentHash === take.contentHash).length, 1);
+    assert.equal(first.task.result.take.reused, false);
+    const events = again.task.result.events.map((event) => event.type);
+    assert.deepEqual(events.slice(-2), ['take', 'completed']);
+  });
+
   test('显式 seed 去重：同句同 seed 进行中的任务被复用', async () => {
     mock.state.hold = true;
     const a = await postJson('/api/lines/pl1/takes', { projectId, seed: 777 });

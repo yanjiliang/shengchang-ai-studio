@@ -129,13 +129,25 @@ export async function runLineTakeTask(task, config, { runGeneration }) {
     if (outcome.status === 'cancelled' || getPersistentTask(task.id)?.cancelRequested) return finishCancelled();
     if (outcome.failures.length || !outcome.results.length) throw Object.assign(new Error(outcome.failures[0]?.error || '生成失败'), { code: outcome.failures[0]?.code || 'GENERATION_FAILED' });
     const result = outcome.results[0];
+    // 缓存命中且这句已有同一缓存键（同文本/参数/seed/参考音）的试听：不再新增一段（不占
+    // 5 段名额），直接返回那段，reused = true、takeId 是原来那段的（≠ 本任务 jobId）。
+    const existing = result.cached ? getProject(task.projectId)?.state?.lineTakes?.[lineId]?.takes?.find((item) => item.contentHash === result.contentHash) : null;
+    if (existing) {
+      const take = { ...existing, cached: true, reused: true };
+      appendEvent(task.id, { type: 'take', ...take, jobId: task.id, queuePosition: queuePositionOf(task.id) }, { result: { take } });
+      appendEvent(task.id, { type: 'completed', takeId: take.takeId, seed: take.seed, cached: true, reused: true }, {
+        status: 'completed', progress: 100, completedAt: Date.now(),
+        message: `与已有试听完全相同（seed ${take.seed}），未新增试听`,
+      });
+      return;
+    }
     const take = {
       takeId: task.id, lineId, sceneId, jobId: task.id,
       // 缓存命中时上游没有回 X-Seed，用请求的 seed（缓存键里就是它）。
       seed: Number.isSafeInteger(result.seed) ? result.seed : seed, requestedSeed: seed,
       audioUrl: result.url, mime: result.mime, contentHash: result.contentHash, voiceId: result.voiceId,
       text: result.text, synthesizedText: result.synthesizedText, engine: result.engine || config.provider || '',
-      cached: Boolean(result.cached), createdAt: result.createdAt || Date.now(),
+      cached: Boolean(result.cached), reused: false, createdAt: result.createdAt || Date.now(),
     };
     await storeTake(task.projectId, take);
     appendEvent(task.id, { type: 'take', ...take, queuePosition: queuePositionOf(task.id) }, { result: { take } });

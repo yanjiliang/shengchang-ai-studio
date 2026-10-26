@@ -41,14 +41,14 @@ const PRESET_VOICES = {
     'seed-tts-2.0': {
       narrator: { voiceId: 'zh_female_cancan_uranus_bigtts', gender: 'female', age: null }, // 知性灿灿 2.0
       cast: [
-        { voiceId: 'zh_female_vv_uranus_bigtts', gender: 'female', age: null }, // Vivi 2.0（实测可导戏）
+        { voiceId: 'zh_female_vv_uranus_bigtts', gender: 'female', age: null }, // Vivi 2.0（实测可导演）
         { voiceId: 'zh_male_ruyayichen_uranus_bigtts', gender: 'male', age: null }, // 儒雅逸辰 2.0
         { voiceId: 'zh_male_qingcang_uranus_bigtts', gender: 'male', age: 'middle' }, // 擎苍 2.0（低沉霸总大叔）
         { voiceId: 'zh_female_gufengshaoyu_uranus_bigtts', gender: 'female', age: null }, // 古风少御 2.0
         { voiceId: 'zh_male_m191_uranus_bigtts', gender: 'male', age: null }, // 云舟 2.0
         { voiceId: 'zh_female_popo_uranus_bigtts', gender: 'female', age: 'elder' }, // 婆婆 2.0
         // 以下取自 instr-test2/tts2-instruction-voices.csv（公开列表标注“指令遵循”），
-        // 性别取自 id，年龄只按音色名里写明的（少年/青年/童声）；均未实测可导戏
+        // 性别取自 id，年龄只按音色名里写明的（少年/青年/童声）；均未实测可导演
         // （directable-voices.json 未收录 = 未验证）。IP 角色音色（猴哥、唐僧、
         // 猪八戒等）实测几乎不响应指令，不收。
         { voiceId: 'zh_male_ruyaqingnian_uranus_bigtts', gender: 'male', age: 'young' }, // 儒雅青年 2.0
@@ -68,7 +68,7 @@ const PRESET_VOICES = {
 
 const asVoice = (entry) => (typeof entry === 'string' ? { voiceId: entry, gender: null, age: null } : { gender: null, age: null, ...entry });
 
-// 可导戏的排前面，实测不可导戏的排最后；未验证的保持原顺序。
+// 可导演的排前面，实测不可导演的排最后；未验证的保持原顺序。
 const DIRECTABILITY_RANK = { true: 0, null: 1, false: 2 };
 const directabilityRank = (voiceId) => DIRECTABILITY_RANK[String(voiceDirectability(voiceId))];
 
@@ -124,8 +124,8 @@ const GENDER_LABEL = { male: '男', female: '女' };
 // 1. 角色有性别 → 只在同性别音色里选（音色性别未知的也算候选），绝不跨性别；
 //    角色有年龄 → 明确相符 > 相邻段（少年→青年）> 年龄未知，排除明确不符的；
 //    全部明确不符时退回只按性别并记一条注意。
-// 2. 候选内：可导戏且未被占用的优先 → 未验证 → 不可导戏 → 都占满后复用最少用的。
-//    分配顺序按“带表演指示的台词数”降序，台词总数次之，所以可导戏音色给戏最重的角色。
+// 2. 候选内：可导演且未被占用的优先 → 未验证 → 不可导演 → 都占满后复用最少用的。
+//    分配顺序按“带表演指示的台词数”降序，台词总数次之，所以可导演音色给戏最重的角色。
 // 3. 一个角色都没有性别信息时保持旧行为（按角色顺序轮换），并在注意事项里说明。
 export function planCasting(characters, voiceMap, provider, resourceId, { scenes } = {}) {
   const presets = presetVoicesFor(provider, resourceId);
@@ -165,7 +165,7 @@ export function planCasting(characters, voiceMap, provider, resourceId, { scenes
   };
 
   const ordered = pending.map((character, index) => ({ character, index, gender: characterGender(character), age: characterAge(character), demand: demand[character.id] || { directed: 0, lines: 0 } }))
-    // 性别已知的先分（它们约束更强），再按戏份排序；性别未知的最后，避免抢走可导戏音色。
+    // 性别已知的先分（它们约束更强），再按戏份排序；性别未知的最后，避免抢走可导演音色。
     .sort((a, b) => Number(!a.gender) - Number(!b.gender) || b.demand.directed - a.demand.directed || b.demand.lines - a.demand.lines || a.index - b.index);
   const unknown = [];
   const noMatch = [];
@@ -274,6 +274,11 @@ export async function runOneClickPipeline(task, config, deps = {}) {
         freshCount: (prior.freshCount || 0) + summary.freshCount,
         cacheHits: (prior.cacheHits || 0) + summary.cacheHits,
         missingUsageCount: (prior.missingUsageCount || 0) + summary.missingUsageCount,
+        // 逐句记录实际使用的音色（以及是否命中缓存、计费字数），跨场景/重试累计。
+        lineResults: [...(prior.lineResults || []), ...sceneResults.map((item) => ({
+          lineId: item.lineId, sceneId: item.sceneId, voiceId: item.voiceId || '', cached: Boolean(item.cached),
+          contentHash: item.contentHash, billedCharacters: Number.isFinite(item.usage?.billedCharacters) ? item.usage.billedCharacters : null,
+        }))],
       } });
     };
     const byScene = new Map();
@@ -334,7 +339,7 @@ export async function runOneClickPipeline(task, config, deps = {}) {
     updatePersistentTask(task.id, {
       status: 'completed', progress: 100, completedAt: Date.now(),
       message: `一键成片完成：${report.sceneCount} 个场景已导出${cacheNote}${attention.length ? `，${attention.length} 项待处理` : ''}${attentionNote}`,
-      result: { url: report.url, name: report.name, sceneCount: report.sceneCount, durationMs: report.durationMs, attention, stages: completedStages, billedCharacters: billing.billedCharacters ?? null, freshCount: billing.freshCount ?? 0, cacheHits: billing.cacheHits ?? 0, missingUsageCount: billing.missingUsageCount ?? 0 },
+      result: { url: report.url, name: report.name, sceneCount: report.sceneCount, durationMs: report.durationMs, attention, stages: completedStages, billedCharacters: billing.billedCharacters ?? null, freshCount: billing.freshCount ?? 0, cacheHits: billing.cacheHits ?? 0, missingUsageCount: billing.missingUsageCount ?? 0, results: billing.lineResults || [] },
     });
   }
 }
@@ -354,7 +359,7 @@ function buildAttentionList(project, mediaReport) {
   const unmappedVoices = speakers.filter((id) => !state.voiceMap?.[id]);
   if (unmappedVoices.length) attention.push(`${unmappedVoices.length} 个角色未绑定音色（相关台词未生成）`);
   const notDirectable = flagUndirectableVoices(state.voiceMap, speakers);
-  if (notDirectable.length) attention.push(`${notDirectable.length} 个角色的音色未确认可导戏（情绪/节奏指令可能不生效）：${notDirectable.map((item) => `${item.characterId}=${item.voiceId}${item.directable === false ? '（实测不可导戏）' : '（未验证）'}`).join('、')}`);
+  if (notDirectable.length) attention.push(`${notDirectable.length} 个角色的音色未确认可导演（情绪/节奏指令可能不生效）：${notDirectable.map((item) => `${item.characterId}=${item.voiceId}${item.directable === false ? '（实测不可导演）' : '（未验证）'}`).join('、')}`);
   const stale = (state.scenes || []).flatMap((scene) => (scene.lines || []).filter((line) => line.audioUrl && line.audioStale));
   if (stale.length) attention.push(`${stale.length} 句台词改动后音频过期，进入成片的是旧音频`);
   const missing = (state.scenes || []).flatMap((scene) => (scene.lines || []).filter((line) => line.type === 'dialogue' && !line.audioUrl));

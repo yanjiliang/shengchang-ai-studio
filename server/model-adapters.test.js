@@ -272,8 +272,8 @@ describe('语音指令措辞（只写情绪 + 节奏）', () => {
   });
 });
 
-describe('可导戏音色白名单', () => {
-  test('vv 实测可导戏，猴哥实测不可，其余未验证', () => {
+describe('可导演音色白名单', () => {
+  test('vv 实测可导演，猴哥实测不可，其余未验证', () => {
     assert.equal(voiceDirectability('zh_female_vv_uranus_bigtts'), true);
     assert.equal(voiceDirectability('zh_male_sunwukong_uranus_bigtts'), false);
     assert.equal(voiceDirectability('zh_male_qingcang_uranus_bigtts'), null);

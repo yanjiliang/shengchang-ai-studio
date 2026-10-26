@@ -8,7 +8,7 @@ import { publicConfig, readConfig, writeConfig } from './config-store.js';
 import { archiveProject, createProject, getProject, listPersistentTasks, listProjects, updateProject } from './database.js';
 import { designVoice, validateProviderConfig, validateSoundConfig } from './model-adapters.js';
 import { ensureRuntime, exportSceneTimeline, extractPeaks, inspectProjectMedia, probeDuration, probeFfmpeg, renderScenePreview, runtimePaths, saveUploadedAsset } from './media-store.js';
-import { cancelTask, enqueueGeneration, enqueueNovelAnalysis, enqueueOneClick, enqueueProjectExport, enqueueSoundGeneration, estimateGeneration, getTask, retryTask } from './task-manager.js';
+import { cancelTask, enqueueGeneration, enqueueNovelAnalysis, enqueueOneClick, enqueueProjectExport, enqueueSoundGeneration, estimateBillableCharacters, estimateGeneration, getTask, retryTask } from './task-manager.js';
 import { seedSampleProject } from './sample-project.js';
 import { ensureBuiltinAssets, listBuiltinAssets } from './builtin-assets.js';
 import { recommendForEvent } from './asset-recommend.js';
@@ -215,6 +215,7 @@ app.post('/api/projects/:projectId/one-click-estimate', async (request, response
       // “未知”，不是 0。全部未绑定（还没选角）时 cacheHits 为 null。
       cacheHits: mappable.length ? await estimateGeneration(config, mappable, { projectId: project.id }) : (requests.length ? null : 0),
       cacheHitsUnknownCount: requests.length - mappable.length,
+      ...(await estimateBillableCharacters(config, requests, { projectId: project.id })),
       needsLlm: !project.state.scenes?.length && !['demo'].includes(config.provider),
     });
   } catch (error) { next(error); }

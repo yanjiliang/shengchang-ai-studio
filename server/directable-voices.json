@@ -1,5 +1,5 @@
 {
-  "_comment": "豆包 seed-tts-2.0 音色是否“可导戏”（情绪/节奏指令确实改变表演）。只收录实测过的音色；未收录 = 未验证。复测方法：scripts/measure-instruction.mjs。",
+  "_comment": "豆包 seed-tts-2.0 音色是否“可导演”（情绪/节奏指令确实改变表演）。只收录实测过的音色；未收录 = 未验证。复测方法：scripts/measure-instruction.mjs。",
   "voices": {
     "zh_female_vv_uranus_bigtts": {
       "directable": true,

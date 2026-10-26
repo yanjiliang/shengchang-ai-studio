@@ -50,10 +50,10 @@ describe('豆包预设按 resourceId 分组', () => {
   test('seed-tts-2.0 自动映射使用 2.0 音色（无性别信息时保持旧行为）', () => {
     const assignments = mapCharactersToPresets([{ id: 'narrator', name: '旁白' }, { id: 'wukong', name: '悟空' }], {}, 'volcengine-api-key', 'seed-tts-2.0');
     assert.equal(assignments.narrator, 'zh_female_cancan_uranus_bigtts');
-    assert.equal(assignments.wukong, 'zh_female_vv_uranus_bigtts', '实测可导戏的音色优先分给第一个角色');
+    assert.equal(assignments.wukong, 'zh_female_vv_uranus_bigtts', '实测可导演的音色优先分给第一个角色');
   });
 
-  test('标记未确认可导戏的 2.0 音色，demo/克隆音色不标记', () => {
+  test('标记未确认可导演的 2.0 音色，demo/克隆音色不标记', () => {
     const flagged = flagUndirectableVoices({ a: 'zh_female_vv_uranus_bigtts', b: 'zh_male_sunwukong_uranus_bigtts', c: 'zh_male_qingcang_uranus_bigtts', d: 'demo_male_1', e: 'S_abc' });
     assert.deepEqual(flagged.map((item) => [item.characterId, item.directable]), [['b', false], ['c', null]]);
   });
@@ -100,7 +100,7 @@ describe('按性别/年龄与戏份选角', () => {
     for (const voiceId of Object.values(assignments)) assert.equal(voiceGender(voiceId), 'male', voiceId);
   });
 
-  test('同性别内，可导戏音色给带表演指示台词最多的角色', () => {
+  test('同性别内，可导演音色给带表演指示台词最多的角色', () => {
     const { assignments } = planCasting([
       { id: 'cunfu', name: '村妇', gender: 'female' },
       { id: 'baigujing', name: '白骨精', gender: 'female' },
@@ -305,9 +305,9 @@ describe('runOneClickPipeline 阶段断点', () => {
     const base = { sceneId: 's1', url: '/media/fake.wav', mime: 'audio/wav', text: '你好。', synthesizedText: '你好。', contentHash: 'h', createdAt: 1 };
     await runOneClickPipeline(task, { provider: 'volcengine-api-key', resourceId: 'seed-tts-2.0' }, {
       runGeneration: async () => ({ status: 'done', failures: [], results: [
-        { ...base, lineId: 'l1', cached: false, usageExpected: true, usage: { billedCharacters: 3 } },
-        { ...base, lineId: 'l2', cached: false, usageExpected: true, usage: null },
-        { ...base, lineId: 'l3', cached: true },
+        { ...base, lineId: 'l1', voiceId: 'zh_female_vv_uranus_bigtts', cached: false, usageExpected: true, usage: { billedCharacters: 3 } },
+        { ...base, lineId: 'l2', voiceId: 'zh_male_m191_uranus_bigtts', cached: false, usageExpected: true, usage: null },
+        { ...base, lineId: 'l3', voiceId: 'zh_female_cancan_uranus_bigtts', cached: true },
       ] }),
       inspectMedia: async () => ({ scenes: [], projectDurationMs: 0 }),
       exportTimeline: async () => ({ url: '/media/exports/b.mp3', name: 'b.mp3', sceneCount: 1, durationMs: 1 }),
@@ -316,5 +316,10 @@ describe('runOneClickPipeline 阶段断点', () => {
     assert.deepEqual([finished.result.billedCharacters, finished.result.freshCount, finished.result.cacheHits, finished.result.missingUsageCount], [3, 2, 1, 1]);
     assert.ok(finished.result.attention.some((item) => /1 句新生成的语音没有返回计费字数.*已知部分/.test(item)), JSON.stringify(finished.result.attention));
     assert.match(finished.message, /1 句复用缓存/);
+    assert.deepEqual(finished.result.results.map((item) => [item.lineId, item.voiceId, item.cached, item.billedCharacters]), [
+      ['l1', 'zh_female_vv_uranus_bigtts', false, 3],
+      ['l2', 'zh_male_m191_uranus_bigtts', false, null],
+      ['l3', 'zh_female_cancan_uranus_bigtts', true, null],
+    ]);
   });
 });

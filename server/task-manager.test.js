@@ -202,3 +202,36 @@ describe('音频缓存键与命中记录（0005）', () => {
     assert.ok(after.last_used_at >= before.created_at);
   });
 });
+
+describe('逐句结果带实际音色 + 净计费预估（0007）', () => {
+  test('新生成 / 缓存命中 / 磁盘恢复 的结果都带 voiceId', async () => {
+    const { audioContentHash, deleteAudioCache } = await import('./database.js');
+    const project = createProject({ name: '结果音色', state: stateWith([]) });
+    const config = { provider: 'volcengine-api-key', resourceId: 'seed-tts-2.0', audioFormat: 'mp3', sampleRate: 24000 };
+    const request = { lineId: 'v1', sceneId: 'scene-1', voiceId: 'zh_female_vv_uranus_bigtts', text: '结果音色测试句。' };
+    const synth = async () => ({ mime: 'audio/mpeg', buffer: Buffer.from('mp3'), usage: { billedCharacters: 8 } });
+    const fresh = await runGenerationRequests(config, [request], { projectId: project.id, synthesize: synth });
+    assert.equal(fresh.results[0].cached, false);
+    assert.equal(fresh.results[0].voiceId, 'zh_female_vv_uranus_bigtts');
+    const hit = await runGenerationRequests(config, [request], { projectId: project.id, synthesize: synth });
+    assert.equal(hit.results[0].cached, true);
+    assert.equal(hit.results[0].voiceId, 'zh_female_vv_uranus_bigtts');
+    deleteAudioCache(audioContentHash(config, request)); // 只删数据库行，文件还在 → 走磁盘恢复
+    const recovered = await runGenerationRequests(config, [request], { projectId: project.id, synthesize: async () => { throw new Error('不应调用'); } });
+    assert.equal(recovered.results[0].cached, true);
+    assert.equal(recovered.results[0].voiceId, 'zh_female_vv_uranus_bigtts');
+  });
+
+  test('estimateBillableCharacters：已知命中不计，未绑定音色单列，全未绑定为 null', async () => {
+    const { estimateBillableCharacters } = await import('./task-manager.js');
+    const project = createProject({ name: '净预估', state: stateWith([]) });
+    const config = { provider: 'volcengine-api-key', resourceId: 'seed-tts-2.0', audioFormat: 'mp3', sampleRate: 24000 };
+    const cachedLine = { lineId: 'e1', sceneId: 'scene-1', voiceId: 'zh_female_vv_uranus_bigtts', text: '已经缓存的一句。' }; // 8 字
+    await runGenerationRequests(config, [cachedLine], { projectId: project.id, synthesize: async () => ({ mime: 'audio/mpeg', buffer: Buffer.from('mp3'), usage: { billedCharacters: 8 } }) });
+    const freshLine = { lineId: 'e2', sceneId: 'scene-1', voiceId: 'zh_female_vv_uranus_bigtts', text: '还没生成过的一句话。' }; // 10 字
+    const noVoice = { lineId: 'e3', sceneId: 'scene-1', voiceId: '', text: '没绑音色。' }; // 5 字
+    assert.deepEqual(await estimateBillableCharacters(config, [cachedLine, freshLine, noVoice], { projectId: project.id }), { estimatedBillableCharacters: 10, unknownCharacters: 5 });
+    assert.deepEqual(await estimateBillableCharacters(config, [noVoice], { projectId: project.id }), { estimatedBillableCharacters: null, unknownCharacters: 5 });
+    assert.deepEqual(await estimateBillableCharacters(config, [], { projectId: project.id }), { estimatedBillableCharacters: null, unknownCharacters: 0 });
+  });
+});

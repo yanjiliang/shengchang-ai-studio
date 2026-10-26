@@ -137,18 +137,18 @@ export async function runGenerationRequests(config, requests, { projectId, scene
         // meaning "when this audio was generated" — re-inserting it made every
         // cache hit look like a fresh render (0005).
         touchCachedAudio(contentHash);
-        results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: cached.url, mime: cached.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: true, createdAt: Date.now() });
+        results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: cached.url, mime: cached.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', cached: true, createdAt: Date.now() });
       } else {
         const recovered = await recoverCachedAudioFromDisk(contentHash);
         if (recovered) {
           cacheAudio({ contentHash, url: recovered.url, mime: recovered.mime, provider: config.provider || '', model: config.model || '', voiceId: resolved.voiceId || '' });
-          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: recovered.url, mime: recovered.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: true, createdAt: Date.now() });
+          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: recovered.url, mime: recovered.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', cached: true, createdAt: Date.now() });
         } else {
           const audio = await synthesizeLine(config, resolved);
           const extension = extensionForMime(audio.mime, config.audioFormat);
           const saved = await saveMedia(contentHash, extension, audio.buffer);
           cacheAudio({ contentHash, url: saved.url, mime: audio.mime, provider: config.provider || '', model: config.model || '', voiceId: resolved.voiceId || '' });
-          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: saved.url, mime: audio.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: false, usage: audio.usage || null, usageExpected: config.provider === 'volcengine-api-key', createdAt: Date.now() });
+          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: saved.url, mime: audio.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', cached: false, usage: audio.usage || null, usageExpected: config.provider === 'volcengine-api-key', createdAt: Date.now() });
         }
       }
     } catch (error) {
@@ -383,6 +383,25 @@ export async function estimateGeneration(config, requests, { projectId } = {}) {
     if (await validCache(findCachedAudio(audioContentHash(config, resolved)))) cacheHits += 1;
   }
   return cacheHits;
+}
+
+// 一键成片预估：characters 仍是全量上限；这里给出“净计费”拆分。
+// - estimatedBillableCharacters：已绑定音色、且不是已知缓存命中的句子字数
+//   （没有任何句子绑定音色时为 null——选角前无法判断）。
+// - unknownCharacters：尚未绑定音色的句子字数（要等选角后才知道是否命中）。
+export async function estimateBillableCharacters(config, requests, { projectId } = {}) {
+  const projectDictionary = getProject(projectId)?.state?.pronunciationDictionary || [];
+  let billable = 0;
+  let unknown = 0;
+  let mapped = 0;
+  for (const request of requests) {
+    const length = String(request.text || '').length;
+    if (!request.voiceId) { unknown += length; continue; }
+    mapped += 1;
+    const resolved = { ...request, text: applyPronunciation(request.text, projectDictionary) };
+    if (!(await validCache(findCachedAudio(audioContentHash(config, resolved))))) billable += length;
+  }
+  return { estimatedBillableCharacters: mapped ? billable : null, unknownCharacters: unknown };
 }
 
 export function retryTask(taskId) {

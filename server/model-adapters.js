@@ -181,7 +181,7 @@ function pacingPhrase(speed) {
 export const TTS_INSTRUCTION_VERSION = 2;
 
 // 稳定说话人从句（0001 之前就有，0005 恢复，配置 ttsStableSpeaker 控制，默认开）：
-// 实测未验证可导戏的男声在情绪指令下会漂移（同一角色句间音高/音色不一致），
+// 实测未验证可导演的男声在情绪指令下会漂移（同一角色句间音高/音色不一致），
 // 这句话本身不改变音色，只提示模型别跟着情绪跑偏。没有其他指令时不单独发送。
 export const STABLE_SPEAKER_CLAUSE = '保持当前基础音色稳定';
 

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { LLM_IMPORT_BLOCKED, llmReady } from './lib/llm.js';
 import { AppRail } from './components/AppRail';
 import { BrandSignature } from './components/BrandSignature';
 import { Dialog } from './components/Dialog';
@@ -17,6 +18,17 @@ import { ProductionView } from './components/views/ProductionView';
 import { api, waitForTask } from './lib/api';
 import { formatDuration, qualityReport as buildQualityReport, stageProgress as buildStageProgress } from './lib/quality';
 import { buildGenerationRequest } from '../shared/generation-requests.mjs';
+import { labVariantRequest, normalizeLinePatch } from './lib/direction-lab.js';
+import { billingSummary, billingText, estimateCacheText, estimateCostText } from './lib/billing';
+import { breezeEstimateText, isBreeze } from './lib/engine.js';
+import { EXPORT_ONLY_DIALOGUE, exportOnlyDialogue, goFixText, missingDetail, missingText, missingVoiceRoles } from './lib/one-click.js';
+import { chainApi } from './lib/chain-api.js';
+import { referenceFromVoice } from './lib/voice-design.js';
+import { useBreezeStatus } from './lib/useBreezeStatus.js';
+import { breezeOutage, doubaoSwitchConfirm } from './lib/breeze-outage.js';
+import { BreezeOutageBanner } from './components/BreezeOutageBanner.jsx';
+import { singleAudio } from './lib/single-audio.js';
+import { useVoiceDrafts } from './components/voice/useVoiceDrafts.js';
 
 const EMPTY_STATE = { scenes: [], assets: [], characters: [], voiceMap: {} };
 
@@ -24,6 +36,11 @@ function downloadMedia(url, name) {
   const anchor = document.createElement('a');
   anchor.href = url; anchor.download = name; document.body.appendChild(anchor); anchor.click(); anchor.remove();
 }
+
+const DOUBAO_SWITCH_KEY = 'shengchang.doubaoSwitched';
+const readDoubaoSwitched = () => { try { return localStorage.getItem(DOUBAO_SWITCH_KEY) === '1'; } catch { return false; } };
+const writeDoubaoSwitched = () => { try { localStorage.setItem(DOUBAO_SWITCH_KEY, '1'); } catch { /* ignore */ } };
+const clearDoubaoSwitched = () => { try { localStorage.removeItem(DOUBAO_SWITCH_KEY); } catch { /* ignore */ } };
 
 function App() {
   const [view, setView] = useState('studio');
@@ -57,6 +74,11 @@ function App() {
   // Promise-based prompt/confirm: replaces every window.prompt / window.confirm
   // call site; resolving (or dismissing) the dialog settles the awaiting flow.
   const [dialog, setDialog] = useState(null);
+  // 一键成片被「没定声音」拦下时跳到这个角色。
+  const [voicesRoleId, setVoicesRoleIdRaw] = useState('');
+  const [voicesFocus, setVoicesFocus] = useState(0);
+  // 跳到角色音色页时，焦点放到那个角色的声音描述框。
+  const setVoicesRoleId = (roleId) => { setVoicesRoleIdRaw(roleId); setVoicesFocus(Date.now()); };
   const openDialog = (request) => new Promise((resolve) => setDialog({ ...request, resolve }));
   const closeDialog = (value) => { dialog?.resolve(value); setDialog(null); };
 
@@ -80,6 +102,15 @@ function App() {
   };
 
   const state = project?.state || EMPTY_STATE;
+  const breezeMode = isBreeze(config);
+  const [oneClickRunning, setOneClickRunning] = useState(false);
+  const [outage, setOutage] = useState(null);
+  const breeze = useBreezeStatus(breezeMode, { generating: Boolean(generation) || oneClickRunning });
+  const voiceDrafts = useVoiceDrafts(project?.id || '', { onError: (error) => setToast(error.message) });
+  // Breeze 断开：正在生成 / 排队的试听变成失败卡片。
+  useEffect(() => { if (breezeMode && breeze.status.state === 'disconnected') voiceDrafts.disconnected(); }, [breezeMode, breeze.status.state]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 同一时间只播一段：切换页面就停。
+  useEffect(() => { singleAudio.stop(); }, [view]);
   const scenes = state.scenes || [];
   const currentScene = useMemo(() => scenes.find((scene) => scene.id === currentSceneId) || scenes[0] || null, [scenes, currentSceneId]);
   const generatedClips = useMemo(() => currentScene?.lines.filter((line) => line.audioUrl) || [], [currentScene]);
@@ -141,7 +172,7 @@ function App() {
   };
   // Changing the text does not delete the clip; the server flags it stale so the
   // old audio stays auditionable until it is regenerated.
-  const updateLine = (lineId, patch) => persistState({ ...state, scenes: scenes.map((scene) => scene.id !== currentScene.id ? scene : { ...scene, status: 'draft', lines: scene.lines.map((line) => line.id === lineId ? { ...line, ...patch } : line) }) });
+  const updateLine = (lineId, patch) => persistState({ ...state, scenes: scenes.map((scene) => scene.id !== currentScene.id ? scene : { ...scene, status: 'draft', lines: scene.lines.map((line) => line.id === lineId ? { ...line, ...normalizeLinePatch(patch) } : line) }) });
   const updateScene = (sceneId, patch) => persistState({ ...state, scenes: scenes.map((scene) => scene.id !== sceneId ? scene : { ...scene, ...patch, status: 'draft' }) });
   const changeScene = (sceneId) => { const scene = scenes.find((item) => item.id === sceneId); setCurrentSceneId(sceneId); setSelectedLineId(scene.lines.find((line) => line.type === 'dialogue')?.id || scene.lines[0]?.id || null); };
   const selectProject = async (projectId) => { setLoading(true); try { await refreshProjects(projectId); setView('studio'); } catch (error) { setToast(error.message); } finally { setLoading(false); } };
@@ -156,7 +187,7 @@ function App() {
     if (!config || config.provider === 'unavailable') { setToast('本地模型服务未启动'); return false; }
     // 服务端 voiceReady 按引擎规则判断（custom / Breeze 可不鉴权）；旧服务没有该字段时退回：
     // 自定义接口只要求接口地址，凭证仅豆包必填。
-    const voiceReady = config.voiceReady ?? (config.provider === 'demo' || (config.provider === 'custom' ? Boolean(config.endpoint) : config.hasAccessKey));
+    const voiceReady = config.voiceReady ?? (config.provider === 'demo' || isBreeze(config) || (config.provider === 'custom' ? Boolean(config.endpoint) : config.hasAccessKey));
     if (!voiceReady) { setView('settings'); setToast(config.provider === 'custom' ? '请先填写自定义语音接口地址' : '请先配置真实语音模型凭证'); return false; }
     return true;
   };
@@ -168,7 +199,7 @@ function App() {
   const runGenerationTask = async ({ kind, requests, sceneId, buildingMessage, doneMessage }) => {
     if (!project || generation || !ensureVoiceConfigured()) return false;
     const missingVoices = [...new Set(requests.filter((request) => !request.voiceId).map((request) => request.speakerId))];
-    if (missingVoices.length) { setView('voices'); setToast(`有 ${missingVoices.length} 个角色尚未绑定 voice_id`); return false; }
+    if (missingVoices.length) { setVoicesRoleId(missingVoices[0]); setView('voices'); setToast(isBreeze(config) ? missingText(missingVoices) : `有 ${missingVoices.length} 个角色尚未绑定 voice_id`); return false; }
     try {
       setGeneration({ progress: 1, message: buildingMessage(requests.length) });
       await commitPendingSave();
@@ -179,7 +210,8 @@ function App() {
       setTaskRefreshToken(Date.now());
       const failureCount = completed.result?.failures?.length || 0;
       const note = failureCount ? `，${failureCount} 句失败（任务历史可逐句查看）` : '';
-      setToast(`${doneMessage(completed)}${note}`);
+      const billing = isBreeze(config) ? '' : billingText(billingSummary(completed.result));
+      setToast(`${doneMessage(completed)}${note}${billing ? `。${billing}` : ''}`);
       return true;
     } catch (error) { setToast(error.message); return false; }
     finally { setGeneration(null); }
@@ -200,17 +232,11 @@ function App() {
   const runDirectionLab = async (line, variants) => {
     if (!project || generation || !ensureVoiceConfigured()) return;
     const base = generationRequest(line);
-    if (!base.voiceId) { setView('voices'); setToast('该角色尚未绑定 voice_id，先在角色音色页配置'); return; }
+    if (!base.voiceId) { setVoicesRoleId(line.speakerId); setView('voices'); setToast(isBreeze(config) ? `${line.speaker || '这个角色'}还没定声音，先在角色音色页锁定参考音色` : '该角色尚未绑定 voice_id，先在角色音色页配置'); return; }
     try {
       setGeneration({ progress: 1, message: `正在生成 ${variants.length} 组方向对比` });
       await commitPendingSave();
-      const requests = variants.map((variant) => ({
-        ...base,
-        emotion: variant.emotion,
-        emotionScale: Math.max(0.1, (variant.intensity || 40) / 100),
-        subtext: variant.subtext || '',
-        distance: variant.distance || '',
-      }));
+      const requests = variants.map((variant) => labVariantRequest(base, variant, config?.provider));
       const task = await api.generate({ projectId: project.id, sceneId: currentScene?.id, kind: 'direction-lab', requests });
       const completed = await waitForTask(task.id, (taskState) => setGeneration({ progress: taskState.progress, message: taskState.message, taskId: task.id }));
       setLabResult({ lineId: line.id, results: completed.result?.results || [] });
@@ -229,11 +255,19 @@ function App() {
     runGenerationTask({ kind, requests, buildingMessage: (count) => `正在创建 ${count} 句生成任务`, doneMessage: (completed) => doneMessage(completed.result?.results?.length || 0) });
   };
   const generateMissingDialogue = (sceneIds = []) => generateBatch({ sceneIds, selects: (line) => !line.audioUrl, kind: 'batch-missing', emptyMessage: '没有需要生成的缺失对白', doneMessage: (count) => `已补全 ${count} 句对白` });
-  const regenerateStaleDialogue = (sceneIds = []) => generateBatch({ sceneIds, selects: (line) => line.audioUrl && line.audioStale, kind: 'batch-stale', emptyMessage: '没有需要重新生成的过期对白', doneMessage: (count) => `已重新生成 ${count} 句对白` });
+  // 过期以服务端的 line.stale 为准（audioStale 是旧的前端推断，留着兼容老数据）。
+  const regenerateStaleDialogue = (sceneIds = []) => generateBatch({ sceneIds, selects: (line) => line.audioUrl && (line.stale === true || line.audioStale), kind: 'batch-stale', emptyMessage: '没有需要重新生成的过期对白', doneMessage: (count) => `已重新生成 ${count} 句对白` });
+  // 导出前检查里的「先重配这 N 句」：按 export-precheck 给的 lineId 重新生成。
+  const regenerateLines = (lineIds = []) => { const wanted = new Set(lineIds); generateBatch({ selects: (line) => wanted.has(line.id), kind: 'batch-stale', emptyMessage: '这些句子已经不在作品里了', doneMessage: (count) => `已重新配音 ${count} 句，可以再导出` }); };
   const playLine = (line) => { const url = line.audioUrl || line.assetUrl; if (!url) setToast('请先生成或绑定实际音频'); else if (line.type === 'dialogue') { setRequestedLineId(null); window.setTimeout(() => setRequestedLineId(line.id), 0); } else new Audio(url).play().catch(() => setToast('素材无法播放')); };
 
-  const importNovel = () => {
+  const importNovel = async () => {
     if (!project) return;
+    // 文本模型没测通就不导入（Yan：通用 OpenAI 兼容服务，没有本地规则拆解兜底）。
+    if (!llmReady(config)) {
+      if (await openDialog({ type: 'confirm', message: LLM_IMPORT_BLOCKED, detail: '在「设置 · 文本模型」里填好地址和模型名（服务需要的话再填 Key），点「测试连接」通过后再导入。', confirmLabel: '去设置' })) setView('settings');
+      return;
+    }
     const input = document.createElement('input'); input.type = 'file'; input.accept = '.txt,text/plain';
     input.onchange = async () => {
       const file = input.files?.[0]; if (!file) return;
@@ -254,7 +288,13 @@ function App() {
     };
     input.click();
   };
-  const saveConfig = async (draft) => { const saved = await api.saveConfig(draft); setConfig(saved); return saved; };
+  const saveConfig = async (draft) => {
+    const saved = await api.saveConfig(draft);
+    if (isBreeze(config) && saved.provider === 'volcengine-api-key') writeDoubaoSwitched();
+    if (isBreeze(saved)) clearDoubaoSwitched();
+    setConfig(saved);
+    return saved;
+  };
   const reloadConfig = async () => { try { setConfig(await api.getConfig()); } catch (error) { setToast(error.message); } };
   const designVoice = async (input) => {
     const result = await api.designVoice(input);
@@ -263,6 +303,19 @@ function App() {
   };
   const updateCharacter = (characterId, patch) => persistState({ ...state, characters: (state.characters || []).map((character) => character.id === characterId ? { ...character, ...patch } : character) });
   const setVoice = (characterId, voiceId) => persistState({ ...state, voiceMap: { ...(state.voiceMap || {}), [characterId]: voiceId } });
+  // Breeze 锁定 / 撤销 / 解除：角色上的 voice（参考音色）和 voiceMap（生成时的 voice_id = referenceId）一起改。
+  // 服务端在锁定接口里已经记下了；这里同步到浏览器状态，免得自动保存把它覆盖回去。
+  const applyCharacterVoice = (characterId, voice, voiceHistory) => {
+    // 参考音在服务端 state.voiceReferences 里（锁定接口已经写了，浏览器保存覆盖不了）；这里乐观同步一份给界面。
+    // 不写 voiceMap：Breeze 生成不看 voiceMap，切回豆包时也不能把 referenceId 当成豆包音色。
+    const voiceReferences = { ...(state.voiceReferences || {}) };
+    if (voice?.referenceId) voiceReferences[characterId] = referenceFromVoice(voice); else delete voiceReferences[characterId];
+    persistState({ ...state, voiceReferences, characters: (state.characters || []).map((character) => character.id === characterId ? { ...character, voice: voice || null, voiceHistory: voiceHistory || [] } : character) });
+    // 重新读一次项目：服务端会按新的参考音色重新算每句的 stale（需重渲）。
+    window.setTimeout(() => refreshProjects(project?.id).catch((error) => setToast(error.message)), 600);
+  };
+  // 审听修句改的台词可能不在当前场景。
+  const updateAnyLine = (lineId, patch) => persistState({ ...state, scenes: scenes.map((scene) => scene.lines?.some((line) => line.id === lineId) ? { ...scene, lines: scene.lines.map((line) => line.id === lineId ? { ...line, ...normalizeLinePatch(patch) } : line) } : scene) });
   const updateDictionary = (pronunciationDictionary) => persistState({ ...state, pronunciationDictionary });
   // The server probes the uploaded file with ffprobe; a null duration means
   // the file could not be read and the library honestly shows "—".
@@ -417,7 +470,7 @@ function App() {
       const completed = await waitForTask(task.id, () => setTaskRefreshToken(Date.now()));
       downloadMedia(completed.result.url, completed.result.name);
       if (completed.result.attributionUrl) downloadMedia(completed.result.attributionUrl, decodeURIComponent(completed.result.attributionUrl.split('/').pop()));
-      setToast(`整集已导出：${completed.result.sceneCount} 场 · ${formatDuration(completed.result.durationMs)}`);
+      setToast(`整集已导出：${completed.result.sceneCount} 场 · ${formatDuration(completed.result.durationMs)}${exportOnlyDialogue(scenes) ? ` · ${EXPORT_ONLY_DIALOGUE}` : ''}`);
     } catch (error) { setToast(error.message); }
     finally { setExporting(false); setTaskRefreshToken(Date.now()); }
   };
@@ -426,6 +479,14 @@ function App() {
   // one-click orchestrator in this repo): project-wide readiness stages, each
   // deep-linking to the surface where it gets fixed.
   const stages = useMemo(() => buildStageProgress(scenes, state.voiceMap), [scenes, state.voiceMap]);
+
+  // 「重试连接」/「Breeze 恢复后继续」：重新走一键成片。已配好的句子命中缓存，不会重配、不会重复扣费。
+  const retryAfterOutage = async () => {
+    const health = await breeze.refresh();
+    if (health.state === 'disconnected') { setToast('Breeze 还是连不上，请确认 Mac 上的 Breeze 服务已启动'); return; }
+    setOutage(null);
+    await oneClick();
+  };
 
   // §8 attention-list deep links: jump from a quality issue straight to the
   // offending line in the studio.
@@ -441,18 +502,60 @@ function App() {
   // hits, which the browser cannot - then confirm, enqueue, and hand the user
   // to the tasks tab where the orchestrator's progress renders (OV-8).
   const [oneClickToken, setOneClickToken] = useState(0);
+  // 「还有 N 个角色没定声音」：列出名字，「去给X定声音」跳到角色音色并聚焦描述框；不自动套音色、不悄悄跳过。
+  const blockOnMissingVoices = async (missing) => {
+    if (!missing.length) return;
+    if (await openDialog({ type: 'confirm', message: missingText(missing), detail: missingDetail(missing), confirmLabel: goFixText(missing) })) { setVoicesRoleId(missing[0].roleId); setView('voices'); }
+  };
+  // 一键成片的任务：只为了接住 BREEZE_UNREACHABLE（整个任务停一次，一条横幅，不是逐句失败）。
+  const watchOneClick = async (taskId, context = {}) => {
+    if (!taskId) return;
+    setOneClickRunning(true);
+    try {
+      for (let delay = 800; ; delay = Math.min(3000, delay + 400)) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        const task = await api.getTask(taskId);
+        if (!['queued', 'running'].includes(task.status)) { const found = breezeOutage(task, context); if (found) setOutage(found); return; }
+      }
+    } catch { /* 任务历史里仍能看到 */ } finally { setOneClickRunning(false); }
+  };
   const oneClick = async () => {
     if (!project || exporting) return;
     try {
+      // 开始前先确认 Breeze 连得上：连不上就不开始（没有花任何额度），只给重试 / 去设置，绝不自动换豆包。
+      if (isBreeze(config)) {
+        const health = await breeze.refresh();
+        if (health.state === 'disconnected') { setOutage(breezeOutage({ code: 'BREEZE_UNREACHABLE' })); return; }
+      }
+      setOutage(null);
       const estimate = await api.oneClickEstimate(project.id);
+      // Breeze：有角色没定声音就先拦下（不会自动套用预设音色，也不会悄悄跳过这些台词）。
+      // 来源：estimate.missingVoiceRoles → GET voice-readiness → 本地算。检查本身在 lib/one-click.js。
+      const readiness = isBreeze(config) && !Array.isArray(estimate.missingVoiceRoles) ? await chainApi.voiceReadiness(project.id).catch(() => null) : null;
+      const missing = missingVoiceRoles({ estimate, readiness, config, characters: state.characters || [], scenes, voiceReferences: state.voiceReferences || null });
+      if (missing.length) { await blockOnMissingVoices(missing); return; }
       const parts = [`${estimate.sceneCount} 个场景`, `${estimate.requestCount} 句待生成`];
-      if (estimate.cacheHits) parts.push(`预计缓存命中 ${estimate.cacheHits} 句`);
-      const cost = estimate.provider === 'demo' ? '离线演示引擎 · 免费' : `真实语音 · 约 ${estimate.characters} 字`;
-      const llmNote = estimate.needsLlm ? '\n项目还没有场景，将先拆解原文（未配置文本模型时使用规则拆解）。' : '';
-      if (!(await openDialog({ type: 'confirm', message: '一键成片', detail: `${parts.join(' · ')} · ${cost}${llmNote}\n\n开始后自动执行：拆解 → 配音色 → 生成 → 体检 → 导出整集。`, confirmLabel: '开始' }))) return;
+      const cacheText = estimateCacheText(estimate);
+      if (cacheText) parts.push(cacheText);
+      const cost = isBreeze(config) ? breezeEstimateText(estimate) : estimateCostText(estimate);
+      const llmNote = estimate.needsLlm ? '\n项目还没有场景，将先用文本模型拆解原文。' : '';
+      // 用户自己在设置里从 Breeze 换到了豆包：第一次生成前先说清楚要扣多少字、声音会不一样。
+      const doubaoFirst = !isBreeze(config) && readDoubaoSwitched() && Boolean(doubaoSwitchConfirm(estimate));
+      if (doubaoFirst && !(await openDialog({ type: 'confirm', message: doubaoSwitchConfirm(estimate), detail: `${parts.join(' · ')} · ${cost.main}`, confirmLabel: '用豆包开始' }))) return;
+      if (doubaoFirst) clearDoubaoSwitched();
+      else if (!(await openDialog({ type: 'confirm', message: '一键成片', detail: `${parts.join(' · ')} · ${cost.main}${llmNote}`, note: cost.note, footer: isBreeze(config) ? '开始后自动执行：拆解 → 用已锁定的参考音色生成 → 体检 → 导出整集。' : '开始后自动执行：拆解 → 配音色 → 生成 → 体检 → 导出整集。', confirmLabel: '开始' }))) return;
       await commitPendingSave();
-      await api.oneClick(project.id);
+      let started;
+      try { started = await api.oneClick(project.id); }
+      catch (error) {
+        const found = breezeOutage(error);
+        if (found) { setOutage(found); return; }
+        // 估算之后角色又被改了（或别的标签页）：服务端 409 VOICE_NOT_READY + missingVoiceRoles，同样拦下。
+        if (error.code === 'VOICE_NOT_READY') { await blockOnMissingVoices(missingVoiceRoles({ estimate: { missingVoiceRoles: error.payload?.missingVoiceRoles || [], voiceReady: false }, config, characters: state.characters || [] })); return; }
+        throw error;
+      }
       setOneClickToken((value) => value + 1);
+      watchOneClick(started?.id || started?.task?.id || started?.taskId, { requestCount: estimate.requestCount });
       setTaskRefreshToken(Date.now());
       setToast('一键成片已开始，可在任务历史查看进度与结果');
     } catch (error) { setToast(error.message); }
@@ -477,14 +580,14 @@ function App() {
   }
   const activeProgress = analysis || generation;
   let content;
-  if (view === 'studio') content = currentScene ? <StudioLayout project={project} scenes={scenes} currentScene={currentScene} mediaReport={mediaReport} characters={state.characters || []} selectedLineId={selectedLineId} onSelectLine={setSelectedLineId} onUpdateLine={updateLine} onUpdateScene={updateScene} onSceneChange={changeScene} onImportNovel={importNovel} onAddScene={addScene} onDeleteScene={deleteScene} onRegenerate={regenerateLine} onPlayLine={playLine} onAddLine={addLine} onDeleteLine={deleteLine} onAcquireSound={setPickerLine} onUnbindSound={unbindAsset} activeProgress={activeProgress} onCancelTask={cancelActiveTask} voiceMap={state.voiceMap || {}} configProvider={config?.provider} onOpenVoices={() => setView('voices')} onLabGenerate={runDirectionLab} labResult={labResult} labGenerating={Boolean(generation)} /> : <div className="empty-project"><BrandSignature /><h2>{project.name}</h2><p>{analysis ? `${analysis.message} · ${analysis.progress}%` : '还没有场景。导入 TXT 小说后，文本模型会识别角色、对白、旁白、声音事件和场景结构。'}</p>{analysis ? <button className="button secondary-button" type="button" onClick={cancelActiveTask}>取消拆解</button> : <><button className="button primary-button" type="button" onClick={importNovel}>导入小说并拆解</button><button className="button secondary-button" type="button" onClick={addScene}>手动新建场景</button></>}</div>;
-  else if (view === 'voices') content = <VoicesView characters={state.characters || []} voiceMap={state.voiceMap || {}} voiceDesignConfig={config} onDesignVoice={designVoice} onSetVoice={setVoice} onUpdateCharacter={updateCharacter} onToast={setToast} />;
+  if (view === 'studio') content = currentScene ? <StudioLayout project={project} scenes={scenes} currentScene={currentScene} mediaReport={mediaReport} characters={state.characters || []} selectedLineId={selectedLineId} onSelectLine={setSelectedLineId} onUpdateLine={updateLine} onUpdateScene={updateScene} onSceneChange={changeScene} onImportNovel={importNovel} onAddScene={addScene} onDeleteScene={deleteScene} onRegenerate={regenerateLine} onPlayLine={playLine} onAddLine={addLine} onDeleteLine={deleteLine} onAcquireSound={setPickerLine} onUnbindSound={unbindAsset} activeProgress={activeProgress} onCancelTask={cancelActiveTask} voiceMap={state.voiceMap || {}} configProvider={config?.provider} config={config} onOpenVoices={() => setView('voices')} onLabGenerate={runDirectionLab} labResult={labResult} labGenerating={Boolean(generation)} /> : <div className="empty-project"><BrandSignature /><h2>{project.name}</h2><p>{analysis ? `${analysis.message} · ${analysis.progress}%` : '还没有场景。导入 TXT 小说后，文本模型会识别角色、对白、旁白、声音事件和场景结构。'}</p>{analysis ? <button className="button secondary-button" type="button" onClick={cancelActiveTask}>取消拆解</button> : <><button className="button primary-button" type="button" onClick={importNovel}>导入小说并拆解</button><button className="button secondary-button" type="button" onClick={addScene}>手动新建场景</button></>}</div>;
+  else if (view === 'voices') content = <VoicesView characters={state.characters || []} voiceReferences={state.voiceReferences || {}} voiceMap={state.voiceMap || {}} voiceDesignConfig={config} onDesignVoice={designVoice} onSetVoice={setVoice} onUpdateCharacter={updateCharacter} onToast={setToast} breeze={breezeMode ? breeze : null} scenes={scenes} projectId={project.id} voiceDrafts={voiceDrafts} onApplyVoice={applyCharacterVoice} onOpenSettings={() => setView('settings')} initialRoleId={voicesRoleId} focusRequest={voicesFocus} />;
   else if (view === 'sounds') content = <SoundsView assets={state.assets || []} builtinAssets={builtinAssets} sceneUsage={assetUsage} sceneEvents={(currentScene?.lines || []).filter((line) => line.type !== 'dialogue')} sceneTitle={currentScene?.title || ''} onUpload={uploadAsset} onBindAsset={bindAsset} onDeleteAsset={deleteAsset} onUpdateAsset={updateAsset} onToast={setToast} />;
-  else if (view === 'production') content = <ProductionView project={project} mediaReport={mediaReport} currentSceneId={currentSceneId} onSceneChange={changeScene} onUpdateLine={updateLine} onUpdateDictionary={updateDictionary} onExportScene={exportSceneById} onExportEpisode={exportEpisode} onOneClick={oneClick} oneClickToken={oneClickToken} onGenerateMissing={generateMissingDialogue} generating={Boolean(generation)} exporting={exporting} taskRefreshToken={taskRefreshToken} onToast={setToast} />;
+  else if (view === 'production') content = <ProductionView onRegenerateLines={regenerateLines} project={project} mediaReport={mediaReport} currentSceneId={currentSceneId} onSceneChange={changeScene} onUpdateLine={updateLine} onUpdateDictionary={updateDictionary} onExportScene={exportSceneById} onExportEpisode={exportEpisode} onOneClick={oneClick} oneClickToken={oneClickToken} onGenerateMissing={generateMissingDialogue} generating={Boolean(generation)} exporting={exporting} taskRefreshToken={taskRefreshToken} onToast={setToast} onUpdateAnyLine={updateAnyLine} onLineAccepted={() => refreshProjects(project.id)} onSaveNow={commitPendingSave} hideBilling={breezeMode} breezeMode={breezeMode} breeze={breezeMode ? breeze : null} onOpenStudio={() => setView('studio')} />;
   else if (view === 'quality') content = <QualityView report={qualityReport} stages={stages} onToast={setToast} onExport={() => exportSceneById(currentScene?.id)} onOpenProduction={() => setView('production')} onOpenView={setView} onLocateLine={locateLine} onOpenVoices={() => setView('voices')} onOpenSounds={() => setView('sounds')} onGenerateMissing={() => generateMissingDialogue([currentScene?.id])} onRegenerateStale={() => regenerateStaleDialogue([currentScene?.id])} generating={Boolean(generation)} exporting={exporting} />;
   else content = <SettingsView config={config} onSave={saveConfig} onTestLlm={api.testLlm} onToast={setToast} onReload={reloadConfig} />;
 
-  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} /> : null}{pickerLine ? <SoundPicker line={pickerLine} projectId={project.id} config={config} builtinAssets={builtinAssets} onBind={bindAsset} onUpload={uploadAndBind} onGenerate={generateSound} onClose={() => setPickerLine(null)} onToast={setToast} /> : null}{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}<Toast message={toast} /></div>;
+  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{outage ? <BreezeOutageBanner outage={outage} checking={breeze.checking} onRetry={retryAfterOutage} onResume={retryAfterOutage} onSettings={() => { setOutage(null); setView('settings'); }} onDismiss={() => setOutage(null)} /> : null}{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} /> : null}{pickerLine ? <SoundPicker line={pickerLine} projectId={project.id} config={config} builtinAssets={builtinAssets} onBind={bindAsset} onUpload={uploadAndBind} onGenerate={generateSound} onClose={() => setPickerLine(null)} onToast={setToast} /> : null}{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}<Toast message={toast} /></div>;
 }
 
 // --- Local composition helpers (props-only, no state of their own) --------
@@ -505,13 +608,13 @@ function LoadingScreen() {
   return <div className="app-loading" role="status"><BrandSignature /><span>正在打开本地项目数据库</span></div>;
 }
 
-function StudioLayout({ project, scenes, currentScene, mediaReport, characters, selectedLineId, onSelectLine, onUpdateLine, onUpdateScene, onSceneChange, onImportNovel, onAddScene, onDeleteScene, onRegenerate, onPlayLine, onAddLine, onDeleteLine, onAcquireSound, onUnbindSound, activeProgress, onCancelTask, voiceMap, configProvider, onOpenVoices, onLabGenerate, labResult, labGenerating }) {
+function StudioLayout({ project, scenes, currentScene, mediaReport, characters, selectedLineId, onSelectLine, onUpdateLine, onUpdateScene, onSceneChange, onImportNovel, onAddScene, onDeleteScene, onRegenerate, onPlayLine, onAddLine, onDeleteLine, onAcquireSound, onUnbindSound, activeProgress, onCancelTask, voiceMap, configProvider, config, onOpenVoices, onLabGenerate, labResult, labGenerating }) {
   const selectedLine = currentScene?.lines.find((line) => line.id === selectedLineId) || currentScene?.lines[0] || null;
   return (
     <div className="studio-layout">
       <SceneSidebar project={project} scenes={scenes} currentSceneId={currentScene.id} mediaReport={mediaReport} onSceneChange={onSceneChange} onImportNovel={onImportNovel} onAddScene={onAddScene} onDeleteScene={onDeleteScene} />
-      <SceneCanvas scene={currentScene} durationMs={mediaReport?.scenes?.find((item) => item.sceneId === currentScene.id)?.durationMs} sourceText={project.sourceText} characters={characters} selectedLineId={selectedLineId} onSelectLine={onSelectLine} onUpdateLine={onUpdateLine} onUpdateScene={onUpdateScene} onRegenerate={onRegenerate} onPlayLine={onPlayLine} onAddLine={onAddLine} onDeleteLine={onDeleteLine} onAcquireSound={onAcquireSound} generationProgress={activeProgress?.progress ?? null} generationMessage={activeProgress?.message} onCancelTask={onCancelTask} />
-      <Inspector line={selectedLine} characters={characters} voiceMap={voiceMap} provider={configProvider} onUpdate={(patch) => onUpdateLine(selectedLine.id, patch)} onOpenVoices={onOpenVoices} onAcquireSound={onAcquireSound} onUnbindSound={onUnbindSound} onLabGenerate={onLabGenerate} lab={labResult} labGenerating={labGenerating} />
+      <SceneCanvas scene={currentScene} provider={configProvider} durationMs={mediaReport?.scenes?.find((item) => item.sceneId === currentScene.id)?.durationMs} sourceText={project.sourceText} characters={characters} selectedLineId={selectedLineId} onSelectLine={onSelectLine} onUpdateLine={onUpdateLine} onUpdateScene={onUpdateScene} onRegenerate={onRegenerate} onPlayLine={onPlayLine} onAddLine={onAddLine} onDeleteLine={onDeleteLine} onAcquireSound={onAcquireSound} generationProgress={activeProgress?.progress ?? null} generationMessage={activeProgress?.message} onCancelTask={onCancelTask} />
+      <Inspector line={selectedLine} characters={characters} voiceMap={voiceMap} provider={configProvider} config={config} onUpdate={(patch) => onUpdateLine(selectedLine.id, patch)} onOpenVoices={onOpenVoices} onAcquireSound={onAcquireSound} onUnbindSound={onUnbindSound} onLabGenerate={onLabGenerate} lab={labResult} labGenerating={labGenerating} />
     </div>
   );
 }

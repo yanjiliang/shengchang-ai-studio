@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 const SCHEMA_INSTRUCTION = `
 将输入小说改编成可制作的中文多人广播剧场景。只返回 JSON，不要 Markdown。
-格式：{"project":{"genre":"题材"},"characters":[{"id":"稳定英文或拼音id","name":"姓名","role":"角色定位","description":"声音与性格描述"}],"scenes":[{"title":"场景标题","location":"时间 / 内外 / 地点","mood":"场景氛围","synopsis":"剧情作用","lines":[{"type":"dialogue|ambient|sfx|music","speaker":"说话者，仅dialogue","speakerId":"角色id，仅dialogue","text":"台词或声音描述","subtext":"潜台词","emotion":"情绪","intensity":0到100,"pace":70到120,"distance":"声音距离"}]}]}。
+格式：{"project":{"genre":"题材"},"characters":[{"id":"稳定英文或拼音id","name":"姓名","role":"角色定位","gender":"男|女|未知","age":"儿童|少年|青年|中年|老年|未知","description":"声音与性格描述"}],"scenes":[{"title":"场景标题","location":"时间 / 内外 / 地点","mood":"场景氛围","synopsis":"剧情作用","lines":[{"type":"dialogue|ambient|sfx|music","speaker":"说话者，仅dialogue","speakerId":"角色id，仅dialogue","text":"台词或声音描述","subtext":"潜台词","emotion":"情绪","intensity":0到100,"pace":70到120,"distance":"声音距离"}]}]}。
 要求：区分旁白与人物对白；用声音事件替代可听见的动作描写；每句保持适合语音合成的长度；speakerId 在全项目稳定；旁白 speakerId 固定为 narrator；不要省略推动剧情的对白。
 `;
 
@@ -26,7 +26,7 @@ function normalizeLine(line, characterIds) {
 
 function normalizeResult(result, fallbackName) {
   if (!Array.isArray(result.scenes) || !result.scenes.length) throw new Error('文本模型没有返回可用场景');
-  const characters = Array.isArray(result.characters) ? result.characters.map((character) => ({ id: String(character.id || randomUUID()), name: String(character.name || '未命名角色'), role: String(character.role || '角色'), description: String(character.description || '') })) : [];
+  const characters = Array.isArray(result.characters) ? result.characters.map((character) => ({ id: String(character.id || randomUUID()), name: String(character.name || '未命名角色'), role: String(character.role || '角色'), gender: ['男', '女'].includes(character.gender) ? character.gender : '未知', age: ['儿童', '少年', '青年', '中年', '老年'].includes(character.age) ? character.age : '未知', description: String(character.description || '') })) : [];
   if (!characters.some((item) => item.id === 'narrator')) characters.unshift({ id: 'narrator', name: '旁白', role: '叙事者', description: '保持客观、克制，避免播音腔。' });
   const characterIds = new Set(characters.map((item) => item.id));
   const scenes = result.scenes.map((scene, index) => {

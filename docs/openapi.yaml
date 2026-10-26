@@ -680,6 +680,7 @@ components:
         lufs: { type: [number, 'null'], description: '成片实测综合响度（EBU R128，保留 1 位小数）', example: -16.1 }
         lufsReason: { $ref: '#/components/schemas/LufsReason' }
         targetLufs: { type: number, example: -16 }
+        staleLineCount: { type: integer, minimum: 0, description: '导出时音频已过期（台词或表演参数改过，进入成片的是旧音频）的对白句数；单场景导出只数本场' }
     ProjectTimeline:
       type: object
       properties:
@@ -696,6 +697,7 @@ components:
               sceneId: { type: string }
               reason: { type: string, enum: [NO_DIALOGUE_AUDIO, TIMELINE_INVALID] }
               message: { type: string }
+        staleLineCount: { type: integer, minimum: 0, description: '现在音频已过期的对白句数' }
         lufs: { type: [number, 'null'] }
         lufsReason: { $ref: '#/components/schemas/LufsReason' }
         lastExport:
@@ -708,3 +710,4 @@ components:
             lufs: { type: [number, 'null'] }
             lufsReason: { $ref: '#/components/schemas/LufsReason' }
             targetLufs: { type: [number, 'null'] }
+            staleLineCount: { type: [integer, 'null'], description: '那次导出时的过期句数；0020 之前的导出为 null' }

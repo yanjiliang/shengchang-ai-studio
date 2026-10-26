@@ -15,7 +15,7 @@ import { recommendForEvent } from './asset-recommend.js';
 import { testLlm, validateLlmConfig } from './story-analyzer.js';
 import { registerBreezeRoutes, sendError } from './breeze-routes.js';
 import { oneClickMissingVoiceRoles, voiceNotReadyError } from './one-click.js';
-import { annotateStaleness, generationVoiceMap } from './voice-references.js';
+import { annotateStaleness, generationVoiceMap, staleLineCount } from './voice-references.js';
 import { registerProductionRoutes } from './production-routes.js';
 
 const PORT = Number(process.env.SHENGCHANG_API_PORT || 4174);
@@ -160,7 +160,9 @@ app.post('/api/projects/:projectId/export-scene', async (request, response, next
     const report = media.scenes.find((item) => item.sceneId === scene.id);
     if (report?.invalidFileCount) throw new Error(`场景含 ${report.invalidFileCount} 个无法解码的音频文件，请重新生成或重新绑定后再导出`);
     const config = await readConfig();
-    response.json(await exportSceneTimeline({ projectId: project.id, scene, targetLufs: config.targetLufs }));
+    const exported = await exportSceneTimeline({ projectId: project.id, scene, targetLufs: config.targetLufs });
+    // staleLineCount：本场里音频已过期（进入导出的是旧音频）的对白句数。
+    response.json({ ...exported, staleLineCount: staleLineCount(config, project, { sceneIds: [scene.id] }) });
   } catch (error) { next(error); }
 });
 app.post('/api/projects/:projectId/preview-scene', async (request, response, next) => {

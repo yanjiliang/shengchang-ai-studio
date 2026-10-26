@@ -9,7 +9,7 @@ import { analyzeNovel } from './story-analyzer.js';
 import { runOneClickPipeline } from './one-click.js';
 import { buildAttribution } from './attribution.js';
 import { ensureBuiltinAssets } from './builtin-assets.js';
-import { ensureReferenceRegistered, healReferenceRegistration, isBreezeRejection, resolveReferenceRequest, applyPronunciation } from './voice-references.js';
+import { ensureReferenceRegistered, healReferenceRegistration, isBreezeRejection, resolveReferenceRequest, applyPronunciation, staleLineCount } from './voice-references.js';
 import { cancelJobEverywhere, laneFor, PRIORITY, queuePositionOf } from './breeze-lane.js';
 import { createVoiceDesignJob, runVoiceDesignTask } from './voice-design.js';
 import { createLineTakeJob, runLineTakeTask } from './line-takes.js';
@@ -286,6 +286,7 @@ async function runTask(task) {
         shouldCancel: () => Boolean(getPersistentTask(task.id)?.cancelRequested),
         onProgress: ({ progress, message }) => updatePersistentTask(task.id, { progress, message }),
       });
+      result.staleLineCount = staleLineCount(config, project);
       // The attribution sheet rides along with the episode: the creator sees
       // exactly which sound assets went into it and what each source permits.
       try {

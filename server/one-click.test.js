@@ -237,6 +237,7 @@ describe('runOneClickPipeline 阶段断点', () => {
     });
     assert.equal(calls.analyze, 0, '拆解已完成，不应重跑');
     assert.equal(calls.generate, 0, '生成已完成，不应重新付费');
+    assert.equal(getPersistentTask(task.id).result.staleLineCount, 0, '一键成片结果带 staleLineCount');
     assert.ok(calls.inspect >= 1, '体检仍应执行');
     assert.equal(calls.export, 1);
     const finished = getPersistentTask(task.id);

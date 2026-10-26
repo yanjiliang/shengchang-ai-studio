@@ -258,6 +258,18 @@ export function annotateStaleness(config, project) {
   }) })) } };
 }
 
+// 过期句数（导出结果 / 时间轴用）：有音频但 stale 的对白，可限定场景。
+export function staleLineCount(config, project, { sceneIds = null } = {}) {
+  const state = project?.state || {};
+  const voiceMap = effectiveVoiceMap(config, state);
+  let count = 0;
+  for (const scene of state.scenes || []) {
+    if (sceneIds && !sceneIds.includes(scene.id)) continue;
+    for (const line of scene.lines || []) if (lineStaleness(config, state, line, voiceMap).stale) count += 1;
+  }
+  return count;
+}
+
 // 影响范围（只读）：该角色已有音频的对白里，按当前参考 + 当前引擎配置重新算出的
 // 缓存键 ≠ 台词上存的 audioHash 的，就是“需要重新生成”的句子。
 export function referenceImpact(config, project, roleId) {

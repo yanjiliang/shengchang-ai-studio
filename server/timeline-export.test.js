@@ -8,7 +8,7 @@ import { after, before, test } from 'node:test';
 const scratch = mkdtempSync(path.join(tmpdir(), 'shengchang-timeline-test-'));
 process.env.HOME = scratch;
 process.env.SHENGCHANG_RUNTIME_DIR = path.join(scratch, 'runtime');
-const { createProject, getProject, createPersistentTask, updatePersistentTask } = await import('./database.js');
+const { createProject, getProject, createPersistentTask, updatePersistentTask, updateProject } = await import('./database.js');
 const { ensureRuntime, exportProjectTimeline, exportSceneTimeline, measureLoudness, probeFfmpeg, resolveProjectTimeline, runtimePaths, timelineSegments } = await import('./media-store.js');
 const { registerProductionRoutes } = await import('./production-routes.js');
 const express = (await import('express')).default;
@@ -127,7 +127,25 @@ test('GET /api/projects/:id/timeline：未导出时 lufs=null(NOT_EXPORTED)，�
   assert.equal(body.lastExport.taskId, task.id);
   assert.equal(body.lastExport.kind, 'one-click');
 
+  assert.equal(body.staleLineCount, 0);
+  assert.equal(body.lastExport.staleLineCount, null, '没记录 staleLineCount 的导出为 null');
+
   const missing = await fetch(`${base}/api/projects/nope/timeline`);
   assert.equal(missing.status, 404);
   assert.equal((await missing.json()).code, 'PROJECT_NOT_FOUND');
+});
+
+test('时间轴 staleLineCount：台词改过（与音频原文不同）的句子计入；改回去清零', needsFfmpeg, async () => {
+  const fresh = getProject(project.id);
+  const edit = (text) => ({ ...fresh.state, scenes: fresh.state.scenes.map((scene) => ({ ...scene, lines: scene.lines.map((line) => (line.id === 'l2' ? { ...line, text, audioText: 'l2' } : line)) })) });
+  updateProject(project.id, { trustedAudio: true, state: edit('改过的 l2') });
+  let body = await (await fetch(`${base}/api/projects/${project.id}/timeline`)).json();
+  assert.equal(body.staleLineCount, 1);
+  const task = createPersistentTask({ kind: 'export-project', projectId: project.id, payload: {} });
+  updatePersistentTask(task.id, { status: 'completed', result: { url: '/media/exports/y.mp3', name: 'y.mp3', durationMs: 6120, lufs: -16, staleLineCount: 1 } });
+  body = await (await fetch(`${base}/api/projects/${project.id}/timeline`)).json();
+  assert.equal(body.lastExport.staleLineCount, 1);
+  updateProject(project.id, { trustedAudio: true, state: edit('l2') });
+  body = await (await fetch(`${base}/api/projects/${project.id}/timeline`)).json();
+  assert.equal(body.staleLineCount, 0);
 });

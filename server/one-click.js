@@ -22,7 +22,7 @@ import { getPersistentTask, getProject, updatePersistentTask, updateProject } fr
 import { exportProjectTimeline, inspectProjectMedia } from './media-store.js';
 import { analyzeNovel } from './story-analyzer.js';
 import { applyResultsToProject, runGenerationRequests, summarizeBilling } from './task-manager.js';
-import { effectiveVoiceMap, generationVoiceMap, voiceReadiness } from './voice-references.js';
+import { effectiveVoiceMap, generationVoiceMap, staleLineCount, voiceReadiness } from './voice-references.js';
 
 // Preset roster (design OQ1: hardcoded known-good voices, simple > clever).
 // Demo accepts any voice id (pitch derives from the string). 豆包预设按
@@ -382,7 +382,7 @@ export async function runOneClickPipeline(task, config, deps = {}) {
     updatePersistentTask(task.id, {
       status: 'completed', progress: 100, completedAt: Date.now(),
       message: `一键成片完成：${report.sceneCount} 个场景已导出${cacheNote}${attention.length ? `，${attention.length} 项待处理` : ''}${attentionNote}`,
-      result: { url: report.url, name: report.name, sceneCount: report.sceneCount, durationMs: report.durationMs, scenes: report.scenes || [], segments: report.segments || [], lufs: report.lufs ?? null, lufsReason: report.lufsReason ?? null, targetLufs: report.targetLufs ?? config.targetLufs ?? null, attention, stages: completedStages, billedCharacters: billing.billedCharacters ?? null, freshCount: billing.freshCount ?? 0, cacheHits: billing.cacheHits ?? 0, missingUsageCount: billing.missingUsageCount ?? 0, results: billing.lineResults || [] },
+      result: { url: report.url, name: report.name, sceneCount: report.sceneCount, durationMs: report.durationMs, scenes: report.scenes || [], segments: report.segments || [], lufs: report.lufs ?? null, lufsReason: report.lufsReason ?? null, targetLufs: report.targetLufs ?? config.targetLufs ?? null, staleLineCount: staleLineCount(config, getProject(task.projectId)), attention, stages: completedStages, billedCharacters: billing.billedCharacters ?? null, freshCount: billing.freshCount ?? 0, cacheHits: billing.cacheHits ?? 0, missingUsageCount: billing.missingUsageCount ?? 0, results: billing.lineResults || [] },
     });
   }
 }
@@ -403,8 +403,8 @@ function buildAttentionList(project, mediaReport, config = {}) {
   if (unmappedVoices.length) attention.push(`${unmappedVoices.length} 个角色未绑定音色（相关台词未生成）`);
   const notDirectable = flagUndirectableVoices(state.voiceMap, speakers);
   if (notDirectable.length) attention.push(`${notDirectable.length} 个角色的音色未确认可导演（情绪/节奏指令可能不生效）：${notDirectable.map((item) => `${item.characterId}=${item.voiceId}${item.directable === false ? '（实测不可导演）' : '（未验证）'}`).join('、')}`);
-  const stale = (state.scenes || []).flatMap((scene) => (scene.lines || []).filter((line) => line.audioUrl && line.audioStale));
-  if (stale.length) attention.push(`${stale.length} 句台词改动后音频过期，进入成片的是旧音频`);
+  const stale = staleLineCount(config, project);
+  if (stale) attention.push(`${stale} 句音频已过期（台词或表演参数改过），进入成片的是旧音频`);
   const missing = (state.scenes || []).flatMap((scene) => (scene.lines || []).filter((line) => line.type === 'dialogue' && !line.audioUrl));
   if (missing.length) attention.push(`${missing.length} 句对白没有音频，未进入成片`);
   const invalid = mediaReport?.scenes?.reduce((sum, scene) => sum + (scene.invalidFileCount || 0), 0);

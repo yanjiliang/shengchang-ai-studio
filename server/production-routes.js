@@ -6,7 +6,7 @@ import { resolveProjectTimeline } from './media-store.js';
 import { sendError } from './breeze-routes.js';
 import { acceptLineTake, listLineTakes } from './line-takes.js';
 import { applyResultsToProject, cancelTask, enqueueLineTake, getTask, taskWithQueuePosition, waitForTaskToSettle } from './task-manager.js';
-import { annotateStaleness, voiceReadiness } from './voice-references.js';
+import { annotateStaleness, staleLineCount, voiceReadiness } from './voice-references.js';
 
 const httpError = (status, code, message, details) => Object.assign(new Error(message), { status, code, ...(details ? { details } : {}) });
 
@@ -30,14 +30,15 @@ const lineAnnotated = async (payload) => {
 export function latestEpisodeExport(projectId) {
   const task = listPersistentTasks(projectId, 100).find((item) => (item.kind === 'export-project' || item.kind === 'one-click') && item.status === 'completed' && item.result?.url);
   if (!task) return null;
-  const { url, name, durationMs, lufs = null, lufsReason = null, targetLufs = null } = task.result;
-  return { taskId: task.id, kind: task.kind, completedAt: task.completedAt, url, name, durationMs, lufs, lufsReason: lufs === null ? (lufsReason || 'NOT_MEASURED') : null, targetLufs };
+  const { url, name, durationMs, lufs = null, lufsReason = null, targetLufs = null, staleLineCount: exportedStale = null } = task.result;
+  return { taskId: task.id, kind: task.kind, completedAt: task.completedAt, url, name, durationMs, lufs, lufsReason: lufs === null ? (lufsReason || 'NOT_MEASURED') : null, targetLufs, staleLineCount: Number.isInteger(exportedStale) ? exportedStale : null };
 }
 
-export async function projectTimeline(project) {
+// staleLineCount = 现在过期的对白句数；lastExport.staleLineCount = 那次导出时的（旧导出为 null）。
+export async function projectTimeline(project, config) {
   const timeline = await resolveProjectTimeline(project);
   const lastExport = latestEpisodeExport(project.id);
-  return { ...timeline, lufs: lastExport?.lufs ?? null, lufsReason: lastExport ? lastExport.lufsReason : 'NOT_EXPORTED', lastExport };
+  return { ...timeline, staleLineCount: staleLineCount(config, project), lufs: lastExport?.lufs ?? null, lufsReason: lastExport ? lastExport.lufsReason : 'NOT_EXPORTED', lastExport };
 }
 
 export function registerProductionRoutes(app) {
@@ -80,7 +81,7 @@ export function registerProductionRoutes(app) {
     try {
       const project = getProject(request.params.projectId);
       if (!project) throw httpError(404, 'PROJECT_NOT_FOUND', '项目不存在');
-      response.json({ projectId: project.id, ...(await projectTimeline(project)) });
+      response.json({ projectId: project.id, ...(await projectTimeline(project, await readConfig())) });
     } catch (error) { sendError(response, error, next); }
   });
 

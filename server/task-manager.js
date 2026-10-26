@@ -106,6 +106,9 @@ export function applyResultsToProject(projectId, sceneId, results) {
         // 进缓存键的显式 seed（采用单句试听时）；普通生成清空。stale 判断要用它复算缓存键。
         audioSeed: Number.isSafeInteger(result.requestSeed) ? result.requestSeed : null,
         synthesizedText: result.synthesizedText,
+        // 这段音频对应的原文（发音词典替换前）。stale 的 text 判断和存盘合并都对照它，
+        // 而不是“上一次保存的文本”——否则改了再改回去永远清不掉。
+        audioText: result.text,
         // The request captured the text at enqueue time. If the line has been
         // edited since, this fresh clip is already stale for the current text;
         // otherwise the regeneration must clear the badge.

@@ -232,22 +232,30 @@ export function expectedAudioHash(config, state, line, voiceMap = effectiveVoice
   return resolved.voiceId ? audioContentHash(config, resolved) : null;
 }
 
-// stale：已有音频与当前参数不符。reason 'text' = 台词改了；'params' = 情绪/语速/音色/
+// stale：已有音频与“现在生成会得到的”不符，纯由缓存键推导：按当前台词/参数复算的
+// hash ≠ 台词上存的 audioHash 就是 stale（台词改回原文、参数改回去都会自动恢复）。
+// reason 'text' = 台词与音频原文（audioText）不同；否则 'params' = 情绪/语速/音色/
 // 参考音/发音词典/引擎指令版本等任一进缓存键的参数变了（或角色已解绑音色）。
-// 音频是别的引擎生成的（audioEngine ≠ 当前引擎）不判 stale：切引擎不等于参数变了。
+// 无法复算时（旧数据没有 audioHash，或音频是别的引擎生成的——切引擎不等于参数变了）
+// 才退回按文本判断：有 audioText 对照它，没有就用持久化的 audioStale。
 export function lineStaleness(config, state, line, voiceMap = effectiveVoiceMap(config, state)) {
   if (line.type !== 'dialogue' || !line.audioUrl) return { stale: false, staleReason: null };
-  if (line.audioStale) return { stale: true, staleReason: 'text' };
-  if (!line.audioHash || (line.audioEngine && line.audioEngine !== (config.provider || ''))) return { stale: false, staleReason: null };
+  const textChanged = typeof line.audioText === 'string' ? String(line.text ?? '') !== line.audioText : Boolean(line.audioStale);
+  if (!line.audioHash || (line.audioEngine && line.audioEngine !== (config.provider || ''))) return textChanged ? { stale: true, staleReason: 'text' } : { stale: false, staleReason: null };
   const expected = expectedAudioHash(config, state, line, voiceMap);
-  return expected === line.audioHash ? { stale: false, staleReason: null } : { stale: true, staleReason: 'params' };
+  if (expected === line.audioHash) return { stale: false, staleReason: null };
+  return { stale: true, staleReason: textChanged ? 'text' : 'params' };
 }
 
 // 给响应用：每句台词加 stale / staleReason（不落盘；浏览器回存时 updateProject 会剥掉）。
 export function annotateStaleness(config, project) {
   if (!project?.state) return project;
   const voiceMap = effectiveVoiceMap(config, project.state);
-  return { ...project, state: { ...project.state, scenes: (project.state.scenes || []).map((scene) => ({ ...scene, lines: (scene.lines || []).map((line) => ({ ...line, ...lineStaleness(config, project.state, line, voiceMap) })) })) } };
+  return { ...project, state: { ...project.state, scenes: (project.state.scenes || []).map((scene) => ({ ...scene, lines: (scene.lines || []).map((line) => {
+    const staleness = lineStaleness(config, project.state, line, voiceMap);
+    // audioStale（前端“待重生成”徽标用）跟着推导结果走：只在台词改动导致过期时为 true。
+    return { ...line, ...staleness, ...(line.audioUrl ? { audioStale: staleness.staleReason === 'text' } : {}) };
+  }) })) } };
 }
 
 // 影响范围（只读）：该角色已有音频的对白里，按当前参考 + 当前引擎配置重新算出的

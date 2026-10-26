@@ -110,7 +110,7 @@ export function createProject({ name = '未命名作品', genre = '', state = { 
 // between load and save would otherwise be erased by a stale snapshot. Keep
 // whatever the server already has, and mark a clip stale (instead of deleting
 // it) when the text it was synthesized from has changed.
-const AUDIO_FIELDS = ['audioUrl', 'audioMime', 'audioHash', 'generatedAt', 'synthesizedText', 'audioEngine', 'audioSeed'];
+const AUDIO_FIELDS = ['audioUrl', 'audioMime', 'audioHash', 'generatedAt', 'synthesizedText', 'audioEngine', 'audioSeed', 'audioText'];
 
 function mergeServerOwnedAudio(incomingState, currentState) {
   const currentLines = new Map();
@@ -126,7 +126,10 @@ function mergeServerOwnedAudio(incomingState, currentState) {
         if (!current?.audioUrl) return clean;
         const merged = { ...clean };
         for (const field of AUDIO_FIELDS) if (current[field] !== undefined) merged[field] = current[field];
-        merged.audioStale = String(line.text ?? '') !== String(current.text ?? '');
+        // 对照音频生成时的原文（audioText）：改回原文就不再过期。旧数据没有 audioText 时，
+        // 未过期的音频以当前文本为原文；已过期的不知道原文，保持过期直到重新生成。
+        const sourceText = current.audioText ?? (current.audioStale ? null : current.text);
+        merged.audioStale = sourceText === null ? true : String(line.text ?? '') !== String(sourceText ?? '');
         return merged;
       }),
     })),

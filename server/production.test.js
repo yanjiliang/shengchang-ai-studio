@@ -200,7 +200,13 @@ describe('stale', () => {
     assert.equal(flags(fresh.state)[2].stale, false);
     const withLine = (patch) => ({ ...fresh.state, scenes: [{ ...fresh.state.scenes[0], lines: [{ ...lines[0], ...patch }, ...lines.slice(1)] }] });
     assert.deepEqual([flags(withLine({ emotion: '愤怒' }))[0].stale, flags(withLine({ emotion: '愤怒' }))[0].staleReason], [true, 'params']);
-    assert.deepEqual([flags(withLine({ audioStale: true }))[0].stale, flags(withLine({ audioStale: true }))[0].staleReason], [true, 'text']);
+    // 文本改了 → text；改回原文 → 不再 stale（即使持久化的 audioStale 还是 true：纯由 hash 推导）。
+    const edited = flags(withLine({ text: '改过的台词。', audioStale: true }))[0];
+    assert.deepEqual([edited.stale, edited.staleReason, edited.audioStale], [true, 'text', true]);
+    const reverted = flags(withLine({ audioStale: true }))[0];
+    assert.deepEqual([reverted.stale, reverted.staleReason, reverted.audioStale], [false, null, false]);
+    // 文本和参数都改了 → text 优先；只改回文本 → params。
+    assert.equal(flags(withLine({ text: '改过的台词。', emotion: '愤怒' }))[0].staleReason, 'text');
     // 换了参考音 → params。
     const swapped = { ...fresh.state, voiceReferences: { tangseng: { ...tangRef, breezeVoiceId: 'ref-tangseng-bbbb', audioHash: 'bbbb' } } };
     assert.equal(flags(swapped)[0].staleReason, 'params');

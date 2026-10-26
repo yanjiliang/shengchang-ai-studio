@@ -310,3 +310,9 @@
 .inspector-section .muted-note { display: block; margin-top: 4px; font-size: 11px; color: var(--color-text-soft); }
 .breeze-outage-detail { display: block; margin-top: 2px; font-size: 12px; color: var(--color-muted, #8a8a8a); }
 .export-pending { margin: 6px 0 0; }
+
+/* 一键成片在跑：导出入口停用，旁边一行说明。 */
+.export-lock-note { display: inline-flex; align-items: center; font-size: 12px; color: var(--color-muted); white-space: nowrap; }
+p.export-lock-note { display: block; margin: 6px 0 0; white-space: normal; }
+.player-tools .export-lock-note { margin-left: 6px; }
+@media (max-width: 640px) { .player-tools .export-lock-note { display: none; } }

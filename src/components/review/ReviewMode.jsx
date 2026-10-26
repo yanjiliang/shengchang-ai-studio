@@ -1,4 +1,5 @@
 import { AlertTriangle, ChevronLeft, ChevronRight, Download, Flag, LoaderCircle, Pause, Play, RefreshCw, Wrench } from 'lucide-react';
+import { EXPORT_LOCK_TEXT, exportErrorText } from '../../lib/export-lock.js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { chainApi } from '../../lib/chain-api.js';
 import {
@@ -24,7 +25,7 @@ function ReviewToast({ toast, onHide }) {
 }
 
 // 审听修句（handoff：/workspace/shengchang-review-mode/handoff.md）。一个项目 = 一集，episodeId = projectId。
-export function ReviewMode({ project, breezeMode, breeze, batchRunning = false, onUpdateAnyLine, onSaveNow, onAccepted, onGoProduce, onRegenerateLines }) {
+export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, batchRunning = false, onUpdateAnyLine, onSaveNow, onAccepted, onGoProduce, onRegenerateLines }) {
   const projectId = project.id;
   const scenes = project.state?.scenes || [];
   const lines = useMemo(() => reviewLines(scenes), [scenes]);
@@ -245,7 +246,7 @@ export function ReviewMode({ project, breezeMode, breeze, batchRunning = false, 
       // 服务端只留最新一份成片（同名覆盖），chainApi.capabilities.undoRemix 为 false 时不给「撤销」。
       showToast(count ? `已重新混音，换上了 ${count} 句新版` : '已重新混音', previousId && chainApi.capabilities.undoRemix ? { label: '撤销', run: async () => { const restored = await mix.restore(previousId); keepPosition(restored, singleAudio.state.id === EPISODE && singleAudio.state.playing); } } : null);
       return next;
-    } catch (error) { showToast(`重新混音失败：${error.message}`); throw error; }
+    } catch (error) { showToast(Number(error?.status) === 409 ? exportErrorText(error) : `重新混音失败：${error.message}`); throw error; }
   };
 
   // ---- 导出 ----
@@ -275,6 +276,7 @@ export function ReviewMode({ project, breezeMode, breeze, batchRunning = false, 
     else setFilter('all');
   };
   const startExport = async (remixFirst) => {
+    if (exportLocked) return;
     singleAudio.pause();
     // 导出就是按当前每句的音频重新拼一遍整集（服务端没有单独的「混音」），所以先混音和直接导出是同一件事。
     setExportState((current) => ({ ...current, phase: 'running', progress: 0, message: remixFirst ? '正在重新混音' : '正在准备', error: '' }));
@@ -287,8 +289,9 @@ export function ReviewMode({ project, breezeMode, breeze, batchRunning = false, 
       setAnnounce('整集已导出');
       if (!exportOpenRef.current) showToast('整集已导出', { label: '查看', run: () => setExportState((current) => ({ ...current, open: true })) });
     } catch (error) {
-      setExportState((current) => ({ ...current, phase: 'failed', error: error.message }));
-      if (!exportOpenRef.current) showToast(`导出失败：${error.message}`, { label: '查看', run: () => setExportState((current) => ({ ...current, open: true })) });
+      const reason = exportErrorText(error);
+      setExportState((current) => ({ ...current, phase: 'failed', error: reason }));
+      if (!exportOpenRef.current) showToast(Number(error?.status) === 409 ? reason : `导出失败：${reason}`, { label: '查看', run: () => setExportState((current) => ({ ...current, open: true })) });
     }
   };
 
@@ -391,8 +394,9 @@ export function ReviewMode({ project, breezeMode, breeze, batchRunning = false, 
         </div>
         <div className="playbar-mix">
           <span className={`mix-status ${staleIds.length ? 'is-stale' : ''}`} aria-live="polite">{remixing ? <LoaderCircle size={13} className="spin" aria-hidden="true" /> : null}{mixStatus}</span>
-          {staleIds.length || (!mix.mix && !remixing) ? <button type="button" className="button secondary-button" disabled={remixing} onClick={() => doRemix().catch(() => {})}><RefreshCw size={13} />重新混音</button> : null}
-          <button type="button" className="button primary-button" disabled={!mix.mix || remixing} onClick={openExport}>{exportState.phase === 'running' ? <LoaderCircle size={13} className="spin" /> : <Download size={13} />}导出 mp3</button>
+          {staleIds.length || (!mix.mix && !remixing) ? <button type="button" className="button secondary-button" disabled={remixing || exportLocked} aria-describedby={exportLocked ? 'review-export-lock' : undefined} onClick={() => doRemix().catch(() => {})}><RefreshCw size={13} />重新混音</button> : null}
+          <button type="button" className="button primary-button" disabled={!mix.mix || remixing || (exportLocked && exportState.phase !== 'running')} aria-describedby={exportLocked ? 'review-export-lock' : undefined} onClick={openExport}>{exportState.phase === 'running' ? <LoaderCircle size={13} className="spin" /> : <Download size={13} />}导出 mp3</button>
+          {exportLocked ? <span id="review-export-lock" className="export-lock-note" role="status">{EXPORT_LOCK_TEXT}</span> : null}
         </div>
         <p className="playbar-keys muted" aria-hidden="true">空格 播放/暂停 · J/K 上一句/下一句 · M 标记</p>
       </div>
@@ -474,7 +478,7 @@ export function ReviewMode({ project, breezeMode, breeze, batchRunning = false, 
         <ReviewExportDialog
           episodeLabel={project.name || project.title || '本集'} phase={exportState.phase} mixStale={staleIds.length > 0} markedCount={issueCount} driftCount={0}
           sfxUnbound={sfxUnbound} breeze={breezeNote} progress={exportState.progress} message={exportState.message} result={exportState.result} error={exportState.error}
-          precheck={precheck} onStart={startExport} onFixStale={onRegenerateLines ? fixStale : null}
+          precheck={precheck} locked={exportLocked} onStart={startExport} onFixStale={onRegenerateLines ? fixStale : null}
           onReview={() => { setExportState((current) => ({ ...current, open: false })); setFilter(counts.marked ? 'marked' : 'drift'); }}
           onClose={() => setExportState((current) => ({ ...current, open: false }))}
         />

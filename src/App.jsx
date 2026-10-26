@@ -25,6 +25,8 @@ import { EXPORT_ONLY_DIALOGUE, exportOnlyDialogue, goFixText, missingDetail, mis
 import { chainApi } from './lib/chain-api.js';
 import { referenceFromVoice } from './lib/voice-design.js';
 import { useBreezeStatus } from './lib/useBreezeStatus.js';
+import { useExportLock } from './lib/useExportLock.js';
+import { EXPORT_LOCK_TEXT, exportErrorText } from './lib/export-lock.js';
 import { breezeOutage, doubaoSwitchConfirm } from './lib/breeze-outage.js';
 import { BreezeOutageBanner } from './components/BreezeOutageBanner.jsx';
 import { singleAudio } from './lib/single-audio.js';
@@ -104,6 +106,9 @@ function App() {
   const state = project?.state || EMPTY_STATE;
   const breezeMode = isBreeze(config);
   const [oneClickRunning, setOneClickRunning] = useState(false);
+  // 一键成片在跑时停用所有导出入口；以服务端任务列表为准（刷新页面也认得）。
+  const [oneClickTaskId, setOneClickTaskId] = useState('');
+  const exportLock = useExportLock(project?.id || '', { pendingTaskId: oneClickTaskId, refreshToken: taskRefreshToken });
   const [outage, setOutage] = useState(null);
   const breeze = useBreezeStatus(breezeMode, { generating: Boolean(generation) || oneClickRunning });
   const voiceDrafts = useVoiceDrafts(project?.id || '', { onError: (error) => setToast(error.message) });
@@ -453,12 +458,14 @@ function App() {
   };
   const exportSceneById = async (sceneId = currentScene?.id) => {
     const scene = scenes.find((item) => item.id === sceneId);
+    if (exportLock.locked) { setToast(EXPORT_LOCK_TEXT); return; }
     if (!scene?.lines.some((line) => line.type === 'dialogue' && line.audioUrl)) { setToast('当前场景没有已生成的对白'); return; }
     setExporting(true);
     try { await commitPendingSave(); const result = await api.exportScene(project.id, scene.id); downloadMedia(result.url, result.name); setToast(`本场已渲染：${formatDuration(result.durationMs)} · ${result.trackCount} 条轨道`); }
-    catch (error) { setToast(error.message); } finally { setExporting(false); }
+    catch (error) { setToast(exportErrorText(error)); } finally { setExporting(false); }
   };
   const exportEpisode = async () => {
+    if (exportLock.locked) { setToast(EXPORT_LOCK_TEXT); return; }
     if (!scenes.some((scene) => scene.lines.some((line) => line.type === 'dialogue' && line.audioUrl))) { setToast('整部作品还没有可导出的对白音频'); return; }
     setExporting(true);
     try {
@@ -471,7 +478,7 @@ function App() {
       downloadMedia(completed.result.url, completed.result.name);
       if (completed.result.attributionUrl) downloadMedia(completed.result.attributionUrl, decodeURIComponent(completed.result.attributionUrl.split('/').pop()));
       setToast(`整集已导出：${completed.result.sceneCount} 场 · ${formatDuration(completed.result.durationMs)}${exportOnlyDialogue(scenes) ? ` · ${EXPORT_ONLY_DIALOGUE}` : ''}`);
-    } catch (error) { setToast(error.message); }
+    } catch (error) { setToast(exportErrorText(error)); }
     finally { setExporting(false); setTaskRefreshToken(Date.now()); }
   };
 
@@ -555,6 +562,7 @@ function App() {
         throw error;
       }
       setOneClickToken((value) => value + 1);
+      setOneClickTaskId(started?.id || started?.task?.id || started?.taskId || '');
       watchOneClick(started?.id || started?.task?.id || started?.taskId, { requestCount: estimate.requestCount });
       setTaskRefreshToken(Date.now());
       setToast('一键成片已开始，可在任务历史查看进度与结果');
@@ -583,11 +591,11 @@ function App() {
   if (view === 'studio') content = currentScene ? <StudioLayout project={project} scenes={scenes} currentScene={currentScene} mediaReport={mediaReport} characters={state.characters || []} selectedLineId={selectedLineId} onSelectLine={setSelectedLineId} onUpdateLine={updateLine} onUpdateScene={updateScene} onSceneChange={changeScene} onImportNovel={importNovel} onAddScene={addScene} onDeleteScene={deleteScene} onRegenerate={regenerateLine} onPlayLine={playLine} onAddLine={addLine} onDeleteLine={deleteLine} onAcquireSound={setPickerLine} onUnbindSound={unbindAsset} activeProgress={activeProgress} onCancelTask={cancelActiveTask} voiceMap={state.voiceMap || {}} configProvider={config?.provider} config={config} onOpenVoices={() => setView('voices')} onLabGenerate={runDirectionLab} labResult={labResult} labGenerating={Boolean(generation)} /> : <div className="empty-project"><BrandSignature /><h2>{project.name}</h2><p>{analysis ? `${analysis.message} · ${analysis.progress}%` : '还没有场景。导入 TXT 小说后，文本模型会识别角色、对白、旁白、声音事件和场景结构。'}</p>{analysis ? <button className="button secondary-button" type="button" onClick={cancelActiveTask}>取消拆解</button> : <><button className="button primary-button" type="button" onClick={importNovel}>导入小说并拆解</button><button className="button secondary-button" type="button" onClick={addScene}>手动新建场景</button></>}</div>;
   else if (view === 'voices') content = <VoicesView characters={state.characters || []} voiceReferences={state.voiceReferences || {}} voiceMap={state.voiceMap || {}} voiceDesignConfig={config} onDesignVoice={designVoice} onSetVoice={setVoice} onUpdateCharacter={updateCharacter} onToast={setToast} breeze={breezeMode ? breeze : null} scenes={scenes} projectId={project.id} voiceDrafts={voiceDrafts} onApplyVoice={applyCharacterVoice} onOpenSettings={() => setView('settings')} initialRoleId={voicesRoleId} focusRequest={voicesFocus} />;
   else if (view === 'sounds') content = <SoundsView assets={state.assets || []} builtinAssets={builtinAssets} sceneUsage={assetUsage} sceneEvents={(currentScene?.lines || []).filter((line) => line.type !== 'dialogue')} sceneTitle={currentScene?.title || ''} onUpload={uploadAsset} onBindAsset={bindAsset} onDeleteAsset={deleteAsset} onUpdateAsset={updateAsset} onToast={setToast} />;
-  else if (view === 'production') content = <ProductionView onRegenerateLines={regenerateLines} project={project} mediaReport={mediaReport} currentSceneId={currentSceneId} onSceneChange={changeScene} onUpdateLine={updateLine} onUpdateDictionary={updateDictionary} onExportScene={exportSceneById} onExportEpisode={exportEpisode} onOneClick={oneClick} oneClickToken={oneClickToken} onGenerateMissing={generateMissingDialogue} generating={Boolean(generation)} exporting={exporting} taskRefreshToken={taskRefreshToken} onToast={setToast} onUpdateAnyLine={updateAnyLine} onLineAccepted={() => refreshProjects(project.id)} onSaveNow={commitPendingSave} hideBilling={breezeMode} breezeMode={breezeMode} breeze={breezeMode ? breeze : null} onOpenStudio={() => setView('studio')} />;
-  else if (view === 'quality') content = <QualityView report={qualityReport} stages={stages} onToast={setToast} onExport={() => exportSceneById(currentScene?.id)} onOpenProduction={() => setView('production')} onOpenView={setView} onLocateLine={locateLine} onOpenVoices={() => setView('voices')} onOpenSounds={() => setView('sounds')} onGenerateMissing={() => generateMissingDialogue([currentScene?.id])} onRegenerateStale={() => regenerateStaleDialogue([currentScene?.id])} generating={Boolean(generation)} exporting={exporting} />;
+  else if (view === 'production') content = <ProductionView onRegenerateLines={regenerateLines} project={project} mediaReport={mediaReport} currentSceneId={currentSceneId} onSceneChange={changeScene} onUpdateLine={updateLine} onUpdateDictionary={updateDictionary} onExportScene={exportSceneById} onExportEpisode={exportEpisode} exportLocked={exportLock.locked} onOneClick={oneClick} oneClickToken={oneClickToken} onGenerateMissing={generateMissingDialogue} generating={Boolean(generation)} exporting={exporting} taskRefreshToken={taskRefreshToken} onToast={setToast} onUpdateAnyLine={updateAnyLine} onLineAccepted={() => refreshProjects(project.id)} onSaveNow={commitPendingSave} hideBilling={breezeMode} breezeMode={breezeMode} breeze={breezeMode ? breeze : null} onOpenStudio={() => setView('studio')} />;
+  else if (view === 'quality') content = <QualityView report={qualityReport} stages={stages} onToast={setToast} onExport={() => exportSceneById(currentScene?.id)} onOpenProduction={() => setView('production')} onOpenView={setView} onLocateLine={locateLine} onOpenVoices={() => setView('voices')} onOpenSounds={() => setView('sounds')} onGenerateMissing={() => generateMissingDialogue([currentScene?.id])} onRegenerateStale={() => regenerateStaleDialogue([currentScene?.id])} generating={Boolean(generation)} exporting={exporting} exportLocked={exportLock.locked} />;
   else content = <SettingsView config={config} onSave={saveConfig} onTestLlm={api.testLlm} onToast={setToast} onReload={reloadConfig} />;
 
-  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{outage ? <BreezeOutageBanner outage={outage} checking={breeze.checking} onRetry={retryAfterOutage} onResume={retryAfterOutage} onSettings={() => { setOutage(null); setView('settings'); }} onDismiss={() => setOutage(null)} /> : null}{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} /> : null}{pickerLine ? <SoundPicker line={pickerLine} projectId={project.id} config={config} builtinAssets={builtinAssets} onBind={bindAsset} onUpload={uploadAndBind} onGenerate={generateSound} onClose={() => setPickerLine(null)} onToast={setToast} /> : null}{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}<Toast message={toast} /></div>;
+  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{outage ? <BreezeOutageBanner outage={outage} checking={breeze.checking} onRetry={retryAfterOutage} onResume={retryAfterOutage} onSettings={() => { setOutage(null); setView('settings'); }} onDismiss={() => setOutage(null)} /> : null}{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} exportLocked={exportLock.locked} /> : null}{pickerLine ? <SoundPicker line={pickerLine} projectId={project.id} config={config} builtinAssets={builtinAssets} onBind={bindAsset} onUpload={uploadAndBind} onGenerate={generateSound} onClose={() => setPickerLine(null)} onToast={setToast} /> : null}{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}<Toast message={toast} /></div>;
 }
 
 // --- Local composition helpers (props-only, no state of their own) --------

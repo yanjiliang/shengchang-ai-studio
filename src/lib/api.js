@@ -17,7 +17,7 @@ export const api = {
   saveProject: (projectId, input) => apiRequest(`/api/projects/${projectId}`, { method: 'PUT', body: JSON.stringify(input) }),
   archiveProject: (projectId) => apiRequest(`/api/projects/${projectId}`, { method: 'DELETE' }),
   analyzeNovel: (projectId, input) => apiRequest(`/api/projects/${projectId}/analyze`, { method: 'POST', body: JSON.stringify(input) }),
-  listTasks: (projectId) => apiRequest(`/api/projects/${projectId}/tasks`),
+  listTasks: (projectId, { limit } = {}) => apiRequest(`/api/projects/${projectId}/tasks${limit ? `?limit=${limit}` : ''}`),
   getMediaReport: (projectId) => apiRequest(`/api/projects/${projectId}/media-report`),
   mediaPeaks: (url) => apiRequest(`/api/media/peaks?url=${encodeURIComponent(url)}`),
   generate: (input) => apiRequest('/api/generate', { method: 'POST', body: JSON.stringify(input) }),

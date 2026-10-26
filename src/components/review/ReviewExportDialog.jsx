@@ -1,4 +1,5 @@
 import { Download, LoaderCircle, RotateCcw } from 'lucide-react';
+import { EXPORT_LOCK_TEXT } from '../../lib/export-lock.js';
 import { useEffect, useRef } from 'react';
 import { exportNotes, exportPrecheck, exportSummary, pendingRenderText, staleExportText } from '../../lib/review.js';
 import { ModalShell } from '../ModalShell';
@@ -6,7 +7,7 @@ import { ModalShell } from '../ModalShell';
 // 导出整集（handoff 第 2 节「导出」）。phase: check | running | done | failed。
 // 导出进行中可以关掉窗口，导出会继续，完成后由外面弹 toast「整集已导出」+「查看」。
 // precheck = GET /export-precheck 的结果（打开窗口时取）：{ loading, staleLineCount, missingAudioLineCount, staleLineIds, error }。
-export function ReviewExportDialog({ episodeLabel, phase, mixStale, markedCount, driftCount, precheck, sfxUnbound, breeze, progress, message, result, error, onStart, onFixStale, onReview, onClose }) {
+export function ReviewExportDialog({ episodeLabel, phase, mixStale, markedCount, driftCount, precheck, sfxUnbound, breeze, progress, message, result, error, locked = false, onStart, onFixStale, onReview, onClose }) {
   const check = exportPrecheck({ mixStale, markedCount, driftCount, staleLineCount: precheck?.staleLineCount || 0 });
   const checking = phase === 'check' && precheck?.loading;
   const notes = exportNotes({ sfxUnbound, breeze });
@@ -46,13 +47,14 @@ export function ReviewExportDialog({ episodeLabel, phase, mixStale, markedCount,
           <dt>响度</dt><dd>{summary.loudness}</dd>
           {summary.counts ? <><dt>内容</dt><dd>{summary.counts}</dd></> : null}
         </dl> : null}
+        {locked && phase !== 'running' && phase !== 'done' ? <p id="export-dialog-lock" className="export-lock-note" role="status">{EXPORT_LOCK_TEXT}</p> : null}
         {notes.map((note) => <p key={note} className="export-fixed-note">{note}</p>)}
       </div>
       <footer className="dialog-actions" ref={footerRef}>
         <button type="button" className="button ghost-button" onClick={onClose}>关闭</button>
-        {phase === 'check' && !checking && check.stale && onFixStale ? <button type="button" className="button secondary-button" onClick={onFixStale}>{check.stale.fix}</button> : null}
-        {phase === 'check' && !checking ? <button type="button" className="button primary-button" onClick={() => onStart(check.remixFirst)}>{check.primary}</button> : null}
-        {phase === 'failed' ? <button type="button" className="button primary-button" onClick={() => onStart(mixStale)}><RotateCcw size={13} />重试</button> : null}
+        {phase === 'check' && !checking && check.stale && onFixStale ? <button type="button" className="button secondary-button" disabled={locked} aria-describedby={locked ? 'export-dialog-lock' : undefined} onClick={onFixStale}>{check.stale.fix}</button> : null}
+        {phase === 'check' && !checking ? <button type="button" className="button primary-button" disabled={locked} aria-describedby={locked ? 'export-dialog-lock' : undefined} onClick={() => onStart(check.remixFirst)}>{check.primary}</button> : null}
+        {phase === 'failed' ? <button type="button" className="button primary-button" disabled={locked} aria-describedby={locked ? 'export-dialog-lock' : undefined} onClick={() => onStart(mixStale)}><RotateCcw size={13} />重试</button> : null}
         {phase === 'done' && result?.url ? <a className="button primary-button" href={`${result.url}${result.url.includes('?') ? '&' : '?'}download=${encodeURIComponent(result.name || 'episode.mp3')}`} download={result.name}><Download size={13} />下载 mp3</a> : null}
       </footer>
     </ModalShell>

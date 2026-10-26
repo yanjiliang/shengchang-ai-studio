@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, before, describe, test } from 'node:test';
 import { publicConfig, sanitizeConfig } from './config-store.js';
-import { activeTtsSettings, applyTtsUpdate, TTS_PROVIDER_IDS, TTS_UI_PRESETS } from './tts-providers.js';
+import { activeTtsSettings, applyTtsUpdate, TTS_PROVIDER_IDS, TTS_SLOT_FIELDS, TTS_UI_PRESETS, VOLCENGINE_DEFAULT_ENDPOINT } from './tts-providers.js';
 
 const DOUBAO_KEY = 'doubao-api-key-0123456789-xyz';
 const VOLC_URL = 'https://openspeech.bytedance.com/api/v3/tts/unidirectional';
@@ -55,11 +55,13 @@ describe('迁移：旧平铺配置 → ttsProviders', () => {
     assert.equal(config.resourceId, 'seed-tts-2.0');
   });
 
-  test('旧的 byte-* 引擎名 → 豆包槽，地址重置（与之前一致），Key 保留', () => {
-    const config = sanitizeConfig({ provider: 'byte-v3', endpoint: 'https://old.example/v3', accessKey: DOUBAO_KEY });
-    assert.equal(config.provider, 'volcengine-api-key');
-    assert.equal(config.endpoint, '');
-    assert.equal(config.accessKey, DOUBAO_KEY);
+  test('旧的 byte-v1 / byte-api-key → 豆包槽，地址置空（行为不变），Key 保留', () => {
+    for (const provider of ['byte-v1', 'byte-api-key']) {
+      const config = sanitizeConfig({ provider, endpoint: 'https://openspeech.bytedance.com/api/v1/tts', accessKey: DOUBAO_KEY });
+      assert.equal(config.provider, 'volcengine-api-key');
+      assert.equal(config.endpoint, '');
+      assert.equal(config.accessKey, DOUBAO_KEY);
+    }
   });
 
   test('text-model / sfx 字段不受影响', () => {
@@ -74,6 +76,62 @@ describe('迁移：旧平铺配置 → ttsProviders', () => {
     const config = sanitizeConfig(OLD_DOUBAO);
     assert.equal(activeTtsSettings(config), config.ttsProviders['volcengine-api-key']);
     assert.equal(activeTtsSettings({ ...config, provider: 'custom' }), config.ttsProviders.custom);
+  });
+});
+
+// 0041：旧 byte-v3 配置迁移后地址不再被清空（Tavi e2e4 报告 Bug 4）。
+const BYTE_V3_KEY = 'FAKE-byte-v3-key-0000000000-abc';
+const BYTE_V3_LLM_KEY = 'FAKE-llm-key-1111111111-def';
+const PROXY_URL = 'http://127.0.0.1:4190/api/v3/tts/unidirectional';
+// 0035 之前真实形状的 byte-v3 平铺配置（字段与当年的 DEFAULT_CONFIG 一致，假 Key）。
+const OLD_BYTE_V3 = { provider: 'byte-v3', endpoint: PROXY_URL, accessKey: BYTE_V3_KEY, resourceId: 'seed-tts-2.0', model: '', audioFormat: 'mp3', sampleRate: 24000, responseMode: 'auto', customHeaders: '{}', customBodyTemplate: '{"text":"{{text}}","voice_id":"{{voiceId}}","emotion":"{{emotion}}","speed":{{speed}}}', cacheLimitGb: 50, breezeEndpoint: 'http://127.0.0.1:4181', ttsStableSpeaker: true, llmEndpoint: 'http://127.0.0.1:9/v1', llmApiKey: BYTE_V3_LLM_KEY, llmModel: '', sfxProvider: 'demo' };
+const { endpoint: _dropped, ...OLD_BYTE_V3_NO_ENDPOINT } = OLD_BYTE_V3;
+const flatMirror = (config) => Object.fromEntries(TTS_SLOT_FIELDS.map((field) => [field, config[field]]));
+
+describe('迁移：旧 byte-v3 配置保留地址', () => {
+  const cases = [
+    ['显式地址（自建代理）', OLD_BYTE_V3, PROXY_URL],
+    ['没有地址', OLD_BYTE_V3_NO_ENDPOINT, VOLCENGINE_DEFAULT_ENDPOINT],
+    ['地址为空串', { ...OLD_BYTE_V3, endpoint: '' }, VOLCENGINE_DEFAULT_ENDPOINT],
+    ['地址是 wss://（HTTP 适配器用不了）', { ...OLD_BYTE_V3, endpoint: 'wss://openspeech.bytedance.com/api/v3/tts/bidirection' }, VOLCENGINE_DEFAULT_ENDPOINT],
+    ['地址前后有空格', { ...OLD_BYTE_V3, endpoint: `  ${PROXY_URL} ` }, PROXY_URL],
+  ];
+  for (const [name, old, expected] of cases) {
+    test(`${name} → 豆包槽 endpoint = ${expected}；Key / resourceId 在豆包槽；顶层 = 豆包槽；幂等`, () => {
+      const config = sanitizeConfig(old);
+      assert.equal(config.provider, 'volcengine-api-key');
+      const slot = config.ttsProviders['volcengine-api-key'];
+      assert.equal(slot.endpoint, expected);
+      assert.equal(slot.accessKey, BYTE_V3_KEY);
+      assert.equal(slot.resourceId, 'seed-tts-2.0');
+      assert.equal(slot.model, '');
+      assert.deepEqual(flatMirror(config), slot, '顶层平铺字段 = 当前（豆包）槽');
+      for (const id of ['demo', 'breeze', 'custom']) {
+        assert.equal(config.ttsProviders[id].endpoint, '', `${id} 槽没有拿到旧地址`);
+        assert.equal(config.ttsProviders[id].accessKey, '', `${id} 槽没有拿到 Key`);
+      }
+      assert.equal(config.llmApiKey, BYTE_V3_LLM_KEY);
+      assert.equal(config.breezeEndpoint, 'http://127.0.0.1:4181');
+      // 幂等：再 sanitize 一次、以及写盘格式（JSON）往返后再 sanitize，都完全相同。
+      assert.deepEqual(sanitizeConfig(config), config);
+      assert.deepEqual(sanitizeConfig(JSON.parse(JSON.stringify(config))), config);
+      // 对外：Key 不出现在 publicConfig 里。
+      const pub = JSON.stringify(publicConfig(config));
+      assert.ok(!pub.includes(BYTE_V3_KEY) && !pub.includes(BYTE_V3_LLM_KEY));
+    });
+  }
+
+  test('byte-v3 + 复刻模型：resourceId / model 进豆包槽', () => {
+    const config = sanitizeConfig({ ...OLD_BYTE_V3, resourceId: 'seed-icl-2.0' });
+    assert.equal(config.resourceId, 'seed-icl-2.0');
+    assert.equal(config.model, 'seed-tts-2.0-standard');
+    assert.equal(config.endpoint, PROXY_URL);
+  });
+
+  test('已迁移过的配置（有 ttsProviders）不再走 byte-v3 规则', () => {
+    const migrated = sanitizeConfig(OLD_BYTE_V3_NO_ENDPOINT);
+    const handEdited = { ...migrated, provider: 'byte-v3', ttsProviders: { ...migrated.ttsProviders, 'volcengine-api-key': { ...migrated.ttsProviders['volcengine-api-key'], endpoint: PROXY_URL } } };
+    assert.equal(sanitizeConfig(handEdited).endpoint, PROXY_URL);
   });
 });
 
@@ -213,3 +271,71 @@ describe('HTTP：旧配置里的豆包 Key 切到 Breeze 再切回来还在', ()
     assert.equal(moved.ttsProviders.custom.secretHint, '···789');
   });
 });
+
+// 0041：byte-v3 旧配置经过真实的配置接口（GET → 原样 PUT → 重启再 GET）地址仍在，Key 不丢不回传。
+for (const [name, old, expected] of [['显式地址', OLD_BYTE_V3, PROXY_URL], ['没有地址', OLD_BYTE_V3_NO_ENDPOINT, VOLCENGINE_DEFAULT_ENDPOINT]]) {
+  describe(`HTTP：旧 byte-v3 配置（${name}）读 → 存 → 重启再读，地址保留`, () => {
+    const scratch = mkdtempSync(path.join(tmpdir(), 'shengchang-bytev3-'));
+    const port = 20000 + Math.floor(Math.random() * 20000);
+    const base = `http://127.0.0.1:${port}`;
+    const configFile = path.join(scratch, '.shengchang', 'config.json');
+    let server;
+    const start = async () => {
+      server = spawn(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), 'index.js')], {
+        env: { ...process.env, HOME: scratch, SHENGCHANG_RUNTIME_DIR: path.join(scratch, 'runtime'), SHENGCHANG_API_PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let log = '';
+      server.stdout.on('data', (chunk) => { log += chunk; });
+      server.stderr.on('data', (chunk) => { log += chunk; });
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        try { if ((await fetch(`${base}/api/config`)).ok) return; } catch { /* not up yet */ }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      throw new Error(`服务没起来：${log}`);
+    };
+    const stop = () => new Promise((resolve) => { if (!server || server.exitCode !== null) return resolve(); server.once('exit', resolve); server.kill(); });
+    before(async () => {
+      mkdirSync(path.dirname(configFile), { recursive: true });
+      writeFileSync(configFile, JSON.stringify(old));
+      await start();
+    });
+    after(async () => { await stop(); rmSync(scratch, { recursive: true, force: true }); });
+    const get = () => fetch(`${base}/api/config`).then((r) => r.json());
+    const put = (body) => fetch(`${base}/api/config`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
+
+    test('GET：豆包、地址正确、有 Key 但不回传', async () => {
+      const config = await get();
+      assert.equal(config.provider, 'volcengine-api-key');
+      assert.equal(config.endpoint, expected);
+      assert.equal(config.ttsProviders['volcengine-api-key'].endpoint, expected);
+      assert.equal(config.hasAccessKey, true);
+      assert.equal(config.secretHint, '···abc');
+      assert.ok(!JSON.stringify(config).includes(BYTE_V3_KEY) && !JSON.stringify(config).includes(BYTE_V3_LLM_KEY));
+    });
+
+    test('设置页原样保存（整份草稿，Key 留空）→ 写盘后地址与 Key 都在、byte-v3 不再出现', async () => {
+      const saved = await put(await get());
+      assert.equal(saved.endpoint, expected);
+      assert.equal(saved.hasAccessKey, true);
+      const disk = JSON.parse(readFileSync(configFile, 'utf8'));
+      assert.equal(disk.provider, 'volcengine-api-key');
+      assert.equal(disk.endpoint, expected);
+      assert.equal(disk.ttsProviders['volcengine-api-key'].endpoint, expected);
+      assert.equal(disk.ttsProviders['volcengine-api-key'].accessKey, BYTE_V3_KEY);
+      assert.equal(disk.accessKey, BYTE_V3_KEY);
+      assert.equal(disk.llmApiKey, BYTE_V3_LLM_KEY);
+      for (const id of ['demo', 'breeze', 'custom']) assert.equal(disk.ttsProviders[id].accessKey, '', `${id} 槽没有 Key`);
+    });
+
+    test('重启后再读：地址仍在，文件不再变化（幂等）', async () => {
+      const before = readFileSync(configFile, 'utf8');
+      await stop();
+      await start();
+      const config = await get();
+      assert.equal(config.endpoint, expected);
+      assert.equal(config.hasAccessKey, true);
+      await put(config);
+      assert.equal(readFileSync(configFile, 'utf8'), before);
+    });
+  });
+}

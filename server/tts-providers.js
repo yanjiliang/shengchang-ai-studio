@@ -58,6 +58,19 @@ export function migrateFlatTts(input, provider) {
   return slots;
 }
 
+// 旧引擎名（0035 之前的 byte-*）迁到豆包槽时的地址。
+// 677f831 的本意是“迁移时用官方默认地址”（当时 DEFAULT_CONFIG.endpoint 就是它）；372c256 把 DEFAULT_CONFIG.endpoint
+// 改成 ''（全新安装默认 Demo）之后，这条迁移悄悄变成了“地址清空”。
+// - byte-v3：与现在的豆包 HTTP 接口同一代协议，用户填的 http(s) 地址（自建代理 / 内网转发）原样保留；
+//   没填、或不是 http(s)（例如 wss:// 双向流地址，HTTP 适配器用不了）→ 官方默认地址 VOLCENGINE_DEFAULT_ENDPOINT。
+// - byte-v1 / byte-api-key：行为不变（地址置空 = 适配器回落官方默认地址）。
+export const LEGACY_BYTE_PROVIDERS = ['byte-api-key', 'byte-v1', 'byte-v3'];
+export function legacyByteEndpoint(legacyProvider, endpoint) {
+  if (legacyProvider !== 'byte-v3') return '';
+  const value = String(endpoint ?? '').trim();
+  return /^https?:\/\/\S+$/i.test(value) ? value : VOLCENGINE_DEFAULT_ENDPOINT;
+}
+
 export function sanitizeTtsProviders(input, provider) {
   const stored = input?.ttsProviders;
   if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return migrateFlatTts(input || {}, provider);
@@ -94,7 +107,7 @@ const differs = (a, b) => String(a ?? '') !== String(b ?? '');
 // - Key / 请求头密钥：没给新值时，只有本槽规范化后的地址没变才沿用，否则清空（0034 规则，限本槽内）。
 export function applyTtsUpdate(current, body, { currentPublic, preserveSecret = true } = {}) {
   const requested = body.provider === undefined ? current.provider : String(body.provider);
-  const target = ['byte-api-key', 'byte-v1', 'byte-v3'].includes(requested) ? 'volcengine-api-key' : requested;
+  const target = LEGACY_BYTE_PROVIDERS.includes(requested) ? 'volcengine-api-key' : requested;
   const switching = target !== current.provider;
   const saved = current.ttsProviders?.[target] || sanitizeTtsSlot(target, {});
   const preset = TTS_UI_PRESETS[target] || {};

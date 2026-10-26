@@ -4,7 +4,7 @@ import path from 'node:path';
 import { validateProviderConfig } from './model-adapters.js';
 import { llmRequiresApiKey } from './story-analyzer.js';
 import { DEFAULT_ENGINE_CONCURRENCY, normalizeEngineConcurrency } from './breeze-lane.js';
-import { activeTtsSettings, publicTtsProviders, redactHeaders, sanitizeTtsProviders } from './tts-providers.js';
+import { activeTtsSettings, LEGACY_BYTE_PROVIDERS, legacyByteEndpoint, publicTtsProviders, redactHeaders, sanitizeTtsProviders } from './tts-providers.js';
 import { BREEZE_DEFAULT_ENDPOINT, BREEZE_DEFAULT_TIMEOUT_MS, normalizeBreezeEndpoint, normalizeBreezeTimeout } from './breeze.js';
 
 const CONFIG_DIR = path.join(homedir(), '.shengchang');
@@ -53,12 +53,12 @@ export const DEFAULT_CONFIG = {
 
 export function sanitizeConfig(input = {}) {
   const config = { ...DEFAULT_CONFIG, ...input };
-  const migratedLegacyProvider = ['byte-api-key', 'byte-v1', 'byte-v3'].includes(config.provider);
+  const migratedLegacyProvider = LEGACY_BYTE_PROVIDERS.includes(config.provider);
   const provider = migratedLegacyProvider
     ? 'volcengine-api-key'
     : String(config.provider || DEFAULT_CONFIG.provider);
   // TTS 按引擎分槽（tts-providers.js）。旧的平铺配置第一次读到时迁进对应槽；顶层平铺字段 = 当前引擎那一槽。
-  const ttsProviders = sanitizeTtsProviders(migratedLegacyProvider ? { ...config, endpoint: '' } : config, provider);
+  const ttsProviders = sanitizeTtsProviders(migratedLegacyProvider ? { ...config, endpoint: legacyByteEndpoint(config.provider, config.endpoint) } : config, provider);
   return {
     provider,
     ...activeTtsSettings({ provider, ttsProviders }),

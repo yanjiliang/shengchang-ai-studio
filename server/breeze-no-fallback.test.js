@@ -270,8 +270,9 @@ describe('情绪强度 0 = 不要情绪（只对 Breeze）', () => {
     assert.equal(breezeInstruction({ emotion: '愤怒', emotionScale: 0 }), '用略带一点愤怒的语气说。');
   });
 
-  test('请求：强度 0 → emotionScale 仍是 0.1（与 0036 相同）+ emotionOff 标记；1–100 / 缺省不带标记', () => {
-    assert.equal(request({}).emotionScale, 0.1);
+  test('请求：强度 0 → emotionScale 0.4（与 d6e0ad8 相同，豆包 / 自定义用）+ emotionOff 标记（Breeze 用）；1–100 / 缺省不带标记', () => {
+    assert.equal(request({}).emotionScale, 0.4);
+    assert.equal(request({ intensity: '0' }).emotionScale, 0.1, "d6e0ad8 里 '0' 是真值 → 0.1");
     assert.equal(request({}).emotionOff, true);
     assert.equal(request({ intensity: '0' }).emotionOff, true);
     for (const intensity of [1, 40, 100, '', undefined, null, 'abc']) assert.equal('emotionOff' in request({ intensity }), false, `intensity ${intensity}`);
@@ -367,14 +368,16 @@ describe('情绪强度 0 = 不要情绪（只对 Breeze）', () => {
   });
 });
 
-// 0038：豆包这一轮一个字都不能变。下面的期望值是在 a936049（0036）上实跑得到后硬编码的：
-// 指令（context_texts）、发出去的请求体、audioContentHash。
-describe('豆包不变：与 a936049 逐字相同（硬编码）', () => {
+// 0040：豆包 / 自定义引擎回到 0036 之前。下面的期望值是在 d6e0ad8（0036 之前）上实跑得到后硬编码的：
+// 指令（context_texts）、发出去的请求体、audioContentHash。强度 0 = 强度 40（d6e0ad8 的 `intensity || 40`），
+// 所以 0036 之前渲染的强度 0 台词缓存仍然命中。（强度 >100 和非数字 'abc' 照 0036 处理，与 d6e0ad8 不同，不在表里。）
+describe('豆包 / 自定义引擎：与 d6e0ad8（0036 之前）逐字相同（硬编码）', () => {
   const voiceMap = { a: 'zh_male_m191_uranus_bigtts' };
   const line = (intensity) => ({ id: 'g1', speakerId: 'a', text: '徒弟，为师腹中饥饿。', subtext: '旅途劳顿', emotion: '疲惫', pace: 85, distance: '近讲', intensity });
   const tail = '的语气说，语速放慢，句间多停顿一下，这句话的情绪来由是：旅途劳顿，保持当前基础音色稳定。';
   const golden = {
-    0: { emotionScale: 0.1, instruction: `用略带一点疲惫${tail}`, hash: '7fdb20d086619984f444b7a36529e0dde3eba582fc6b2ec38375a57a7216a521' },
+    0: { emotionScale: 0.4, instruction: `用比较疲惫${tail}`, hash: '441d9d26897908b3ba3c1c2741d32a8a49f74ae1439a598232a39b8d7e8a3e2a' },
+    '"0"': { emotionScale: 0.1, instruction: `用略带一点疲惫${tail}`, hash: '7fdb20d086619984f444b7a36529e0dde3eba582fc6b2ec38375a57a7216a521' },
     1: { emotionScale: 0.1, instruction: `用略带一点疲惫${tail}`, hash: '7fdb20d086619984f444b7a36529e0dde3eba582fc6b2ec38375a57a7216a521' },
     40: { emotionScale: 0.4, instruction: `用比较疲惫${tail}`, hash: '441d9d26897908b3ba3c1c2741d32a8a49f74ae1439a598232a39b8d7e8a3e2a' },
     100: { emotionScale: 1, instruction: `用特别特别疲惫${tail}`, hash: '35804bf501aa5ad153082a92e2cdf79b490688e513240d5ba7d2b0a8adca4dc9' },
@@ -382,9 +385,9 @@ describe('豆包不变：与 a936049 逐字相同（硬编码）', () => {
   };
   const hashConfig = { provider: 'volcengine-api-key', endpoint: 'https://openspeech.bytedance.com/api/v3/tts/unidirectional', model: '', resourceId: 'seed-tts-2.0', audioFormat: 'mp3', sampleRate: 24000, ttsStableSpeaker: true };
 
-  test('指令与 audioContentHash：强度 0 / 1 / 40 / 100 / 空', () => {
+  test('指令与 audioContentHash：强度 0 / \'0\' / 1 / 40 / 100 / 空', () => {
     for (const [intensity, expected] of Object.entries(golden)) {
-      const value = intensity === '' ? '' : Number(intensity);
+      const value = intensity === '' ? '' : intensity === '"0"' ? '0' : Number(intensity);
       const req = buildGenerationRequest(line(value), voiceMap);
       assert.equal(req.emotionScale, expected.emotionScale, `intensity ${JSON.stringify(value)}`);
       assert.deepEqual(voiceInstructions(req, { stableSpeaker: true }), [expected.instruction], `intensity ${JSON.stringify(value)}`);
@@ -395,7 +398,7 @@ describe('豆包不变：与 a936049 逐字相同（硬编码）', () => {
     assert.equal(audioContentHash(hashConfig, buildGenerationRequest(line(null), voiceMap)), golden[''].hash);
   });
 
-  test('发到（模拟）豆包的请求体：强度 0 / 1 / 40 / 100 / 空', async () => {
+  test('发到（模拟）豆包的请求体：强度 0 / \'0\' / 1 / 40 / 100 / 空', async () => {
     const bodies = [];
     const server = http.createServer((req, res) => { let body = ''; req.on('data', (chunk) => { body += chunk; }); req.on('end', () => { bodies.push(body); res.writeHead(500); res.end('x'); }); });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -403,11 +406,41 @@ describe('豆包不变：与 a936049 逐字相同（硬编码）', () => {
       const { synthesize } = await import('./model-adapters.js');
       const config = { ...hashConfig, endpoint: `http://127.0.0.1:${server.address().port}/tts`, accessKey: 'k' };
       for (const [intensity, expected] of Object.entries(golden)) {
-        const value = intensity === '' ? '' : Number(intensity);
+        const value = intensity === '' ? '' : intensity === '"0"' ? '0' : Number(intensity);
         await assert.rejects(synthesize(config, buildGenerationRequest(line(value), voiceMap)));
         const additions = JSON.stringify({ disable_markdown_filter: true, context_texts: [expected.instruction] });
         const body = `{"req_params":{"text":"徒弟，为师腹中饥饿。","speaker":"zh_male_m191_uranus_bigtts","audio_params":{"format":"mp3","sample_rate":24000,"speech_rate":-15},"additions":${JSON.stringify(additions)}}}`;
         assert.equal(bodies.at(-1), body, `intensity ${JSON.stringify(value)}`);
+      }
+    } finally { server.closeAllConnections?.(); await new Promise((resolve) => server.close(resolve)); }
+  });
+});
+
+describe('自定义引擎：与 d6e0ad8 逐字相同（硬编码）', () => {
+  const tpl = '{"text":"{{text}}","voice":"{{voiceId}}","emotion":"{{emotion}}","scale":{{emotionScale}},"speed":{{speed}},"instruction":"{{instruction}}"}';
+  const hashConfig = { provider: 'custom', endpoint: 'http://127.0.0.1:9/tts', model: 'm', resourceId: '', audioFormat: 'wav', sampleRate: 24000, customBodyTemplate: tpl };
+  const line = (intensity) => ({ id: 'g1', speakerId: 'a', text: '徒弟，为师腹中饥饿。', subtext: '旅途劳顿', emotion: '疲惫', pace: 85, distance: '近讲', intensity });
+  const tail = '的语气说，语速放慢，句间多停顿一下，这句话的情绪来由是：旅途劳顿，保持当前基础音色稳定。';
+  const body = (scale, degree) => `{"text":"徒弟，为师腹中饥饿。","voice":"v1","emotion":"疲惫","scale":${scale},"speed":0.85,"instruction":"用${degree}疲惫${tail}"}`;
+  const golden = [
+    [0, body(0.4, '比较'), '1083d04afad52481c628eb0064f5fcaf7b50195c50724516f2d38ac6cb8bb735'],
+    [40, body(0.4, '比较'), '1083d04afad52481c628eb0064f5fcaf7b50195c50724516f2d38ac6cb8bb735'],
+    [1, body(0.1, '略带一点'), '4dce7c37a3ec6cc4dbb8000efe5b70abf9d0e29be9bac7ea9c9ff10a98e20594'],
+    ['0', body(0.1, '略带一点'), '4dce7c37a3ec6cc4dbb8000efe5b70abf9d0e29be9bac7ea9c9ff10a98e20594'],
+  ];
+
+  test('请求体与 audioContentHash：强度 0 / 40 / 1 / \'0\'', async () => {
+    const bodies = [];
+    const server = http.createServer((req, res) => { let text = ''; req.on('data', (chunk) => { text += chunk; }); req.on('end', () => { bodies.push(text); res.writeHead(500); res.end('x'); }); });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const { synthesize } = await import('./model-adapters.js');
+      const config = { ...hashConfig, endpoint: `http://127.0.0.1:${server.address().port}/tts`, timeoutMs: 2000 };
+      for (const [intensity, expectedBody, expectedHash] of golden) {
+        const req = buildGenerationRequest(line(intensity), { a: 'v1' });
+        assert.equal(audioContentHash(hashConfig, req), expectedHash, `intensity ${JSON.stringify(intensity)}`);
+        await assert.rejects(synthesize(config, req));
+        assert.equal(bodies.at(-1), expectedBody, `intensity ${JSON.stringify(intensity)}`);
       }
     } finally { server.closeAllConnections?.(); await new Promise((resolve) => server.close(resolve)); }
   });

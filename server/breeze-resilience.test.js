@@ -262,8 +262,9 @@ describe('A 参考音注册并发合并', () => {
 });
 
 describe('情绪强度 0 与任务初始进度', () => {
-  test('buildGenerationRequest：强度 0 → 夹到 0.1（不再变成 0.4），1 → 夹到 0.1，缺省 → 0.4；语速 0 / 缺省 → 0.9', () => {
-    assert.equal(buildGenerationRequest({ id: 'a', intensity: 0 }, {}).emotionScale, 0.1);
+  test('buildGenerationRequest：强度 0 → 0.4（与 d6e0ad8 相同；Breeze 另走 emotionOff），\'0\' / 1 → 0.1，缺省 → 0.4；语速 0 / 缺省 → 0.9', () => {
+    assert.equal(buildGenerationRequest({ id: 'a', intensity: 0 }, {}).emotionScale, 0.4);
+    assert.equal(buildGenerationRequest({ id: 'a', intensity: 0 }, {}).emotionOff, true);
     assert.equal(buildGenerationRequest({ id: 'a', intensity: '0' }, {}).emotionScale, 0.1);
     assert.equal(buildGenerationRequest({ id: 'a', intensity: 1 }, {}).emotionScale, 0.1);
     assert.equal(buildGenerationRequest({ id: 'a', intensity: '' }, {}).emotionScale, 0.4);

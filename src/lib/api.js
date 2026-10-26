@@ -1,7 +1,8 @@
 async function apiRequest(path, options = {}) {
   const response = await fetch(path, { ...options, headers: options.body ? { 'Content-Type': 'application/json', ...options.headers } : options.headers });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
+  // 带上 status / code / field（400 LLM_CONFIG_INVALID 指明哪个输入框）/ 整个响应体（如 409 VOICE_NOT_READY 的 missingVoiceRoles）。
+  if (!response.ok) throw Object.assign(new Error(payload.error || payload.message || `请求失败 (${response.status})`), { status: response.status, code: payload.code || '', field: payload.field || '', payload });
   return payload;
 }
 

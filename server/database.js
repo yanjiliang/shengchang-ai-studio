@@ -260,7 +260,9 @@ export function audioContentHash(config, request) {
     // 只在出现时才加入：既有台词（无参考音、无显式 seed）的缓存键保持不变。
     // referenceHash = 角色参考音指纹（Breeze 参考音角色）；seed = 显式指定的生成种子。
     ...(request.referenceHash ? { referenceHash: request.referenceHash } : {}),
-    ...(Number.isSafeInteger(request.seed) ? { seed: request.seed } : {}) })).digest('hex');
+    ...(Number.isSafeInteger(request.seed) ? { seed: request.seed } : {}),
+    // 强度恰好 0 = 不要情绪：只改 Breeze 指令，所以只进 Breeze 的键；豆包 / 自定义的键与 0036 逐字相同。
+    ...(config.provider === 'breeze' && request.emotionOff === true ? { emotionOff: true } : {}) })).digest('hex');
 }
 
 // Generated sound effects / beds: same content-addressed cache, different key

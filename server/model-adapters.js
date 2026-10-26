@@ -194,21 +194,22 @@ export const BREEZE_INSTRUCTION_VERSION = 1;
 // 这句话本身不改变音色，只提示模型别跟着情绪跑偏。没有其他指令时不单独发送。
 export const STABLE_SPEAKER_CLAUSE = '保持当前基础音色稳定';
 
-// 情绪那一句（豆包 / Breeze 共用）：emotionScale 恰好 0（情绪强度 0）= 不要情绪，整句不写；
-// 缺省按 0.4；其余夹到 [0.1, 1] 后按 EMOTION_DEGREE 取程度词。没有情绪名也不写。
-export function emotionClause(request = {}) {
+// Breeze 的情绪那一句：与 voiceInstructions（豆包，0036 起未改）同一算法——emotionScale 缺省 0.4，
+// 夹到 [0.1, 1] 后按 EMOTION_DEGREE 取程度词。没有情绪名不写。
+function emotionClause(request) {
   if (!request.emotion) return '';
-  const raw = numberOr(request.emotionScale, 0.4);
-  if (raw === 0) return '';
-  const scale = Math.min(1, Math.max(0.1, raw));
+  const scale = Math.min(1, Math.max(0.1, numberOr(request.emotionScale, 0.4)));
   const degree = EMOTION_DEGREE.find((item) => scale >= item.min).word;
   return `用${degree}${request.emotion}的语气说`;
 }
 
 export function voiceInstructions(request, { stableSpeaker = true, pauseWording = true } = {}) {
   const fragments = [];
-  const emotion = emotionClause(request);
-  if (emotion) fragments.push(emotion);
+  if (request.emotion) {
+    const scale = Math.min(1, Math.max(0.1, numberOr(request.emotionScale, 0.4)));
+    const degree = EMOTION_DEGREE.find((item) => scale >= item.min).word;
+    fragments.push(`用${degree}${request.emotion}的语气说`);
+  }
   const pacing = pacingPhrase(request.speed, { pauseWording });
   if (pacing) fragments.push(pacing);
   const subtext = String(request.subtext || '').trim().slice(0, 100);
@@ -231,12 +232,15 @@ export function voiceInstructions(request, { stableSpeaker = true, pauseWording 
 export const BREEZE_INSTRUCTION_MAX_CHARS = 300;
 export function breezeInstruction(request = {}) {
   const parts = [];
-  const emotion = emotionClause(request);
+  // 强度恰好 0（request.emotionOff）= 不要情绪：情绪那句和潜台词（情绪来由）都不写，只留语速；
+  // 语速正常时什么都不剩 → ''（纯克隆）。
+  const emotionOff = request.emotionOff === true;
+  const emotion = emotionOff ? '' : emotionClause(request);
   if (emotion) parts.push(emotion);
   const speed = Number(request.speed) || 1;
   if (speed <= 0.9) parts.push('语速稍慢、从容');
   else if (speed >= 1.1) parts.push('语速加快，说得紧凑一些');
-  const subtext = String(request.subtext || '').trim().slice(0, 100);
+  const subtext = emotionOff ? '' : String(request.subtext || '').trim().slice(0, 100);
   if (subtext) parts.push(`这句话的情绪来由是：${subtext}`);
   if (!parts.length) return '';
   return Array.from(`${parts.join('，')}。`).slice(0, BREEZE_INSTRUCTION_MAX_CHARS).join('');

@@ -10,13 +10,15 @@ export function numberOr(value, fallback) {
   return Number.isFinite(number) ? number : fallback;
 }
 
-// 情绪强度 → emotionScale：恰好 0 = “不要情绪”（emotionScale 0，指令里不写情绪那句）；
-// 1–100 → 0.01–1 再夹到 [0.1, 1]；没填（undefined / null / '' / 非数字）按 40。
+// 情绪强度 → emotionScale：与 0036（a936049）逐字相同——没填（undefined / null / '' / 非数字）按 40，
+// 再除以 100 夹到 [0.1, 1]，所以强度 0 → 0.1。豆包的指令和缓存键都靠它，不能动。
 export function emotionScaleFor(intensity) {
-  const value = numberOr(intensity, 40);
-  if (value === 0) return 0;
-  return Math.min(1, Math.max(0.1, value / 100));
+  return Math.min(1, Math.max(0.1, numberOr(intensity, 40) / 100));
 }
+
+// 强度恰好 0 = “不要情绪”：只有 Breeze 用（breezeInstruction 只留语速那句；缓存键只在 Breeze 下带上它）。
+// 豆包 / 自定义引擎完全忽略这个标记。
+export const isEmotionOff = (intensity) => numberOr(intensity, 40) === 0;
 
 export function buildGenerationRequest(line, voiceMap) {
   return {
@@ -27,6 +29,7 @@ export function buildGenerationRequest(line, voiceMap) {
     subtext: line.subtext || '',
     emotion: line.emotion,
     emotionScale: emotionScaleFor(line.intensity),
+    ...(isEmotionOff(line.intensity) ? { emotionOff: true } : {}),
     // 语速 0 不是合法值（界面 70–120%），0 / 缺省都按 90%。
     speed: (numberOr(line.pace, 90) || 90) / 100,
     distance: line.distance || '',

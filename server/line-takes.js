@@ -162,7 +162,9 @@ export async function runLineTakeTask(task, config, { runGeneration }) {
       onLaneStart: () => markStarted('正在生成单句试听'),
     });
     // 缓存命中不进引擎通道：这里补一个 started，事件序列保持 queued → started → take → completed。
-    if (outcome.status !== 'cancelled') markStarted('命中缓存');
+    // 0043（e2e4 Bug 2）：只在真的拿到缓存音频时补。Breeze 预检失败（unreachable）或进通道前就失败时
+    // 根本没开始，不能报“开始 / 命中缓存”，事件序列只有 queued → failed；已轮到引擎的（onLaneStart）照旧有 started。
+    if (outcome.status === 'done' && outcome.results[0]?.cached) markStarted('命中缓存');
     if (outcome.status === 'cancelled' || getPersistentTask(task.id)?.cancelRequested) return finishCancelled();
     if (outcome.status === 'unreachable') throw Object.assign(new Error(outcome.error), { code: outcome.code, details: { causeCode: outcome.causeCode, completedLineCount: outcome.completedLineCount, remainingLineCount: outcome.remainingLineCount } });
     if (outcome.failures.length || !outcome.results.length) throw Object.assign(new Error(outcome.failures[0]?.error || '生成失败'), { code: outcome.failures[0]?.code || 'GENERATION_FAILED' });

@@ -38,6 +38,13 @@ describe('Breeze 预设走 custom 适配器', () => {
     assert.equal(audio.seed, 42, '没指定种子时服务用默认 42，并通过 X-Seed 告知');
   });
 
+  test('慢速台词：发给 Breeze 的指令只写程度、不写停顿', async () => {
+    await synthesize(breezeConfig(), { ...line, speed: 0.8 });
+    const { instruction } = mock.state.requests.at(-1).body;
+    assert.match(instruction, /语速稍慢、从容/);
+    assert.doesNotMatch(instruction, /停顿/);
+  });
+
   test('只有显式种子才进请求体', async () => {
     const audio = await synthesize(breezeConfig(), { ...line, seed: 7 });
     assert.equal(mock.state.requests.at(-1).body.seed, 7);

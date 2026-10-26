@@ -1,4 +1,4 @@
-import { TTS_INSTRUCTION_VERSION } from './model-adapters.js';
+import { BREEZE_INSTRUCTION_VERSION, TTS_INSTRUCTION_VERSION } from './model-adapters.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -109,7 +109,7 @@ export function createProject({ name = '未命名作品', genre = '', state = { 
 // between load and save would otherwise be erased by a stale snapshot. Keep
 // whatever the server already has, and mark a clip stale (instead of deleting
 // it) when the text it was synthesized from has changed.
-const AUDIO_FIELDS = ['audioUrl', 'audioMime', 'audioHash', 'generatedAt', 'synthesizedText'];
+const AUDIO_FIELDS = ['audioUrl', 'audioMime', 'audioHash', 'generatedAt', 'synthesizedText', 'audioEngine'];
 
 function mergeServerOwnedAudio(incomingState, currentState) {
   const currentLines = new Map();
@@ -237,7 +237,7 @@ export function deleteAudioCache(contentHash) {
 // 其他提供方不发指令，键保持原样（它们的缓存不受影响）。
 function ttsGeneratorKey(config) {
   // Breeze /tts 也收同一条情绪/节奏指令，措辞一改旧缓存同样要失效。
-  if (config.provider === 'breeze') return { instructionVersion: TTS_INSTRUCTION_VERSION };
+  if (config.provider === 'breeze') return { instructionVersion: TTS_INSTRUCTION_VERSION, breezeInstructionVersion: BREEZE_INSTRUCTION_VERSION };
   if (config.provider !== 'volcengine-api-key' || config.resourceId !== 'seed-tts-2.0') return {};
   return { instructionVersion: TTS_INSTRUCTION_VERSION, stableSpeaker: config.ttsStableSpeaker !== false };
 }

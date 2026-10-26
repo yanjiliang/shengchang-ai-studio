@@ -170,34 +170,35 @@ const EMOTION_DEGREE = [
   { min: 0, word: '略带一点' },
 ];
 
-// 只写程度，不写停顿（0010）：“句间多停顿”会让模型在句子内部插入长停顿、
-// 把一句话说断；句与句之间的气口改由混音层的句后停顿负责（shared/mix-defaults.mjs
-// 对慢速台词自动加长 gapAfterMs）。
-function pacingPhrase(speed) {
+// 豆包措辞保持原样（改了就要升 TTS_INSTRUCTION_VERSION，整批豆包缓存失效、重新计费）。
+// Breeze 只写程度、不写停顿：“句间多停顿”会让模型在句子内部插入长停顿、把一句话
+// 说断；Breeze 渲染的慢速台词改由混音层加长句后停顿（shared/mix-defaults.mjs）。
+function pacingPhrase(speed, { pauseWording = true } = {}) {
   const value = Number(speed) || 1;
-  if (value <= 0.9) return '语速稍慢、从容';
+  if (value <= 0.9) return pauseWording ? '语速放慢，句间多停顿一下' : '语速稍慢、从容';
   if (value >= 1.1) return '语速加快，说得紧凑一些';
   return '';
 }
 
 // 指令逻辑版本：措辞/拼装规则一改就要加一，它进音频缓存键（database.js
 // audioContentHash），旧指令生成的缓存自然失效，不会被当成新指令的结果复用。
-// 3（0010）：慢速措辞去掉停顿要求。
-export const TTS_INSTRUCTION_VERSION = 3;
+export const TTS_INSTRUCTION_VERSION = 2;
+// Breeze 专用措辞的版本（只进 Breeze 的缓存键，不影响豆包缓存）。1：慢速不写停顿。
+export const BREEZE_INSTRUCTION_VERSION = 1;
 
 // 稳定说话人从句（0001 之前就有，0005 恢复，配置 ttsStableSpeaker 控制，默认开）：
 // 实测未验证可导演的男声在情绪指令下会漂移（同一角色句间音高/音色不一致），
 // 这句话本身不改变音色，只提示模型别跟着情绪跑偏。没有其他指令时不单独发送。
 export const STABLE_SPEAKER_CLAUSE = '保持当前基础音色稳定';
 
-export function voiceInstructions(request, { stableSpeaker = true } = {}) {
+export function voiceInstructions(request, { stableSpeaker = true, pauseWording = true } = {}) {
   const fragments = [];
   if (request.emotion) {
     const scale = Math.min(1, Math.max(0.1, Number(request.emotionScale) || 0.4));
     const degree = EMOTION_DEGREE.find((item) => scale >= item.min).word;
     fragments.push(`用${degree}${request.emotion}的语气说`);
   }
-  const pacing = pacingPhrase(request.speed);
+  const pacing = pacingPhrase(request.speed, { pauseWording });
   if (pacing) fragments.push(pacing);
   const subtext = String(request.subtext || '').trim().slice(0, 100);
   if (subtext) fragments.push(`这句话的情绪来由是：${subtext}`);
@@ -250,7 +251,7 @@ async function synthesizeCustom(config, request) {
       emotionScale: request.emotionScale || 1, speed: request.speed || 1, model: config.model, resourceId: config.resourceId,
       subtext: request.subtext || '', distance: request.distance || '',
       // 同一套情绪/节奏指令（与豆包 seed-tts-2.0 同源，含 TTS_INSTRUCTION_VERSION）。
-      instruction: voiceInstructions(request, { stableSpeaker: config.breeze ? false : config.ttsStableSpeaker !== false })[0] || '',
+      instruction: voiceInstructions(request, config.breeze ? { stableSpeaker: false, pauseWording: false } : { stableSpeaker: config.ttsStableSpeaker !== false })[0] || '',
     });
     // Breeze 预设：显式种子（单句换种子重生成）才进请求体；没有就让服务用默认种子。
     if (config.breeze && Number.isSafeInteger(request.seed)) body = JSON.stringify({ ...JSON.parse(body), seed: request.seed });

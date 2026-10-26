@@ -306,6 +306,7 @@ describe('生成解析与影响范围', () => {
     assert.equal(audioContentHash(config, plain), audioContentHash(config, { ...plain, referenceHash: '', seed: undefined }), '没有参考/种子时键与旧版一致');
     assert.notEqual(audioContentHash(config, { ...plain, referenceHash: 'a'.repeat(64) }), audioContentHash(config, { ...plain, referenceHash: 'b'.repeat(64) }), '同一 voice id 下换参考文本/音频也必须换键');
     applyResultsToProject(projectId, 's1', outcome.results);
+    assert.ok(getProject(projectId).state.scenes[0].lines.every((item) => item.audioEngine === 'breeze'), '台词记下渲染引擎（混音层据此只对 Breeze 加长慢速停顿）');
     assert.equal(await estimateGeneration(config, buildGenerationRequests(getProject(projectId).state, { needGeneration: () => true }), { projectId }), 3, '预估走同样的解析，全部命中缓存');
   });
 

@@ -94,6 +94,7 @@ export function applyResultsToProject(projectId, sceneId, results) {
         audioMime: result.mime,
         audioHash: result.contentHash,
         generatedAt: result.createdAt,
+        ...(result.engine ? { audioEngine: result.engine } : {}),
         synthesizedText: result.synthesizedText,
         // The request captured the text at enqueue time. If the line has been
         // edited since, this fresh clip is already stale for the current text;
@@ -141,19 +142,19 @@ export async function runGenerationRequests(config, requests, { projectId, scene
         // meaning "when this audio was generated" — re-inserting it made every
         // cache hit look like a fresh render (0005).
         touchCachedAudio(contentHash);
-        results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: cached.url, mime: cached.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', cached: true, createdAt: Date.now() });
+        results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: cached.url, mime: cached.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', engine: config.provider || '', cached: true, createdAt: Date.now() });
       } else {
         const recovered = await recoverCachedAudioFromDisk(contentHash);
         if (recovered) {
           cacheAudio({ contentHash, url: recovered.url, mime: recovered.mime, provider: config.provider || '', model: config.model || '', voiceId: resolved.voiceId || '' });
-          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: recovered.url, mime: recovered.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', cached: true, createdAt: Date.now() });
+          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: recovered.url, mime: recovered.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', engine: config.provider || '', cached: true, createdAt: Date.now() });
         } else {
           if (resolved.referenceHash) await ensureReferenceRegistered(config, projectState.voiceReferences[request.speakerId]);
           const audio = await synthesizeLine(config, resolved);
           const extension = extensionForMime(audio.mime, config.audioFormat);
           const saved = await saveMedia(contentHash, extension, audio.buffer);
           cacheAudio({ contentHash, url: saved.url, mime: audio.mime, provider: config.provider || '', model: config.model || '', voiceId: resolved.voiceId || '' });
-          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: saved.url, mime: audio.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', cached: false, ...(Number.isSafeInteger(audio.seed) ? { seed: audio.seed } : {}), usage: audio.usage || null, usageExpected: config.provider === 'volcengine-api-key', createdAt: Date.now() });
+          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: saved.url, mime: audio.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', engine: config.provider || '', cached: false, ...(Number.isSafeInteger(audio.seed) ? { seed: audio.seed } : {}), usage: audio.usage || null, usageExpected: config.provider === 'volcengine-api-key', createdAt: Date.now() });
         }
       }
     } catch (error) {

@@ -21,7 +21,7 @@ import { buildGenerationRequests } from '../shared/generation-requests.mjs';
 import { getPersistentTask, getProject, updatePersistentTask, updateProject } from './database.js';
 import { exportProjectTimeline, inspectProjectMedia } from './media-store.js';
 import { analyzeNovel } from './story-analyzer.js';
-import { applyResultsToProject, runGenerationRequests, sumBilledCharacters } from './task-manager.js';
+import { applyResultsToProject, runGenerationRequests, summarizeBilling } from './task-manager.js';
 
 // Preset roster (design OQ1: hardcoded known-good voices, simple > clever).
 // Demo accepts any voice id (pitch derives from the string). 豆包预设按
@@ -265,11 +265,16 @@ export async function runOneClickPipeline(task, config, deps = {}) {
     let processed = 0;
     // 本集累计计费字数：存进 payload（浅合并），失败重试时累加而不是覆盖，
     // 因为失败那一轮已经付过费的句子在重试时走缓存、不会再返回 usage。
+    // 同理累计：新生成句数、缓存命中句数、缺 usage 的新生成句数。
     const recordBilled = (sceneResults) => {
-      const billed = sumBilledCharacters(sceneResults);
-      if (billed === null) return;
-      const prior = getPersistentTask(task.id)?.payload?.billedCharacters || 0;
-      updatePersistentTask(task.id, { payload: { billedCharacters: prior + billed } });
+      const summary = summarizeBilling(sceneResults);
+      const prior = getPersistentTask(task.id)?.payload || {};
+      updatePersistentTask(task.id, { payload: {
+        ...(summary.billedCharacters === null ? {} : { billedCharacters: (prior.billedCharacters || 0) + summary.billedCharacters }),
+        freshCount: (prior.freshCount || 0) + summary.freshCount,
+        cacheHits: (prior.cacheHits || 0) + summary.cacheHits,
+        missingUsageCount: (prior.missingUsageCount || 0) + summary.missingUsageCount,
+      } });
     };
     const byScene = new Map();
     for (const request of requests) {
@@ -320,13 +325,16 @@ export async function runOneClickPipeline(task, config, deps = {}) {
       project: getProject(task.projectId), targetLufs: config.targetLufs,
       shouldCancel, onProgress: ({ progress: percent, message }) => progress(86 + Math.round(percent * 0.13), `导出 · ${message}`),
     });
-    const attention = [...(getPersistentTask(task.id)?.payload?.castingNotes || []), ...buildAttentionList(getProject(task.projectId), media)];
+    const billing = getPersistentTask(task.id)?.payload || {};
+    const usageNotes = billing.missingUsageCount ? [`${billing.missingUsageCount} 句新生成的语音没有返回计费字数：计费字数 ${billing.billedCharacters ?? 0} 只是已知部分（服务端日志里有 [doubao-tts] 调试行）`] : [];
+    const attention = [...(billing.castingNotes || []), ...usageNotes, ...buildAttentionList(getProject(task.projectId), media)];
     const attentionNote = attention.length ? `\n需注意：\n${attention.join('\n')}` : '';
+    const cacheNote = billing.cacheHits ? `，${billing.cacheHits} 句复用缓存（未调用接口、不计费）` : '';
     done('导出');
     updatePersistentTask(task.id, {
       status: 'completed', progress: 100, completedAt: Date.now(),
-      message: `一键成片完成：${report.sceneCount} 个场景已导出${attention.length ? `，${attention.length} 项待处理` : ''}${attentionNote}`,
-      result: { url: report.url, name: report.name, sceneCount: report.sceneCount, durationMs: report.durationMs, attention, stages: completedStages, billedCharacters: getPersistentTask(task.id)?.payload?.billedCharacters ?? null },
+      message: `一键成片完成：${report.sceneCount} 个场景已导出${cacheNote}${attention.length ? `，${attention.length} 项待处理` : ''}${attentionNote}`,
+      result: { url: report.url, name: report.name, sceneCount: report.sceneCount, durationMs: report.durationMs, attention, stages: completedStages, billedCharacters: billing.billedCharacters ?? null, freshCount: billing.freshCount ?? 0, cacheHits: billing.cacheHits ?? 0, missingUsageCount: billing.missingUsageCount ?? 0 },
     });
   }
 }

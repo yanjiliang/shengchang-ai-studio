@@ -299,4 +299,22 @@ describe('runOneClickPipeline 阶段断点', () => {
     assert.equal(voiceMap.linxia, 'demo_female_1');
     assert.ok(getPersistentTask(task.id).payload.completedStages.includes('音色'));
   });
+  test('计费诚实：缓存命中与缺 usage 的句数进入结果，缺 usage 进入“需注意”', async () => {
+    const project = createProject({ name: '计费诚实', state: sceneState });
+    const task = createPersistentTask({ kind: 'one-click', projectId: project.id, payload: { completedStages: ['拆解', '音色'] } });
+    const base = { sceneId: 's1', url: '/media/fake.wav', mime: 'audio/wav', text: '你好。', synthesizedText: '你好。', contentHash: 'h', createdAt: 1 };
+    await runOneClickPipeline(task, { provider: 'volcengine-api-key', resourceId: 'seed-tts-2.0' }, {
+      runGeneration: async () => ({ status: 'done', failures: [], results: [
+        { ...base, lineId: 'l1', cached: false, usageExpected: true, usage: { billedCharacters: 3 } },
+        { ...base, lineId: 'l2', cached: false, usageExpected: true, usage: null },
+        { ...base, lineId: 'l3', cached: true },
+      ] }),
+      inspectMedia: async () => ({ scenes: [], projectDurationMs: 0 }),
+      exportTimeline: async () => ({ url: '/media/exports/b.mp3', name: 'b.mp3', sceneCount: 1, durationMs: 1 }),
+    });
+    const finished = getPersistentTask(task.id);
+    assert.deepEqual([finished.result.billedCharacters, finished.result.freshCount, finished.result.cacheHits, finished.result.missingUsageCount], [3, 2, 1, 1]);
+    assert.ok(finished.result.attention.some((item) => /1 句新生成的语音没有返回计费字数.*已知部分/.test(item)), JSON.stringify(finished.result.attention));
+    assert.match(finished.message, /1 句复用缓存/);
+  });
 });

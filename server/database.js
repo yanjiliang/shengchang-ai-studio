@@ -1,3 +1,4 @@
+import { TTS_INSTRUCTION_VERSION } from './model-adapters.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -51,6 +52,10 @@ database.exec(`
     created_at INTEGER NOT NULL
   );
 `);
+// 0005：created_at 只表示“这条缓存何时生成”；命中时只更新 last_used_at（LRU 用）。
+if (!database.prepare('PRAGMA table_info(audio_cache)').all().some((column) => column.name === 'last_used_at')) {
+  database.exec('ALTER TABLE audio_cache ADD COLUMN last_used_at INTEGER');
+}
 
 function parseJson(value, fallback) {
   try { return JSON.parse(value); } catch { return fallback; }
@@ -209,8 +214,13 @@ export function cacheAudio({ contentHash, url, mime, provider, model, voiceId })
     .run(contentHash, url, mime, provider, model, voiceId, Date.now());
 }
 
+// 命中缓存：只记录使用时间，不改 created_at（否则看起来像这次新生成的）。
+export function touchCachedAudio(contentHash) {
+  database.prepare('UPDATE audio_cache SET last_used_at=? WHERE content_hash=?').run(Date.now(), contentHash);
+}
+
 export function listAudioCache() {
-  return database.prepare('SELECT * FROM audio_cache ORDER BY created_at ASC').all();
+  return database.prepare('SELECT * FROM audio_cache ORDER BY COALESCE(last_used_at, created_at) ASC').all();
 }
 
 export function deleteAudioCache(contentHash) {
@@ -219,8 +229,16 @@ export function deleteAudioCache(contentHash) {
 
 // Every field that can change the synthesized audio must participate here;
 // missing fields cause stale cache hits, extra fields cause paid re-synthesis.
+// 生成逻辑进缓存键：豆包 seed-tts-2.0 的实际指令由 TTS_INSTRUCTION_VERSION 版本的
+// 拼装规则 + 稳定说话人开关决定，任一变化都必须重新合成，不能复用旧音频。
+// 其他提供方不发指令，键保持原样（它们的缓存不受影响）。
+function ttsGeneratorKey(config) {
+  if (config.provider !== 'volcengine-api-key' || config.resourceId !== 'seed-tts-2.0') return {};
+  return { instructionVersion: TTS_INSTRUCTION_VERSION, stableSpeaker: config.ttsStableSpeaker !== false };
+}
+
 export function audioContentHash(config, request) {
-  return createHash('sha256').update(JSON.stringify({ provider: config.provider, endpoint: config.endpoint, model: config.model, resourceId: config.resourceId, voiceId: request.voiceId, text: request.text, subtext: request.subtext, emotion: request.emotion, emotionScale: request.emotionScale, speed: request.speed, distance: request.distance, format: config.audioFormat, sampleRate: config.sampleRate })).digest('hex');
+  return createHash('sha256').update(JSON.stringify({ ...ttsGeneratorKey(config), provider: config.provider, endpoint: config.endpoint, model: config.model, resourceId: config.resourceId, voiceId: request.voiceId, text: request.text, subtext: request.subtext, emotion: request.emotion, emotionScale: request.emotionScale, speed: request.speed, distance: request.distance, format: config.audioFormat, sampleRate: config.sampleRate })).digest('hex');
 }
 
 // Generated sound effects / beds: same content-addressed cache, different key

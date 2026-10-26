@@ -41,14 +41,43 @@ function decodeBase64Audio(value) {
 
 // The v3 unidirectional endpoint answers with chunked NDJSON: one JSON object
 // per line, each carrying a base64 audio slice. Single-object responses stay
-// valid, so try the whole body first and only then fall back to line parsing.
-function parseJsonLines(text) {
+// valid, so try the whole body first and only then fall back to stream parsing.
+// The body is read in full (response.text()) before parsing, so a line split
+// across network reads can't lose an event. The scanner below also tolerates
+// CRLF, a missing trailing newline, several objects on one line ("}{") and
+// SSE-style "data: " prefixes; any other byte outside an object means the
+// body is not a JSON stream at all.
+export function parseJsonStream(text) {
   const payloads = [];
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try { payloads.push(JSON.parse(trimmed)); } catch { return null; }
+  let depth = 0; let start = -1; let inString = false; let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') { if (depth === 0) return null; inString = true; continue; }
+    if (char === '{') { if (depth === 0) start = index; depth += 1; continue; }
+    if (char === '}') {
+      if (depth === 0) return null;
+      depth -= 1;
+      if (depth === 0) {
+        try { payloads.push(JSON.parse(text.slice(start, index + 1))); } catch { return null; }
+      }
+      continue;
+    }
+    if (depth > 0) continue;
+    if (/\s/.test(char)) continue;
+    // SSE framing: "data:" before an object, "event:/id:" lines are ignored.
+    const rest = text.slice(index, index + 6);
+    if (rest.startsWith('data:')) { index += 4; continue; }
+    const lineEnd = text.indexOf('\n', index);
+    if (/^(event|id|retry):/.test(text.slice(index, index + 6))) { index = lineEnd < 0 ? text.length : lineEnd; continue; }
+    return null;
   }
+  if (depth !== 0) return null;
   return payloads.length ? payloads : null;
 }
 
@@ -67,6 +96,14 @@ function normalizeUsage(usage) {
   if (!usage || typeof usage !== 'object') return null;
   const billed = Number(usage.text_words ?? usage.textWords);
   return { ...usage, billedCharacters: Number.isFinite(billed) ? billed : null };
+}
+
+// 调试日志：豆包流正常结束却没带 usage。只记录事件数、code 序列和最后一个
+// 事件的键名（不记录音频、文本或任何请求头/密钥），方便对照原始响应。
+function logMissingUsage(payloads) {
+  const last = payloads[payloads.length - 1] || {};
+  const codes = [...new Set(payloads.map((item) => item?.code))].join('/');
+  console.warn(`[doubao-tts] 流结束但没有 usage：events=${payloads.length} codes=${codes} lastEventKeys=${Object.keys(last).join(',')}`);
 }
 
 // 音色代际 vs 模型资源校验：1.0 音色（*_mars_bigtts / *_moon_bigtts）不能用于
@@ -103,7 +140,7 @@ async function parseAudioResponse(response, config) {
   const text = await response.text();
   let payloads;
   try { payloads = [JSON.parse(text)]; }
-  catch { payloads = parseJsonLines(text); }
+  catch { payloads = parseJsonStream(text); }
   if (!payloads) throw new Error(`模型服务返回的响应不是有效 JSON: ${text.slice(0, 300)}`);
   const slices = [];
   let usage = null;
@@ -111,9 +148,12 @@ async function parseAudioResponse(response, config) {
     assertNoServiceError(payload);
     const base64 = extractBase64(payload);
     if (base64) slices.push(decodeBase64Audio(base64));
+    // usage 可能在结束事件里，也可能单独成一个事件（在 20000000 前后都有可能）：
+    // 取最后一个带 usage 的事件，不因为看到 20000000 就停止解析。
     if (payload?.usage) usage = normalizeUsage(payload.usage);
   }
   if (!slices.length) throw new Error('响应中没有找到音频数据，请检查响应方式和接口版本');
+  if (!usage && config.expectUsage) logMissingUsage(payloads);
   return { buffer: Buffer.concat(slices), mime: audioMime(config.audioFormat), usage };
 }
 
@@ -136,7 +176,16 @@ function pacingPhrase(speed) {
   return '';
 }
 
-export function voiceInstructions(request) {
+// 指令逻辑版本：措辞/拼装规则一改就要加一，它进音频缓存键（database.js
+// audioContentHash），旧指令生成的缓存自然失效，不会被当成新指令的结果复用。
+export const TTS_INSTRUCTION_VERSION = 2;
+
+// 稳定说话人从句（0001 之前就有，0005 恢复，配置 ttsStableSpeaker 控制，默认开）：
+// 实测未验证可导戏的男声在情绪指令下会漂移（同一角色句间音高/音色不一致），
+// 这句话本身不改变音色，只提示模型别跟着情绪跑偏。没有其他指令时不单独发送。
+export const STABLE_SPEAKER_CLAUSE = '保持当前基础音色稳定';
+
+export function voiceInstructions(request, { stableSpeaker = true } = {}) {
   const fragments = [];
   if (request.emotion) {
     const scale = Math.min(1, Math.max(0.1, Number(request.emotionScale) || 0.4));
@@ -147,6 +196,7 @@ export function voiceInstructions(request) {
   if (pacing) fragments.push(pacing);
   const subtext = String(request.subtext || '').trim().slice(0, 100);
   if (subtext) fragments.push(`这句话的情绪来由是：${subtext}`);
+  if (fragments.length && stableSpeaker) fragments.push(STABLE_SPEAKER_CLAUSE);
   return fragments.length ? [`${fragments.join('，')}。`] : [];
 }
 
@@ -154,7 +204,7 @@ async function synthesizeVolcengineApiKey(config, request) {
   assertVoiceMatchesResource(config.resourceId, request.voiceId);
   const timeout = requestTimeout();
   try {
-    const instructions = config.resourceId === 'seed-tts-2.0' ? voiceInstructions(request) : [];
+    const instructions = config.resourceId === 'seed-tts-2.0' ? voiceInstructions(request, { stableSpeaker: config.ttsStableSpeaker !== false }) : [];
     const response = await fetch(config.endpoint || 'https://openspeech.bytedance.com/api/v3/tts/unidirectional', {
       method: 'POST', signal: timeout.signal,
       headers: {
@@ -181,7 +231,7 @@ async function synthesizeVolcengineApiKey(config, request) {
         },
       }),
     });
-    return parseAudioResponse(response, config);
+    return parseAudioResponse(response, { ...config, expectUsage: true });
   } finally { timeout.clear(); }
 }
 

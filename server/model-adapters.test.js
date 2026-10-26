@@ -14,6 +14,21 @@ const WHOLE = Buffer.concat(SLICES);
 // 契约夹具：豆包 v3 unidirectional 的真实形状——音频分片 code=0，最后一个
 // 事件 code=20000000（正常结束）并携带 usage（请求头要求返回用量时）。
 const FIXTURE_STREAM = readFileSync(new URL('./fixtures/doubao-v3-stream.ndjson', import.meta.url), 'utf8');
+// 固定种子的伪随机数：切块方式每次一样，失败可复现。
+let seed = 20261026;
+const random = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+function writeInChunks(response, text, size) {
+  const bytes = Buffer.from(text, 'utf8');
+  let offset = 0;
+  const next = () => {
+    if (offset >= bytes.length) return response.end();
+    const end = Math.min(bytes.length, offset + size());
+    response.write(bytes.subarray(offset, end));
+    offset = end;
+    setImmediate(next);
+  };
+  next();
+}
 let lastRequest = null;
 let apiCalls = 0;
 
@@ -22,6 +37,39 @@ const routes = {
     response.writeHead(200, { 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked' });
     for (const line of FIXTURE_STREAM.split('\n').filter(Boolean)) response.write(`${line}\n`);
     response.end();
+  },
+  // 流形状鲁棒性（0005）：同一份夹具按不同方式切块/拼接。
+  '/fixture-tiny-chunks': (response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked' });
+    writeInChunks(response, FIXTURE_STREAM, () => 1 + Math.floor(random() * 7));
+  },
+  '/fixture-random-chunks': (response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked' });
+    writeInChunks(response, FIXTURE_STREAM, () => 1 + Math.floor(random() * 300));
+  },
+  '/fixture-no-trailing-newline': (response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(FIXTURE_STREAM.trimEnd());
+  },
+  '/fixture-crlf': (response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(FIXTURE_STREAM.split('\n').filter(Boolean).join('\r\n'));
+  },
+  '/fixture-concatenated': (response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(FIXTURE_STREAM.split('\n').filter(Boolean).join(''));
+  },
+  '/fixture-sse': (response) => {
+    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    response.end(FIXTURE_STREAM.split('\n').filter(Boolean).map((line) => `data: ${line}\n\n`).join(''));
+  },
+  '/usage-before-end': (response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end([{ code: 0, data: WHOLE.toString('base64') }, { code: 0, data: null, usage: { text_words: 7 } }, { code: 20000000, message: 'OK', data: null }].map((item) => JSON.stringify(item)).join('\n'));
+  },
+  '/usage-after-end': (response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end([{ code: 0, data: WHOLE.toString('base64') }, { code: 20000000, message: 'OK', data: null }, { code: 0, data: null, usage: { text_words: 9 } }].map((item) => JSON.stringify(item)).join('\n'));
   },
   '/end-without-usage': (response) => {
     response.writeHead(200, { 'Content-Type': 'application/json' });
@@ -135,7 +183,34 @@ describe('豆包语音响应解析', () => {
     await synthesize(config('/fixture-stream'), { ...request, emotion: '悲伤', emotionScale: 0.9 });
     const params = JSON.parse(lastRequest.body).req_params;
     assert.equal(params.model, undefined);
-    assert.deepEqual(JSON.parse(params.additions).context_texts, ['用特别特别悲伤的语气说。']);
+    assert.deepEqual(JSON.parse(params.additions).context_texts, ['用特别特别悲伤的语气说，保持当前基础音色稳定。']);
+  });
+
+  for (const path of ['/fixture-tiny-chunks', '/fixture-random-chunks', '/fixture-no-trailing-newline', '/fixture-crlf', '/fixture-concatenated', '/fixture-sse']) {
+    test(`流形状 ${path}：音频完整、usage 不丢`, async () => {
+      const result = await synthesize(config(path), request);
+      assert.deepEqual(result.buffer, WHOLE);
+      assert.equal(result.usage?.billedCharacters, 4);
+    });
+  }
+
+  test('usage 出现在非结束事件里也计入', async () => {
+    assert.equal((await synthesize(config('/usage-before-end'), request)).usage?.billedCharacters, 7);
+  });
+
+  test('usage 出现在 20000000 之后的独立事件里也计入', async () => {
+    assert.equal((await synthesize(config('/usage-after-end'), request)).usage?.billedCharacters, 9);
+  });
+
+  test('流结束但没有 usage 时写一条调试日志（只有事件键名，不含密钥）', async () => {
+    const original = console.warn;
+    const logged = [];
+    console.warn = (...args) => logged.push(args.join(' '));
+    try { await synthesize(config('/end-without-usage'), request); } finally { console.warn = original; }
+    assert.equal(logged.length, 1);
+    assert.match(logged[0], /没有 usage/);
+    assert.match(logged[0], /code,message,data/);
+    assert.doesNotMatch(logged[0], /test-key/);
   });
 
   test('结束事件没有 usage 时 usage 为 null', async () => {
@@ -171,18 +246,24 @@ describe('音色代际预检', () => {
 });
 
 describe('语音指令措辞（只写情绪 + 节奏）', () => {
+  const off = { stableSpeaker: false };
   test('情绪强度映射为口语化程度词', () => {
-    assert.deepEqual(voiceInstructions({ emotion: '愤怒', emotionScale: 0.6 }), ['用特别愤怒的语气说。']);
-    assert.deepEqual(voiceInstructions({ emotion: '开心', emotionScale: 0.2 }), ['用略带一点开心的语气说。']);
+    assert.deepEqual(voiceInstructions({ emotion: '愤怒', emotionScale: 0.6 }, off), ['用特别愤怒的语气说。']);
+    assert.deepEqual(voiceInstructions({ emotion: '开心', emotionScale: 0.2 }, off), ['用略带一点开心的语气说。']);
+  });
+
+  test('稳定说话人从句默认开启，可关；没有其他指令时不单独发', () => {
+    assert.deepEqual(voiceInstructions({ emotion: '愤怒', emotionScale: 0.6 }), ['用特别愤怒的语气说，保持当前基础音色稳定。']);
+    assert.deepEqual(voiceInstructions({ speed: 1 }), []);
   });
 
   test('语速进入节奏描述，潜台词作为情绪来由', () => {
-    assert.deepEqual(voiceInstructions({ emotion: '悲伤', emotionScale: 0.9, speed: 0.85, subtext: '被赶走前最后的哀求' }), ['用特别特别悲伤的语气说，语速放慢，句间多停顿一下，这句话的情绪来由是：被赶走前最后的哀求。']);
-    assert.deepEqual(voiceInstructions({ speed: 1.2 }), ['语速加快，说得紧凑一些。']);
+    assert.deepEqual(voiceInstructions({ emotion: '悲伤', emotionScale: 0.9, speed: 0.85, subtext: '被赶走前最后的哀求' }, off), ['用特别特别悲伤的语气说，语速放慢，句间多停顿一下，这句话的情绪来由是：被赶走前最后的哀求。']);
+    assert.deepEqual(voiceInstructions({ speed: 1.2 }, off), ['语速加快，说得紧凑一些。']);
   });
 
   test('不出现音色类措辞，距离不进指令', () => {
-    const [text] = voiceInstructions({ emotion: '悲伤', emotionScale: 0.9, speed: 0.8, distance: '远处' });
+    const [text] = voiceInstructions({ emotion: '悲伤', emotionScale: 0.9, speed: 0.8, distance: '远处' }, off);
     assert.doesNotMatch(text, /音色|耳语|沙哑|哭腔|距离|远处/);
   });
 

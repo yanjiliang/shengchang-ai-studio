@@ -2,7 +2,7 @@ import { access, stat, unlink, writeFile } from 'node:fs/promises';
 import { mergeAnalyzedCharacters } from './character-meta.js';
 import path from 'node:path';
 import { readConfig } from './config-store.js';
-import { audioContentHash, cacheAudio, createPersistentTask, deleteAudioCache, findCachedAudio, getPersistentTask, getProject, listAudioCache, listProjects, nextQueuedTask, requestTaskCancellation, soundContentHash, updatePersistentTask, updateProject } from './database.js';
+import { audioContentHash, cacheAudio, createPersistentTask, deleteAudioCache, findCachedAudio, getPersistentTask, getProject, listAudioCache, listProjects, touchCachedAudio, nextQueuedTask, requestTaskCancellation, soundContentHash, updatePersistentTask, updateProject } from './database.js';
 import { exportProjectTimeline, runtimePaths, saveMedia } from './media-store.js';
 import { synthesize, synthesizeSound } from './model-adapters.js';
 import { analyzeNovel } from './story-analyzer.js';
@@ -133,9 +133,10 @@ export async function runGenerationRequests(config, requests, { projectId, scene
       const contentHash = audioContentHash(config, resolved);
       const cached = findCachedAudio(contentHash);
       if (await validCache(cached)) {
-        // Re-insert to bump created_at: eviction removes the least recently
-        // *used* entries, not the least recently generated ones.
-        cacheAudio({ contentHash, url: cached.url, mime: cached.mime, provider: cached.provider, model: cached.model, voiceId: cached.voice_id });
+        // Hit: record last_used_at only (eviction is LRU). created_at must keep
+        // meaning "when this audio was generated" — re-inserting it made every
+        // cache hit look like a fresh render (0005).
+        touchCachedAudio(contentHash);
         results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: cached.url, mime: cached.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: true, createdAt: Date.now() });
       } else {
         const recovered = await recoverCachedAudioFromDisk(contentHash);
@@ -147,7 +148,7 @@ export async function runGenerationRequests(config, requests, { projectId, scene
           const extension = extensionForMime(audio.mime, config.audioFormat);
           const saved = await saveMedia(contentHash, extension, audio.buffer);
           cacheAudio({ contentHash, url: saved.url, mime: audio.mime, provider: config.provider || '', model: config.model || '', voiceId: resolved.voiceId || '' });
-          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: saved.url, mime: audio.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: false, usage: audio.usage || null, createdAt: Date.now() });
+          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: saved.url, mime: audio.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: false, usage: audio.usage || null, usageExpected: config.provider === 'volcengine-api-key', createdAt: Date.now() });
         }
       }
     } catch (error) {
@@ -162,6 +163,19 @@ export async function runGenerationRequests(config, requests, { projectId, scene
 export function sumBilledCharacters(results) {
   const billed = results.map((item) => item.usage?.billedCharacters).filter((value) => Number.isFinite(value));
   return billed.length ? billed.reduce((sum, value) => sum + value, 0) : null;
+}
+
+// 诚实的计费汇总：billedCharacters 只是“已知部分”之和；本该返回 usage
+// （豆包 API Key）却没返回的新生成句子单独计数，避免把部分和当成总数。
+// 缓存命中不调用接口、不计费，也单独计数。
+export function summarizeBilling(results) {
+  const fresh = results.filter((item) => !item.cached);
+  return {
+    billedCharacters: sumBilledCharacters(results),
+    freshCount: fresh.length,
+    cacheHits: results.length - fresh.length,
+    missingUsageCount: fresh.filter((item) => item.usageExpected && !Number.isFinite(item.usage?.billedCharacters)).length,
+  };
 }
 
 async function runGenerationTask(task, config) {
@@ -186,8 +200,9 @@ async function runGenerationTask(task, config) {
     if (!isDirectionLab) applyResultsToProject(task.projectId, task.sceneId, outcome.results);
     await evictAudioCacheIfNeeded(config.cacheLimitGb);
     const { results, failures } = outcome;
-    const cacheHits = results.filter((item) => item.cached).length;
-    const billedCharacters = sumBilledCharacters(results);
+    const { cacheHits, billedCharacters, freshCount, missingUsageCount } = summarizeBilling(results);
+    const billing = { cacheHits, billedCharacters, freshCount, missingUsageCount };
+    const usageNote = missingUsageCount ? `；${missingUsageCount} 句新生成的语音没有返回计费字数，计费字数只含已知部分` : '';
     if (failures.length) {
       // All-failed runs keep the failed status so one-click retry applies;
       // partial failures complete so the good audio lands in the project.
@@ -196,15 +211,15 @@ async function runGenerationTask(task, config) {
       const allFailed = !results.length;
       updatePersistentTask(task.id, {
         status: allFailed ? 'failed' : 'completed', progress: 100,
-        message: allFailed ? `生成失败：${failures.length} 句全部失败` : `生成完成：${results.length} 句成功，${failures.length} 句失败（任务历史可逐句查看）`,
+        message: allFailed ? `生成失败：${failures.length} 句全部失败` : `生成完成：${results.length} 句成功，${failures.length} 句失败（任务历史可逐句查看）${usageNote}`,
         error: allFailed ? failures[0].error : '',
-        result: { results, failures, cacheHits, billedCharacters }, completedAt: Date.now(),
+        result: { results, failures, ...billing }, completedAt: Date.now(),
       });
       return;
     }
     updatePersistentTask(task.id, { status: 'completed', progress: 100, message: isDirectionLab
       ? `方向对比已生成（${results.length} 组，可在检查器试听）`
-      : cacheHits ? `生成完成，复用了 ${cacheHits} 条缓存` : '语音已生成并写入项目', result: { results, cacheHits, billedCharacters }, completedAt: Date.now() });
+      : `${cacheHits ? `生成完成，复用了 ${cacheHits} 条缓存` : '语音已生成并写入项目'}${usageNote}`, result: { results, ...billing }, completedAt: Date.now() });
   } catch (error) {
     updatePersistentTask(task.id, { status: 'failed', message: '生成失败', error: error.name === 'AbortError' ? '模型请求超时' : error.message, completedAt: Date.now() });
   }
@@ -262,7 +277,7 @@ async function runTask(task) {
       let mime;
       let durationMs = Number(sound.durationMs) || 0;
       if (await validCache(cached)) {
-        cacheAudio({ contentHash, url: cached.url, mime: cached.mime, provider: config.sfxProvider || 'demo', model: config.sfxModel || '', voiceId: '' });
+        touchCachedAudio(contentHash);
         url = cached.url; mime = cached.mime;
       } else {
         const recovered = await recoverCachedAudioFromDisk(contentHash);

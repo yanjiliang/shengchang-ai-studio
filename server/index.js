@@ -211,7 +211,10 @@ app.post('/api/projects/:projectId/one-click-estimate', async (request, response
       requestCount: requests.length,
       unmappedVoiceCount: requests.length - mappable.length,
       characters: requests.reduce((sum, item) => sum + String(item.text || '').length, 0),
-      cacheHits: await estimateGeneration(config, mappable, { projectId: project.id }),
+      // 未绑定音色的句子要等 音色 阶段选角后才知道缓存键：它们的命中数是
+      // “未知”，不是 0。全部未绑定（还没选角）时 cacheHits 为 null。
+      cacheHits: mappable.length ? await estimateGeneration(config, mappable, { projectId: project.id }) : (requests.length ? null : 0),
+      cacheHitsUnknownCount: requests.length - mappable.length,
       needsLlm: !project.state.scenes?.length && !['demo'].includes(config.provider),
     });
   } catch (error) { next(error); }

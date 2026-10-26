@@ -21,6 +21,8 @@ export const DEFAULT_CONFIG = {
   customHeaders: '{}',
   customBodyTemplate: '{"text":"{{text}}","voice_id":"{{voiceId}}","emotion":"{{emotion}}","speed":{{speed}}}',
   cacheLimitGb: 50,
+  // seed-tts-2.0 指令末尾追加“保持当前基础音色稳定”（见 model-adapters.js）。
+  ttsStableSpeaker: true,
   targetLufs: -16,
   llmEndpoint: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
   llmApiKey: '',
@@ -57,6 +59,7 @@ function sanitizeConfig(input = {}) {
     customHeaders: String(config.customHeaders || '{}'),
     customBodyTemplate: String(config.customBodyTemplate || DEFAULT_CONFIG.customBodyTemplate),
     cacheLimitGb: Number(config.cacheLimitGb) || 50,
+    ttsStableSpeaker: config.ttsStableSpeaker !== false && config.ttsStableSpeaker !== 'false',
     targetLufs: Number(config.targetLufs) || -16,
     llmEndpoint: String(config.llmEndpoint || DEFAULT_CONFIG.llmEndpoint),
     llmApiKey: String(config.llmApiKey || ''),

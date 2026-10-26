@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { runtimePaths } from './media-store.js';
+import { sanitizeCharacters } from './character-meta.js';
 
 const DATABASE_PATH = path.join(path.dirname(runtimePaths.MEDIA_DIR), 'shengchang.sqlite');
 mkdirSync(path.dirname(DATABASE_PATH), { recursive: true });
@@ -93,7 +94,7 @@ export function createProject({ name = '未命名作品', genre = '', state = { 
   const id = randomUUID();
   const now = Date.now();
   database.prepare('INSERT INTO projects(id,name,genre,source_filename,source_text,state_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
-    .run(id, name.trim() || '未命名作品', genre, sourceFilename, sourceText, JSON.stringify(state), now, now);
+    .run(id, name.trim() || '未命名作品', genre, sourceFilename, sourceText, JSON.stringify(Array.isArray(state?.characters) ? { ...state, characters: sanitizeCharacters(state.characters, [], { trusted: true }) } : state), now, now);
   return getProject(id);
 }
 
@@ -129,6 +130,8 @@ export function updateProject(id, patch) {
   const currentState = parseJson(current.state_json, {});
   let state = patch.state ?? currentState;
   if (patch.state && !patch.trustedAudio) state = mergeServerOwnedAudio(patch.state, currentState);
+  // 角色性别/年龄：校验枚举；浏览器保存时来源由服务端推断（见 character-meta.js）。
+  if (patch.state && Array.isArray(state.characters)) state = { ...state, characters: sanitizeCharacters(state.characters, currentState.characters, { trusted: Boolean(patch.trustedAudio) }) };
   database.prepare('UPDATE projects SET name=?,genre=?,source_filename=?,source_text=?,state_json=?,updated_at=? WHERE id=?').run(
     patch.name ?? current.name,
     patch.genre ?? current.genre,

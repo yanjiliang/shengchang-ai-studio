@@ -16,6 +16,7 @@
 // Stage functions are called directly, reusing runGenerationRequests and
 // analyzeNovel in-process.
 import { voiceDirectability } from './directable-voices.js';
+import { mergeAnalyzedCharacters, normalizeAge, normalizeGender } from './character-meta.js';
 import { buildGenerationRequests } from '../shared/generation-requests.mjs';
 import { getPersistentTask, getProject, updatePersistentTask, updateProject } from './database.js';
 import { exportProjectTimeline, inspectProjectMedia } from './media-store.js';
@@ -46,6 +47,19 @@ const PRESET_VOICES = {
         { voiceId: 'zh_female_gufengshaoyu_uranus_bigtts', gender: 'female', age: null }, // 古风少御 2.0
         { voiceId: 'zh_male_m191_uranus_bigtts', gender: 'male', age: null }, // 云舟 2.0
         { voiceId: 'zh_female_popo_uranus_bigtts', gender: 'female', age: 'elder' }, // 婆婆 2.0
+        // 以下取自 instr-test2/tts2-instruction-voices.csv（公开列表标注“指令遵循”），
+        // 性别取自 id，年龄只按音色名里写明的（少年/青年/童声）；均未实测可导戏
+        // （directable-voices.json 未收录 = 未验证）。IP 角色音色（猴哥、唐僧、
+        // 猪八戒等）实测几乎不响应指令，不收。
+        { voiceId: 'zh_male_ruyaqingnian_uranus_bigtts', gender: 'male', age: 'young' }, // 儒雅青年 2.0
+        { voiceId: 'zh_male_yangguangqingnian_uranus_bigtts', gender: 'male', age: 'young' }, // 阳光青年 2.0
+        { voiceId: 'zh_male_shaonianzixin_uranus_bigtts', gender: 'male', age: 'teen' }, // 少年梓辛 2.0
+        { voiceId: 'zh_male_gaolengchenwen_uranus_bigtts', gender: 'male', age: null }, // 高冷沉稳 2.0
+        { voiceId: 'zh_male_baqiqingshu_uranus_bigtts', gender: 'male', age: null }, // 霸气青叔 2.0
+        { voiceId: 'zh_male_yuanboxiaoshu_uranus_bigtts', gender: 'male', age: null }, // 渊博小叔 2.0
+        { voiceId: 'zh_male_tiancaitongsheng_uranus_bigtts', gender: 'male', age: 'child' }, // 天才童声 2.0
+        { voiceId: 'zh_female_wenroushunv_uranus_bigtts', gender: 'female', age: null }, // 温柔淑女 2.0
+        { voiceId: 'zh_female_gaolengyujie_uranus_bigtts', gender: 'female', age: null }, // 高冷御姐 2.0
       ],
     },
     'seed-icl-2.0': null,
@@ -72,10 +86,15 @@ export function presetVoicesFor(provider, resourceId) {
 
 // 角色元数据：当前拆解提示词不产出性别/年龄，这里接受将来可能出现的
 // gender / age 字段（中英文都认），认不出就是 null，绝不从描述里猜。
-const GENDER_WORDS = { male: 'male', female: 'female', 男: 'male', 女: 'female', 男性: 'male', 女性: 'female' };
-const AGE_WORDS = { child: 'child', young: 'young', middle: 'middle', elder: 'elder', 儿童: 'child', 少年: 'young', 青年: 'young', 中年: 'middle', 老年: 'elder' };
-export function characterGender(character) { return GENDER_WORDS[String(character?.gender ?? '').trim().toLowerCase()] || null; }
-export function characterAge(character) { return AGE_WORDS[String(character?.age ?? '').trim().toLowerCase()] || null; }
+const GENDER_KEYS = { 男: 'male', 女: 'female' };
+const AGE_KEYS = { 儿童: 'child', 少年: 'teen', 青年: 'young', 中年: 'middle', 老年: 'elder' };
+// 用户在角色卡上设的值优先：重新拆解时 mergeAnalyzedCharacters 已保证用户值
+// 不会被拆解覆盖，所以这里直接读 character.gender / age 即可。
+export function characterGender(character) { return GENDER_KEYS[normalizeGender(character?.gender)] || null; }
+export function characterAge(character) { return AGE_KEYS[normalizeAge(character?.age)] || null; }
+// 年龄退路：明确相符 > 相邻段 > 年龄未知的音色；其余明确不符的不用。
+// 少年优先少年音色，退到青年，再退到未知，绝不用中年/老年。
+const AGE_ADJACENT = { teen: ['young'] };
 
 const NEUTRAL_EMOTIONS = new Set(['', '平静', '中性', '自然', '无', '正常']);
 // 每个角色“带表演指示的台词数”（有潜台词或非中性情绪）和总台词数。
@@ -90,6 +109,11 @@ export function directionDemand(scenes) {
   return demand;
 }
 
+export function voiceGenderFromId(voiceId) {
+  const match = /(?:^|_)(female|male)_/.exec(String(voiceId || ''));
+  return match ? match[1] : null;
+}
+
 const isNarratorCharacter = (character) => character.id === 'narrator' || character.role === '叙事者' || character.name === '旁白';
 const GENDER_LABEL = { male: '男', female: '女' };
 
@@ -98,7 +122,7 @@ const GENDER_LABEL = { male: '男', female: '女' };
 //
 // 规则：
 // 1. 角色有性别 → 只在同性别音色里选（音色性别未知的也算候选），绝不跨性别；
-//    角色有年龄 → 年龄明确相符的优先，其次年龄未知的，排除明确不符的；
+//    角色有年龄 → 明确相符 > 相邻段（少年→青年）> 年龄未知，排除明确不符的；
 //    全部明确不符时退回只按性别并记一条注意。
 // 2. 候选内：可导戏且未被占用的优先 → 未验证 → 不可导戏 → 都占满后复用最少用的。
 //    分配顺序按“带表演指示的台词数”降序，台词总数次之，所以可导戏音色给戏最重的角色。
@@ -109,6 +133,15 @@ export function planCasting(characters, voiceMap, provider, resourceId, { scenes
   const notes = [];
   if (!presets) return { assignments, notes };
   const pending = (characters || []).filter((character) => character?.id && !voiceMap?.[character.id]);
+  // 用户已绑定的音色绝不自动改；但角色性别已知、绑定音色的性别（从 id 的
+  // _female_/_male_ 看出）与之相反时提示一下。克隆音色等看不出性别的不提示。
+  const conflicts = (characters || []).filter((character) => {
+    const bound = character?.id && voiceMap?.[character.id];
+    const gender = characterGender(character);
+    const voiceGender = bound ? voiceGenderFromId(bound) : null;
+    return gender && voiceGender && gender !== voiceGender;
+  });
+  if (conflicts.length) notes.push(`${conflicts.length} 个角色已绑定的音色与角色性别不符（未自动改动）：${conflicts.map((item) => `${item.name || item.id}（${GENDER_LABEL[characterGender(item)]}）→ ${voiceMap[item.id]}`).join('、')}`);
   const hasVoiceMetadata = [presets.narrator, ...presets.cast].some((voice) => voice.gender);
   const anyGender = pending.some((character) => characterGender(character));
 
@@ -152,10 +185,12 @@ export function planCasting(characters, voiceMap, provider, resourceId, { scenes
     const sameGender = presets.cast.filter((voice) => !voice.gender || voice.gender === gender);
     if (!sameGender.length) { noMatch.push(`${character.name || character.id}（${GENDER_LABEL[gender]}）`); continue; }
     // 年龄：明确相符 > 未知 > 明确不符（只有全部明确不符时才退回并记注意）。
-    const exactAge = age ? sameGender.filter((voice) => voice.age === age) : [];
-    const ageOk = age ? sameGender.filter((voice) => !voice.age || voice.age === age) : sameGender;
-    if (!ageOk.length) ageFallback.push(character.name || character.id);
-    take(character, exactAge.length ? exactAge : ageOk.length ? ageOk : sameGender);
+    const tiers = age ? [[age], AGE_ADJACENT[age] || [], [null]] : [];
+    // 先找还有空闲音色的最优年龄档；都占满了才在最优档里复用。
+    const groups = tiers.map((ages) => sameGender.filter((voice) => ages.includes(voice.age ?? null)));
+    const pool = groups.find((group) => group.some((voice) => !usage.get(voice.voiceId))) || groups.find((group) => group.length);
+    if (age && !pool) ageFallback.push(character.name || character.id);
+    take(character, pool || sameGender);
   }
   if (unknown.length) notes.push(`${unknown.length} 个角色缺少性别信息，音色可能性别不符，请在角色音色页核对：${unknown.map((item) => item.name || item.id).join('、')}`);
   if (noMatch.length) notes.push(`${noMatch.length} 个角色没有同性别的预设音色，未自动绑定：${noMatch.join('、')}`);
@@ -197,7 +232,7 @@ export async function runOneClickPipeline(task, config, deps = {}) {
         shouldCancel,
       });
       if (shouldCancel()) throw cancelledError();
-      updateProject(task.projectId, { name: analyzed.name, genre: analyzed.genre, trustedAudio: true, state: { ...project.state, characters: analyzed.characters, scenes: analyzed.scenes, assets: project.state.assets || [], breakdown: analyzed.breakdown } });
+      updateProject(task.projectId, { name: analyzed.name, genre: analyzed.genre, trustedAudio: true, state: { ...project.state, characters: mergeAnalyzedCharacters(project.state.characters, analyzed.characters), scenes: analyzed.scenes, assets: project.state.assets || [], breakdown: analyzed.breakdown } });
       done('拆解');
     }
   }

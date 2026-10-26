@@ -8,6 +8,7 @@ import { after, describe, test } from 'node:test';
 const scratch = mkdtempSync(path.join(tmpdir(), 'shengchang-oneclick-test-'));
 process.env.SHENGCHANG_RUNTIME_DIR = scratch;
 const { createProject, createPersistentTask, getPersistentTask, getProject, updateProject } = await import('./database.js');
+const { buildSampleState } = await import('./sample-project.js');
 const { characterGender, directionDemand, flagUndirectableVoices, mapCharactersToPresets, planCasting, presetVoicesFor, runOneClickPipeline } = await import('./one-click.js');
 const { voiceGeneration } = await import('./model-adapters.js');
 const { buildGenerationRequests } = await import('../shared/generation-requests.mjs');
@@ -137,6 +138,39 @@ describe('按性别/年龄与戏份选角', () => {
     assert.deepEqual(notes, [], '还有年龄未知的同性别音色可用，不需要退回');
   });
 
+  test('少年优先少年音色，退到青年/未知，绝不用中年/老年', () => {
+    const teens = Array.from({ length: 6 }, (_unused, index) => ({ id: `t${index}`, name: `少年${index}`, gender: '男', age: '少年' }));
+    const { assignments } = planCasting(teens, {}, ...tts2, { scenes: [] });
+    const presets = presetVoicesFor(...tts2);
+    const ageOf = Object.fromEntries(presets.cast.map((voice) => [voice.voiceId, voice.age]));
+    assert.equal(assignments.t0, 'zh_male_shaonianzixin_uranus_bigtts');
+    for (const voiceId of Object.values(assignments)) assert.ok(!['middle', 'elder', 'child'].includes(ageOf[voiceId]), voiceId);
+    assert.equal(ageOf[assignments.t1], 'young', '少年音色用完后先退到青年');
+  });
+
+  test('西游记示例：男角色各拿不同音色，八戒拿中年音色', () => {
+    const state = buildSampleState();
+    const { assignments, notes } = planCasting(state.characters, {}, ...tts2, { scenes: state.scenes });
+    const male = ['tangseng', 'sunwukong', 'zhubajie', 'laoweng'];
+    for (const id of male) assert.equal(voiceGender(assignments[id]), 'male', id);
+    for (const id of ['shaonv', 'laoyu']) assert.equal(voiceGender(assignments[id]), 'female', id);
+    assert.equal(new Set(male.map((id) => assignments[id])).size, 4, JSON.stringify(assignments));
+    assert.equal(assignments.zhubajie, 'zh_male_qingcang_uranus_bigtts');
+    assert.equal(assignments.laoyu, 'zh_female_popo_uranus_bigtts');
+    assert.deepEqual(notes, []);
+  });
+
+  test('用户已绑定的音色不改，但性别冲突进注意事项', () => {
+    const { assignments, notes } = planCasting([
+      { id: 'tangseng', name: '唐僧', gender: '男' },
+      { id: 'laoyu', name: '老妪', gender: '女' },
+      { id: 'clone', name: '克隆', gender: '男' },
+    ], { tangseng: 'zh_female_vv_uranus_bigtts', laoyu: 'zh_female_popo_uranus_bigtts', clone: 'S_abc123' }, ...tts2, { scenes: [] });
+    assert.deepEqual(assignments, {});
+    assert.equal(notes.length, 1);
+    assert.match(notes[0], /1 个角色已绑定的音色与角色性别不符.*唐僧（男）→ zh_female_vv_uranus_bigtts/);
+  });
+
   test('完全没有性别信息：保持旧的轮换行为，并在注意事项说明', () => {
     const { assignments, notes } = planCasting([{ id: 'narrator', name: '旁白' }, { id: 'tangseng', name: '唐僧' }], {}, ...tts2, { scenes });
     assert.equal(assignments.tangseng, 'zh_female_vv_uranus_bigtts');
@@ -221,6 +255,18 @@ describe('runOneClickPipeline 阶段断点', () => {
     const finished = getPersistentTask(task.id);
     assert.match(finished.payload.castingNotes.join(), /唐僧/);
     assert.ok(finished.result.attention.some((item) => /缺少性别\/年龄信息/.test(item)), JSON.stringify(finished.result.attention));
+  });
+
+  test('一键成片重新拆解时保留用户设的性别/年龄（id 变了按名字匹配）', async () => {
+    const project = createProject({ name: '重拆', sourceText: '“走吧。”唐僧说。', state: { characters: [{ id: 'old-ts', name: '唐僧', gender: '男', genderSource: 'user', age: '青年' }], scenes: [], voiceMap: {} } });
+    const task = createPersistentTask({ kind: 'one-click', projectId: project.id, payload: { completedStages: ['音色', '生成'] } });
+    await runOneClickPipeline(task, { provider: 'demo' }, {
+      analyze: async () => ({ name: '重拆', genre: '', breakdown: 'heuristic', characters: [{ id: 'narrator', name: '旁白', role: '叙事者', gender: '未知', age: '未知' }, { id: '唐僧', name: '唐僧', role: '角色', gender: '女', age: '未知' }], scenes: [{ id: 's1', lines: [{ id: 'l1', type: 'dialogue', speaker: '唐僧', speakerId: '唐僧', text: '走吧。' }] }] }),
+      inspectMedia: async () => ({ scenes: [], projectDurationMs: 0 }),
+      exportTimeline: async () => ({ url: '/media/exports/x.mp3', name: 'x.mp3', sceneCount: 1, durationMs: 0 }),
+    });
+    const tangseng = getProject(project.id).state.characters.find((item) => item.name === '唐僧');
+    assert.deepEqual([tangseng.id, tangseng.gender, tangseng.genderSource, tangseng.age], ['唐僧', '男', 'user', '青年']);
   });
 
   test('生成阶段失败时保留断点，成功句写入项目', async () => {

@@ -1,6 +1,8 @@
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { validateProviderConfig } from './model-adapters.js';
+import { BREEZE_DEFAULT_ENDPOINT, BREEZE_DEFAULT_TIMEOUT_MS, normalizeBreezeEndpoint, normalizeBreezeTimeout } from './breeze.js';
 
 const CONFIG_DIR = path.join(homedir(), '.shengchang');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
@@ -21,6 +23,10 @@ export const DEFAULT_CONFIG = {
   customHeaders: '{}',
   customBodyTemplate: '{"text":"{{text}}","voice_id":"{{voiceId}}","emotion":"{{emotion}}","speed":{{speed}}}',
   cacheLimitGb: 50,
+  // 本地 Breeze-TTS-2 服务（provider: 'breeze'）。独立字段：切到 Breeze 不会
+  // 覆盖豆包的 endpoint/accessKey，切回豆包只改 provider。
+  breezeEndpoint: BREEZE_DEFAULT_ENDPOINT,
+  breezeTimeoutMs: BREEZE_DEFAULT_TIMEOUT_MS,
   // seed-tts-2.0 指令末尾追加“保持当前基础音色稳定”（见 model-adapters.js）。
   ttsStableSpeaker: true,
   targetLufs: -16,
@@ -38,7 +44,7 @@ export const DEFAULT_CONFIG = {
   sfxCustomBodyTemplate: '{"prompt":"{{prompt}}","duration":{{durationSec}}}',
 };
 
-function sanitizeConfig(input = {}) {
+export function sanitizeConfig(input = {}) {
   const config = { ...DEFAULT_CONFIG, ...input };
   const migratedLegacyProvider = ['byte-api-key', 'byte-v1', 'byte-v3'].includes(config.provider);
   const provider = migratedLegacyProvider
@@ -59,6 +65,8 @@ function sanitizeConfig(input = {}) {
     customHeaders: String(config.customHeaders || '{}'),
     customBodyTemplate: String(config.customBodyTemplate || DEFAULT_CONFIG.customBodyTemplate),
     cacheLimitGb: Number(config.cacheLimitGb) || 50,
+    breezeEndpoint: normalizeBreezeEndpoint(config.breezeEndpoint) || BREEZE_DEFAULT_ENDPOINT,
+    breezeTimeoutMs: normalizeBreezeTimeout(config.breezeTimeoutMs),
     ttsStableSpeaker: config.ttsStableSpeaker !== false && config.ttsStableSpeaker !== 'false',
     targetLufs: Number(config.targetLufs) || -16,
     llmEndpoint: String(config.llmEndpoint || DEFAULT_CONFIG.llmEndpoint),
@@ -85,6 +93,7 @@ export async function readConfig() {
 }
 
 export async function writeConfig(input) {
+  if (input?.breezeEndpoint !== undefined && !normalizeBreezeEndpoint(input.breezeEndpoint)) throw Object.assign(new Error('Breeze 服务地址无效：需要 http(s)://主机:端口 形式'), { status: 400 });
   const config = sanitizeConfig(input);
   await mkdir(CONFIG_DIR, { recursive: true, mode: 0o700 });
   const temporaryPath = `${CONFIG_PATH}.tmp`;
@@ -104,6 +113,9 @@ export function publicConfig(config) {
     } catch { return '{}'; }
   };
   safeCustomHeaders = redactHeaders(safeCustomHeaders);
+  // voiceReady：前端判断“能不能开始生成”的唯一依据（Breeze 没有凭证也就绪）。
+  let voiceReady = true;
+  try { validateProviderConfig(config); } catch { voiceReady = false; }
   return {
     ...config,
     customHeaders: safeCustomHeaders,
@@ -113,6 +125,7 @@ export function publicConfig(config) {
     hasAccessKey: Boolean(config.accessKey),
     hasLlmApiKey: Boolean(config.llmApiKey),
     hasSfxAccessKey: Boolean(config.sfxAccessKey),
+    voiceReady,
     llmSecretHint: config.llmApiKey ? `${config.llmApiKey.slice(0, 3)}••••${config.llmApiKey.slice(-3)}` : '',
     secretHint: config.accessKey ? `${config.accessKey.slice(0, 3)}••••${config.accessKey.slice(-3)}` : '',
     configPath: CONFIG_PATH,

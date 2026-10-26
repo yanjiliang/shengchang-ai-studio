@@ -233,12 +233,14 @@ export function deleteAudioCache(contentHash) {
 // 拼装规则 + 稳定说话人开关决定，任一变化都必须重新合成，不能复用旧音频。
 // 其他提供方不发指令，键保持原样（它们的缓存不受影响）。
 function ttsGeneratorKey(config) {
+  // Breeze /tts 也收同一条情绪/节奏指令，措辞一改旧缓存同样要失效。
+  if (config.provider === 'breeze') return { instructionVersion: TTS_INSTRUCTION_VERSION };
   if (config.provider !== 'volcengine-api-key' || config.resourceId !== 'seed-tts-2.0') return {};
   return { instructionVersion: TTS_INSTRUCTION_VERSION, stableSpeaker: config.ttsStableSpeaker !== false };
 }
 
 export function audioContentHash(config, request) {
-  return createHash('sha256').update(JSON.stringify({ ...ttsGeneratorKey(config), provider: config.provider, endpoint: config.endpoint, model: config.model, resourceId: config.resourceId, voiceId: request.voiceId, text: request.text, subtext: request.subtext, emotion: request.emotion, emotionScale: request.emotionScale, speed: request.speed, distance: request.distance, format: config.audioFormat, sampleRate: config.sampleRate })).digest('hex');
+  return createHash('sha256').update(JSON.stringify({ ...ttsGeneratorKey(config), provider: config.provider, endpoint: config.provider === 'breeze' ? config.breezeEndpoint : config.endpoint, model: config.model, resourceId: config.resourceId, voiceId: request.voiceId, text: request.text, subtext: request.subtext, emotion: request.emotion, emotionScale: request.emotionScale, speed: request.speed, distance: request.distance, format: config.audioFormat, sampleRate: config.sampleRate })).digest('hex');
 }
 
 // Generated sound effects / beds: same content-addressed cache, different key

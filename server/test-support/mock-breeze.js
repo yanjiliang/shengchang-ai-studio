@@ -1,0 +1,70 @@
+// Breeze-TTS-2 本地服务的模拟实现（只用于测试和本机联调，不发任何外部请求）。
+// 契约照 Tavi 的服务：JSON 请求体；成功 audio/wav + X-Seed；失败 400/500 纯文本；
+// 一次只处理一个生成（同时到达第二个生成请求时 inFlightPeak 会 >1，测试据此
+// 断言我们的排队确实是单飞）。
+import http from 'node:http';
+
+export function toneWav(seconds = 1, { sampleRate = 16000, frequency = 220 } = {}) {
+  const samples = Math.max(1, Math.floor(seconds * sampleRate));
+  const pcm = Buffer.alloc(samples * 2);
+  for (let index = 0; index < samples; index += 1) pcm.writeInt16LE(Math.round(Math.sin((2 * Math.PI * frequency * index) / sampleRate) * 0.2 * 32767), index * 2);
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0); header.writeUInt32LE(36 + pcm.length, 4); header.write('WAVEfmt ', 8); header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22); header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28); header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34); header.write('data', 36); header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+const GENERATION_PATHS = new Set(['/tts', '/voice_design', '/voice_clone', '/voice_direction']);
+
+export async function startMockBreeze({ port = 0, delayMs = 0, clipSeconds = 1.2 } = {}) {
+  const state = {
+    requests: [], voices: new Map(), inFlight: 0, inFlightPeak: 0, delayMs, clipSeconds,
+    // failNext: { path, status, text } —— 下一次命中该路径时返回错误。
+    failNext: null,
+    // hold: true 时生成请求挂起，直到调用 release()（用来测取消/排队）。
+    hold: false, held: [],
+  };
+  const release = () => { const pending = state.held.splice(0); for (const resume of pending) resume(); };
+  const server = http.createServer((request, response) => {
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', async () => {
+      const url = new URL(request.url, 'http://mock');
+      let body = null;
+      if (chunks.length) {
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { response.writeHead(400, { 'Content-Type': 'text/plain' }); return response.end('invalid json'); }
+      }
+      state.requests.push({ method: request.method, path: url.pathname, body, at: Date.now() });
+      const fail = state.failNext && state.failNext.path === url.pathname ? state.failNext : null;
+      if (fail) { state.failNext = null; response.writeHead(fail.status, { 'Content-Type': 'text/plain' }); return response.end(fail.text || 'mock failure'); }
+      if (url.pathname === '/voices' && request.method === 'GET') {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        return response.end(JSON.stringify([...state.voices.values()].map(({ id, transcript }) => ({ id, transcript }))));
+      }
+      if (url.pathname === '/voices' && request.method === 'POST') {
+        if (!body?.id || !body?.transcript || !(body.wav_base64 || body.wav_path)) { response.writeHead(400, { 'Content-Type': 'text/plain' }); return response.end('id, transcript and wav_path|wav_base64 are required'); }
+        state.voices.set(body.id, { id: body.id, transcript: body.transcript, bytes: body.wav_base64 ? Buffer.from(body.wav_base64, 'base64').length : 0 });
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        return response.end(JSON.stringify({ ok: true, id: body.id }));
+      }
+      if (request.method === 'POST' && GENERATION_PATHS.has(url.pathname)) {
+        if (!String(body?.text || '').trim()) { response.writeHead(400, { 'Content-Type': 'text/plain' }); return response.end('text is required'); }
+        if (url.pathname === '/tts' && body.voiceId && !state.voices.has(body.voiceId) && !String(body.voiceId).startsWith('preset-')) {
+          response.writeHead(400, { 'Content-Type': 'text/plain' }); return response.end(`unknown voiceId: ${body.voiceId}`);
+        }
+        state.inFlight += 1; state.inFlightPeak = Math.max(state.inFlightPeak, state.inFlight);
+        if (state.hold) await new Promise((resume) => state.held.push(resume));
+        if (state.delayMs) await new Promise((resume) => setTimeout(resume, state.delayMs));
+        state.inFlight -= 1;
+        const seed = Number.isSafeInteger(body.seed) ? body.seed : 42;
+        response.writeHead(200, { 'Content-Type': 'audio/wav', 'X-Seed': String(seed) });
+        return response.end(toneWav(state.clipSeconds, { frequency: 180 + (seed % 200) }));
+      }
+      response.writeHead(404, { 'Content-Type': 'text/plain' }); response.end('not found');
+    });
+  });
+  await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
+  const endpoint = `http://127.0.0.1:${server.address().port}`;
+  return { endpoint, state, release, close: () => new Promise((resolve) => { release(); server.closeAllConnections?.(); server.close(resolve); }) };
+}

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { breezeCustomConfig, breezeSettings, explainBreezeFailure, parseSeedHeader, upstreamError } from './breeze.js';
 
 function requestTimeout(timeoutMs = 90_000) {
   const controller = new AbortController();
@@ -236,18 +237,32 @@ async function synthesizeVolcengineApiKey(config, request) {
 }
 
 async function synthesizeCustom(config, request) {
-  const timeout = requestTimeout();
+  const timeout = requestTimeout(config.timeoutMs || 90_000);
   try {
     const headers = parseJsonObject(config.customHeaders, '自定义请求头');
     if (config.accessKey && !Object.values(headers).some((value) => String(value).includes(config.accessKey))) headers.Authorization ||= `Bearer ${config.accessKey}`;
-    const body = interpolateTemplate(config.customBodyTemplate, {
+    let body = interpolateTemplate(config.customBodyTemplate, {
       text: request.text, voiceId: request.voiceId, emotion: request.emotion || '',
       emotionScale: request.emotionScale || 1, speed: request.speed || 1, model: config.model, resourceId: config.resourceId,
       subtext: request.subtext || '', distance: request.distance || '',
+      // 同一套情绪/节奏指令（与豆包 seed-tts-2.0 同源，含 TTS_INSTRUCTION_VERSION）。
+      instruction: voiceInstructions(request, { stableSpeaker: config.breeze ? false : config.ttsStableSpeaker !== false })[0] || '',
     });
+    // Breeze 预设：显式种子（单句换种子重生成）才进请求体；没有就让服务用默认种子。
+    if (config.breeze && Number.isSafeInteger(request.seed)) body = JSON.stringify({ ...JSON.parse(body), seed: request.seed });
     const response = await fetch(config.endpoint, { method: 'POST', signal: timeout.signal, headers: { 'Content-Type': 'application/json', ...headers }, body });
-    return parseAudioResponse(response, config);
+    if (config.breeze && !response.ok) throw await upstreamError(response, '/tts');
+    const seed = parseSeedHeader(response.headers.get('x-seed'));
+    const audio = await parseAudioResponse(response, config);
+    return seed === null ? audio : { ...audio, seed };
   } finally { timeout.clear(); }
+}
+
+// Breeze-TTS-2 预设：走 custom 适配器，只是地址/模板/超时由预设给出。
+async function synthesizeBreeze(config, request) {
+  const custom = breezeCustomConfig(config);
+  try { return await synthesizeCustom(custom, request); }
+  catch (error) { throw explainBreezeFailure(error, { endpoint: breezeSettings(config).endpoint, timeoutMs: custom.timeoutMs }); }
 }
 
 function writeWavHeader(buffer, sampleRate = 24000, channels = 1) {
@@ -346,6 +361,8 @@ export async function synthesizeSound(config, request) {
 
 export function validateProviderConfig(config) {
   if (config.provider === 'demo') return;
+  // 本地 Breeze 服务不需要凭证，只要地址合法。
+  if (config.provider === 'breeze') { breezeSettings(config); return; }
   if (!config.endpoint) throw new Error('请填写接口地址');
   if (!config.accessKey) throw new Error('请填写访问凭证');
   if (config.provider === 'volcengine-api-key' && !config.resourceId) throw new Error('请选择豆包语音模型');
@@ -358,6 +375,7 @@ export async function synthesize(config, request) {
   if (config.provider === 'demo') return demoAudio(request, config);
   if (config.provider === 'volcengine-api-key') return synthesizeVolcengineApiKey(config, request);
   if (config.provider === 'custom') return synthesizeCustom(config, request);
+  if (config.provider === 'breeze') return synthesizeBreeze(config, request);
   throw new Error(`不支持的模型适配器: ${config.provider}`);
 }
 

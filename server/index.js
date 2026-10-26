@@ -13,6 +13,7 @@ import { seedSampleProject } from './sample-project.js';
 import { ensureBuiltinAssets, listBuiltinAssets } from './builtin-assets.js';
 import { recommendForEvent } from './asset-recommend.js';
 import { testLlm, validateLlmConfig } from './story-analyzer.js';
+import { registerBreezeRoutes } from './breeze-routes.js';
 
 const PORT = Number(process.env.SHENGCHANG_API_PORT || 4174);
 // Default binds loopback only. Docker sets SHENGCHANG_BIND_HOST=0.0.0.0 because
@@ -63,7 +64,10 @@ app.use('/media', express.static(runtimePaths.MEDIA_DIR, { fallthrough: false })
 
 app.get('/api/health', async (_request, response) => {
   const config = await readConfig();
-  response.json({ ok: true, provider: config.provider, configured: config.provider === 'demo' || Boolean(config.accessKey), ffmpeg: await probeFfmpeg() });
+  // configured 以适配器自己的校验为准：Breeze 无凭证也算已配置。
+  let configured = true;
+  try { validateProviderConfig(config); } catch { configured = false; }
+  response.json({ ok: true, provider: config.provider, configured, ffmpeg: await probeFfmpeg() });
 });
 app.get('/api/config', async (_request, response) => response.json(publicConfig(await readConfig())));
 // Redacted secret headers round-trip as __SAVED_SECRET__. Merge per key so
@@ -335,6 +339,7 @@ app.post('/api/tasks/:taskId/cancel', (request, response, next) => {
 app.post('/api/tasks/:taskId/retry', (request, response, next) => {
   try { response.status(202).json(retryTask(request.params.taskId)); } catch (error) { next(error); }
 });
+registerBreezeRoutes(app);
 // Unknown API routes must not fall through to the SPA fallback: apiRequest
 // would parse the HTML shell as `{}` and treat the call as a success.
 app.use('/api', (_request, response) => response.status(404).json({ error: '接口不存在' }));

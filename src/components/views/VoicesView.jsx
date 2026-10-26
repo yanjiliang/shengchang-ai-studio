@@ -1,7 +1,14 @@
 import { Check, LoaderCircle, LockKeyhole, Save, Search, Sparkles } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
-export function VoicesView({ characters, voiceMap, voiceDesignConfig, onDesignVoice, onSetVoice, onToast }) {
+// Field names and values are the casting contract with the server's one-click
+// voice assignment: user-set values win over the analyzer's guesses.
+// Stored values are the same Chinese words the story analyzer writes.
+export const GENDER_OPTIONS = ['男', '女', '未知'];
+export const AGE_OPTIONS = ['儿童', '少年', '青年', '中年', '老年', '未知'];
+const normalize = (options, value) => (options.includes(value) ? value : '未知');
+
+export function VoicesView({ characters, voiceMap, voiceDesignConfig, onDesignVoice, onSetVoice, onUpdateCharacter, onToast }) {
   const [selectedId, setSelectedId] = useState(characters[0]?.id || 'narrator');
   const [designing, setDesigning] = useState(false);
   const [query, setQuery] = useState('');
@@ -36,9 +43,14 @@ export function VoicesView({ characters, voiceMap, voiceDesignConfig, onDesignVo
         <aside className="voice-detail">
           <div className="detail-top"><div className="detail-avatar" style={{ '--avatar-color': selected.color || 'var(--color-accent)' }}>{selected.name.slice(0, 1)}</div><div><span>{selected.role}</span><h3>{selected.name}</h3><p>{configuredVoiceId || '尚未绑定真实 voice_id'}</p></div></div>
           <div className={`voice-lock-banner ${configuredVoiceId ? '' : 'is-unconfigured'}`}><LockKeyhole size={15} /><span><strong>{configuredVoiceId ? '真实音色身份已锁定' : '角色音色尚未完成'}</strong><small>{configuredVoiceId ? '所有场景固定使用这个 voice_id' : '填写控制台音色库中的 speaker_id / voice_id 后锁定到当前作品'}</small></span></div>
+          <div className="casting-fields">
+            <label className="setting-field"><span>性别</span><select aria-label={`${selected.name}的性别`} value={normalize(GENDER_OPTIONS, selected.gender)} onChange={(event) => onUpdateCharacter(selected.id, { gender: event.target.value })}>{GENDER_OPTIONS.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+            <label className="setting-field"><span>年龄段</span><select aria-label={`${selected.name}的年龄段`} value={normalize(AGE_OPTIONS, selected.age)} onChange={(event) => onUpdateCharacter(selected.id, { age: event.target.value })}>{AGE_OPTIONS.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+          </div>
+          <p className="casting-hint">一键成片按性别和年龄段匹配预设音色；这里标注的值优先于自动拆解的判断。</p>
           <label className="setting-field voice-id-field"><span>豆包 speaker_id / voice_id</span><input value={voiceId} placeholder="填写角色固定使用的音色 ID" onChange={(event) => setVoiceId(event.target.value)} /></label>
           <button className="button primary-button full-button" type="button" disabled={!voiceId.trim() || voiceId.trim() === configuredVoiceId} onClick={() => { onSetVoice(selected.id, voiceId.trim()); onToast(`已绑定 ${selected.name} 的 voice_id`); }}><Save size={14} />保存 voice_id</button>
-          <dl className="voice-facts"><div><dt>角色定位</dt><dd>{selected.role || '角色'}</dd></div><div><dt>项目音色</dt><dd>{configuredVoiceId ? '已锁定' : '待配置'}</dd></div><div><dt>角色 ID</dt><dd>{selected.id}</dd></div><div><dt>一致性策略</dt><dd>固定 ID</dd></div></dl>
+          <dl className="voice-facts"><div><dt>角色定位</dt><dd>{selected.role || '角色'}</dd></div><div><dt>性别 · 年龄</dt><dd>{normalize(GENDER_OPTIONS, selected.gender)} · {normalize(AGE_OPTIONS, selected.age)}</dd></div><div><dt>项目音色</dt><dd>{configuredVoiceId ? '已锁定' : '待配置'}</dd></div><div><dt>角色 ID</dt><dd>{selected.id}</dd></div><div><dt>一致性策略</dt><dd>固定 ID</dd></div></dl>
           <section className="voice-description"><div className="section-caption">声音圣经</div><p>{selected.description}</p><div className="voice-boundary"><span>表演边界</span><p>允许情绪变化，但保持共鸣位置、发声年龄与句尾习惯稳定。高强度情绪优先改变气息与节奏，不改变基础音色。</p></div></section>
           <div className="voice-actions"><button className="button secondary-button full-button" type="button" disabled={designing || !voiceId.trim() || voiceDesignConfig?.provider !== 'volcengine-api-key'} onClick={design}><Sparkles size={15} />{designing ? '正在提交' : '设计当前音色'}</button><p>先填写控制台预创建的音色槽位 speaker_id。音色设计复用“模型连接”中的新版 API Key，并会消耗控制台额度。</p></div>
         </aside>

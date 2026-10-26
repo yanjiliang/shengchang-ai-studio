@@ -401,7 +401,7 @@ export async function estimateBillableCharacters(config, requests, { projectId }
     const resolved = { ...request, text: applyPronunciation(request.text, projectDictionary) };
     if (!(await validCache(findCachedAudio(audioContentHash(config, resolved))))) billable += length;
   }
-  return { estimatedBillableCharacters: mapped ? billable : null, unknownCharacters: unknown };
+  return { estimatedBillableCharacters: (mapped || requests.length === 0) ? billable : null, unknownCharacters: unknown };
 }
 
 export function retryTask(taskId) {

@@ -222,7 +222,7 @@ describe('逐句结果带实际音色 + 净计费预估（0007）', () => {
     assert.equal(recovered.results[0].voiceId, 'zh_female_vv_uranus_bigtts');
   });
 
-  test('estimateBillableCharacters：已知命中不计，未绑定音色单列，全未绑定为 null', async () => {
+  test('estimateBillableCharacters：已知命中不计，未绑定音色单列，全未绑定为 null，无待渲染为 0', async () => {
     const { estimateBillableCharacters } = await import('./task-manager.js');
     const project = createProject({ name: '净预估', state: stateWith([]) });
     const config = { provider: 'volcengine-api-key', resourceId: 'seed-tts-2.0', audioFormat: 'mp3', sampleRate: 24000 };
@@ -232,6 +232,6 @@ describe('逐句结果带实际音色 + 净计费预估（0007）', () => {
     const noVoice = { lineId: 'e3', sceneId: 'scene-1', voiceId: '', text: '没绑音色。' }; // 5 字
     assert.deepEqual(await estimateBillableCharacters(config, [cachedLine, freshLine, noVoice], { projectId: project.id }), { estimatedBillableCharacters: 10, unknownCharacters: 5 });
     assert.deepEqual(await estimateBillableCharacters(config, [noVoice], { projectId: project.id }), { estimatedBillableCharacters: null, unknownCharacters: 5 });
-    assert.deepEqual(await estimateBillableCharacters(config, [], { projectId: project.id }), { estimatedBillableCharacters: null, unknownCharacters: 0 });
+    assert.deepEqual(await estimateBillableCharacters(config, [], { projectId: project.id }), { estimatedBillableCharacters: 0, unknownCharacters: 0 });
   });
 });

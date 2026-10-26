@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
@@ -359,6 +360,7 @@ async function renderTimeline(scene, output, { targetLufs = -16, normalize = tru
 }
 
 export async function exportSceneTimeline({ projectId, scene, targetLufs = -16 }) {
+  assertDialogueFilesPresent([scene]);
   await ensureRuntime();
   const safeTitle = String(scene.title || '未命名场景').replace(/[\\/:*?"<>|]/g, '-');
   const output = path.join(EXPORT_DIR, `${safeId(projectId)}-${safeId(scene.id)}-${safeTitle}.mp3`);
@@ -377,11 +379,34 @@ export async function renderScenePreview({ projectId, scene }) {
   return { url: `/media/exports/${path.basename(output)}`, name: path.basename(output), durationMs: rendered.durationMs, trackCount: rendered.tracks.length, missingLineIds: rendered.missing };
 }
 
+// B4（e2e6）：台词有 audioUrl 但文件已不在磁盘上时，导出不能悄悄少一句。没有 audioUrl 的句子
+// 照旧跳过（导出预检的 missingAudioLineCount 会提前提示）；文件丢失的直接拒绝导出并列出是哪几句。
+export function missingDialogueFiles(scenes) {
+  const missing = [];
+  for (const scene of scenes || []) for (const line of scene.lines || []) {
+    if (line.type !== 'dialogue' || !line.audioUrl) continue;
+    if (!existsSync(mediaPath(line.audioUrl))) missing.push({ sceneId: scene.id, lineId: line.id, speaker: line.speaker || '', text: String(line.text || '').slice(0, 20) });
+  }
+  return missing;
+}
+
+export function assertDialogueFilesPresent(scenes) {
+  const missing = missingDialogueFiles(scenes);
+  if (!missing.length) return;
+  const sample = missing.slice(0, 3).map((item) => `${item.speaker ? `${item.speaker}：` : ''}「${item.text}」`).join('、');
+  const error = new Error(`有 ${missing.length} 句台词的音频文件不见了（${sample}${missing.length > 3 ? ' 等' : ''}），请先重新生成这几句再导出`);
+  error.code = 'AUDIO_FILE_MISSING';
+  error.status = 409;
+  error.details = { missingFileLines: missing };
+  throw error;
+}
+
 export async function exportProjectTimeline({ project, targetLufs = -16, onProgress, shouldCancel }) {
   await ensureRuntime();
   const renderedScenes = [];
   const eligible = (project.state.scenes || []).filter((scene) => scene.lines?.some((line) => line.type === 'dialogue' && line.audioUrl));
   if (!eligible.length) throw new Error('整部作品没有可导出的对白音频');
+  assertDialogueFilesPresent(eligible);
   const manifest = path.join(EXPORT_DIR, `${safeId(project.id)}-episode-concat.txt`);
   try {
     for (let index = 0; index < eligible.length; index += 1) {

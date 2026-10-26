@@ -306,7 +306,7 @@ describe('导出前检查 GET /api/projects/:projectId/export-precheck', () => {
     const url = `/api/projects/${projectId}/export-precheck`;
     const clean = await api(url);
     assert.equal(clean.status, 200);
-    assert.deepEqual(clean.body, { projectId, sceneId: null, dialogueLineCount: 3, staleLineCount: 0, staleLines: [], missingAudioLineCount: 2, pendingLineCount: 2, pendingCharCount: clean.body.pendingCharCount, ok: false });
+    assert.deepEqual(clean.body, { projectId, sceneId: null, dialogueLineCount: 3, staleLineCount: 0, staleLines: [], missingAudioLineCount: 2, missingFileLineCount: 0, missingFileLines: [], pendingLineCount: 2, pendingCharCount: clean.body.pendingCharCount, ok: false });
     const missingChars = clean.body.pendingCharCount;
     assert.ok(missingChars > 0);
     const original = getProject(projectId).state;

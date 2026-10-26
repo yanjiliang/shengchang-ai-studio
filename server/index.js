@@ -8,7 +8,7 @@ import { publicConfig, readConfig, writeConfig } from './config-store.js';
 import { TTS_SLOT_FIELDS, applyTtsUpdate } from './tts-providers.js';
 import { archiveProject, createProject, getProject, listPersistentTasks, listProjects, updateProject } from './database.js';
 import { designVoice, validateProviderConfig, validateSoundConfig } from './model-adapters.js';
-import { ensureRuntime, exportSceneTimeline, extractPeaks, inspectProjectMedia, probeDuration, probeFfmpeg, renderScenePreview, runtimePaths, saveUploadedAsset } from './media-store.js';
+import { assertDialogueFilesPresent, ensureRuntime, exportSceneTimeline, extractPeaks, inspectProjectMedia, probeDuration, probeFfmpeg, renderScenePreview, runtimePaths, saveUploadedAsset } from './media-store.js';
 import { taskWithQueuePosition, cancelTask, enqueueGeneration, enqueueNovelAnalysis, enqueueOneClick, enqueueProjectExport, enqueueSoundGeneration, estimateBillableCharacters, estimateGeneration, getTask, retryTask } from './task-manager.js';
 import { seedSampleProject } from './sample-project.js';
 import { ensureBuiltinAssets, listBuiltinAssets } from './builtin-assets.js';
@@ -183,6 +183,7 @@ app.post('/api/projects/:projectId/export-scene', async (request, response, next
     if (!project) throw new Error('项目不存在');
     const scene = project.state.scenes?.find((item) => item.id === request.body.sceneId);
     if (!scene) throw new Error('场景不存在');
+    assertDialogueFilesPresent([scene]);
     const media = await inspectProjectMedia(project);
     const report = media.scenes.find((item) => item.sceneId === scene.id);
     if (report?.invalidFileCount) throw new Error(`场景含 ${report.invalidFileCount} 个无法解码的音频文件，请重新生成或重新绑定后再导出`);
@@ -198,6 +199,7 @@ app.post('/api/projects/:projectId/preview-scene', async (request, response, nex
     if (!project) throw new Error('项目不存在');
     const scene = project.state.scenes?.find((item) => item.id === request.body.sceneId);
     if (!scene) throw new Error('场景不存在');
+    assertDialogueFilesPresent([scene]);
     const media = await inspectProjectMedia(project);
     const report = media.scenes.find((item) => item.sceneId === scene.id);
     if (report?.invalidFileCount) throw new Error(`场景含 ${report.invalidFileCount} 个无法解码的音频文件，无法预混试听`);
@@ -397,6 +399,6 @@ app.use((error, _request, response, _next) => {
   if (status >= 500) console.error(error);
   else console.warn(`请求失败（${status}）：${error.message}`);
   if (status === 413) return response.status(413).json({ error: '请求体过大，请按卷拆分后再导入' });
-  response.status(status).json({ error: error.message || '本地服务处理失败' });
+  response.status(status).json({ error: error.message || '本地服务处理失败', ...(Number.isInteger(error.status) && typeof error.code === 'string' ? { code: error.code } : {}), ...(error.code === 'AUDIO_FILE_MISSING' ? { details: error.details } : {}) });
 });
 app.listen(PORT, BIND_HOST, () => console.log(`声场本地服务：http://127.0.0.1:${PORT}（监听 ${BIND_HOST}）`));

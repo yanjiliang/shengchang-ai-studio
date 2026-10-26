@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { buildGenerationRequest } from '../shared/generation-requests.mjs';
 import { audioContentHash, getProject, updateProject } from './database.js';
-import { runtimePaths } from './media-store.js';
+import { missingDialogueFiles, runtimePaths } from './media-store.js';
 import { BreezeError, listBreezeVoices, registerBreezeVoice } from './breeze.js';
 
 // 上传参考音时长：< 5 秒拒收，> 30 秒拒收；5–10 秒收下但带 REFERENCE_SHORT 警告
@@ -318,7 +318,16 @@ export function exportPrecheck(config, project, { sceneId = null } = {}) {
       if (stale) { staleLines.push({ sceneId: scene.id, lineId: line.id, staleReason }); addPending(line); }
     }
   }
-  return { projectId: project?.id ?? null, sceneId, dialogueLineCount, staleLineCount: staleLines.length, staleLines, missingAudioLineCount, pendingLineCount, pendingCharCount, ok: staleLines.length === 0 && missingAudioLineCount === 0 };
+  // B4：有 audioUrl 但文件丢了的句子，导出会被拒绝（AUDIO_FILE_MISSING），预检要提前报出来，
+  // 也算进 pending（要重新生成）。stale 的那几句已经算过 pending，不重复计。
+  const staleIds = new Set(staleLines.map((item) => item.lineId));
+  const missingFileLines = missingDialogueFiles((state.scenes || []).filter((scene) => !sceneId || scene.id === sceneId)).map(({ sceneId: lineSceneId, lineId }) => ({ sceneId: lineSceneId, lineId }));
+  for (const item of missingFileLines) {
+    if (staleIds.has(item.lineId)) continue;
+    const line = (state.scenes || []).find((scene) => scene.id === item.sceneId)?.lines?.find((entry) => entry.id === item.lineId);
+    if (line) addPending(line);
+  }
+  return { projectId: project?.id ?? null, sceneId, dialogueLineCount, staleLineCount: staleLines.length, staleLines, missingAudioLineCount, missingFileLineCount: missingFileLines.length, missingFileLines, pendingLineCount, pendingCharCount, ok: staleLines.length === 0 && missingAudioLineCount === 0 && missingFileLines.length === 0 };
 }
 
 // 影响范围（只读）：该角色已有音频的对白里，按当前参考 + 当前引擎配置重新算出的

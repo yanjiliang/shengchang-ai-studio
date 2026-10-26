@@ -170,16 +170,20 @@ const EMOTION_DEGREE = [
   { min: 0, word: '略带一点' },
 ];
 
+// 只写程度，不写停顿（0010）：“句间多停顿”会让模型在句子内部插入长停顿、
+// 把一句话说断；句与句之间的气口改由混音层的句后停顿负责（shared/mix-defaults.mjs
+// 对慢速台词自动加长 gapAfterMs）。
 function pacingPhrase(speed) {
   const value = Number(speed) || 1;
-  if (value <= 0.9) return '语速放慢，句间多停顿一下';
+  if (value <= 0.9) return '语速稍慢、从容';
   if (value >= 1.1) return '语速加快，说得紧凑一些';
   return '';
 }
 
 // 指令逻辑版本：措辞/拼装规则一改就要加一，它进音频缓存键（database.js
 // audioContentHash），旧指令生成的缓存自然失效，不会被当成新指令的结果复用。
-export const TTS_INSTRUCTION_VERSION = 2;
+// 3（0010）：慢速措辞去掉停顿要求。
+export const TTS_INSTRUCTION_VERSION = 3;
 
 // 稳定说话人从句（0001 之前就有，0005 恢复，配置 ttsStableSpeaker 控制，默认开）：
 // 实测未验证可导演的男声在情绪指令下会漂移（同一角色句间音高/音色不一致），

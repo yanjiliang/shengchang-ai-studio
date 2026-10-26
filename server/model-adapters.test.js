@@ -258,7 +258,7 @@ describe('语音指令措辞（只写情绪 + 节奏）', () => {
   });
 
   test('语速进入节奏描述，潜台词作为情绪来由', () => {
-    assert.deepEqual(voiceInstructions({ emotion: '悲伤', emotionScale: 0.9, speed: 0.85, subtext: '被赶走前最后的哀求' }, off), ['用特别特别悲伤的语气说，语速放慢，句间多停顿一下，这句话的情绪来由是：被赶走前最后的哀求。']);
+    assert.deepEqual(voiceInstructions({ emotion: '悲伤', emotionScale: 0.9, speed: 0.85, subtext: '被赶走前最后的哀求' }, off), ['用特别特别悲伤的语气说，语速稍慢、从容，这句话的情绪来由是：被赶走前最后的哀求。']);
     assert.deepEqual(voiceInstructions({ speed: 1.2 }, off), ['语速加快，说得紧凑一些。']);
   });
 

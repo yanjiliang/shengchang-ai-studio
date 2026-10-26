@@ -2,6 +2,7 @@ import { mkdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveGapAfterMs } from '../shared/mix-defaults.mjs';
 
 const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
 // Overridable so tests can point the database and media tree at a scratch
@@ -189,7 +190,8 @@ export async function inspectProjectMedia(project) {
   };
 }
 
-async function resolveSceneTimeline(scene) {
+// Exported for tests (句后停顿等时间轴规则)。
+export async function resolveSceneTimeline(scene) {
   const tracks = [];
   const missing = [];
   let dialogueCursor = 0;
@@ -213,7 +215,7 @@ async function resolveSceneTimeline(scene) {
     const requestedDuration = mix.durationMs !== '' && mix.durationMs !== null && mix.durationMs !== undefined ? clamp(Number(mix.durationMs) / 1000, 0.05, 21_600, 0) : 0;
     const loop = !isDialogue && (mix.loop ?? defaultLoop);
     const duration = requestedDuration || trimmedSourceDuration;
-    const gapAfter = isDialogue ? clamp(Number(mix.gapAfterMs) / 1000, 0, 10, 0.32) : 0;
+    const gapAfter = isDialogue ? clamp(Number(resolveGapAfterMs({ ...line, mix })) / 1000, 0, 10, 0.32) : 0;
     tracks.push({ lineId: line.id, type: line.type, source, sourceDuration, trimmedSourceDuration, trimStart, trimEnd: trimEndSetting, start, duration, loop, gainDb: clamp(mix.gainDb, -60, 12, isDialogue ? 0 : line.type === 'music' ? -18 : line.type === 'ambient' ? -14 : -6), fadeIn: clamp(Number(mix.fadeInMs) / 1000, 0, 30, isDialogue ? 0 : 0.4), fadeOut: clamp(Number(mix.fadeOutMs) / 1000, 0, 30, isDialogue ? 0 : 0.7), pan: clamp(mix.pan, -1, 1, 0) });
     if (isDialogue) dialogueCursor = Math.max(dialogueCursor, start + duration + gapAfter);
   }

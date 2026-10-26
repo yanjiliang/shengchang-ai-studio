@@ -8,7 +8,7 @@ import { after, describe, test } from 'node:test';
 const scratch = mkdtempSync(path.join(tmpdir(), 'shengchang-oneclick-test-'));
 process.env.SHENGCHANG_RUNTIME_DIR = scratch;
 const { createProject, createPersistentTask, getPersistentTask, getProject, updateProject } = await import('./database.js');
-const { flagUndirectableVoices, mapCharactersToPresets, presetVoicesFor, runOneClickPipeline } = await import('./one-click.js');
+const { characterGender, directionDemand, flagUndirectableVoices, mapCharactersToPresets, planCasting, presetVoicesFor, runOneClickPipeline } = await import('./one-click.js');
 const { voiceGeneration } = await import('./model-adapters.js');
 const { buildGenerationRequests } = await import('../shared/generation-requests.mjs');
 
@@ -38,10 +38,15 @@ describe('mapCharactersToPresets', () => {
 describe('豆包预设按 resourceId 分组', () => {
   test('seed-tts-2.0 预设全部是 2.0 音色', () => {
     const presets = presetVoicesFor('volcengine-api-key', 'seed-tts-2.0');
-    for (const voiceId of [presets.narrator, ...presets.cast]) assert.equal(voiceGeneration(voiceId), '2.0', voiceId);
+    for (const { voiceId } of [presets.narrator, ...presets.cast]) assert.equal(voiceGeneration(voiceId), '2.0', voiceId);
   });
 
-  test('seed-tts-2.0 自动映射使用 2.0 音色', () => {
+  test('预设音色的性别与 voice id 前缀一致', () => {
+    const presets = presetVoicesFor('volcengine-api-key', 'seed-tts-2.0');
+    for (const voice of [presets.narrator, ...presets.cast]) assert.equal(voice.gender, voice.voiceId.startsWith('zh_female_') ? 'female' : 'male', voice.voiceId);
+  });
+
+  test('seed-tts-2.0 自动映射使用 2.0 音色（无性别信息时保持旧行为）', () => {
     const assignments = mapCharactersToPresets([{ id: 'narrator', name: '旁白' }, { id: 'wukong', name: '悟空' }], {}, 'volcengine-api-key', 'seed-tts-2.0');
     assert.equal(assignments.narrator, 'zh_female_cancan_uranus_bigtts');
     assert.equal(assignments.wukong, 'zh_female_vv_uranus_bigtts', '实测可导戏的音色优先分给第一个角色');
@@ -54,6 +59,101 @@ describe('豆包预设按 resourceId 分组', () => {
 
   test('seed-icl-2.0（克隆音色）没有通用预设，不自动映射', () => {
     assert.deepEqual(mapCharactersToPresets([{ id: 'c1', name: '甲' }], {}, 'volcengine-api-key', 'seed-icl-2.0'), {});
+  });
+});
+
+describe('按性别/年龄与戏份选角', () => {
+  const tts2 = ['volcengine-api-key', 'seed-tts-2.0'];
+  const voiceGender = (voiceId) => (voiceId.startsWith('zh_female_') ? 'female' : 'male');
+  const scenes = [{ id: 's1', lines: [
+    { id: 'a1', type: 'dialogue', speakerId: 'tangseng', text: '悟空', emotion: '平静' },
+    { id: 'a2', type: 'dialogue', speakerId: 'tangseng', text: '去吧', emotion: '平静' },
+    { id: 'a3', type: 'dialogue', speakerId: 'tangseng', text: '去吧', emotion: '平静' },
+    { id: 'b1', type: 'dialogue', speakerId: 'baigujing', text: '长老', emotion: '妩媚' },
+    { id: 'b2', type: 'dialogue', speakerId: 'baigujing', text: '救命', emotion: '惊恐', subtext: '装可怜' },
+    { id: 'c1', type: 'dialogue', speakerId: 'cunfu', text: '我的儿', emotion: '悲伤' },
+  ] }];
+
+  test('拆解结果的性别字段中英文都认，认不出为 null', () => {
+    assert.equal(characterGender({ gender: '男' }), 'male');
+    assert.equal(characterGender({ gender: 'Female' }), 'female');
+    assert.equal(characterGender({ gender: '未知' }), null);
+    assert.equal(characterGender({ description: '一个温和的男人' }), null, '不从描述里猜');
+  });
+
+  test('复现：唐僧（男）是第一个角色也不会拿到女声 vv', () => {
+    const { assignments } = planCasting([
+      { id: 'narrator', name: '旁白', role: '叙事者' },
+      { id: 'tangseng', name: '唐僧', gender: '男' },
+      { id: 'baigujing', name: '白骨精', gender: '女' },
+    ], {}, ...tts2, { scenes });
+    assert.equal(voiceGender(assignments.tangseng), 'male');
+    assert.notEqual(assignments.tangseng, 'zh_female_vv_uranus_bigtts');
+    assert.equal(assignments.baigujing, 'zh_female_vv_uranus_bigtts');
+  });
+
+  test('性别已知时绝不跨性别分配，即使角色多于同性别音色', () => {
+    const characters = Array.from({ length: 7 }, (_unused, index) => ({ id: `m${index}`, name: `男${index}`, gender: 'male' }));
+    const { assignments } = planCasting(characters, {}, ...tts2, { scenes: [] });
+    assert.equal(Object.keys(assignments).length, 7);
+    for (const voiceId of Object.values(assignments)) assert.equal(voiceGender(voiceId), 'male', voiceId);
+  });
+
+  test('同性别内，可导戏音色给带表演指示台词最多的角色', () => {
+    const { assignments } = planCasting([
+      { id: 'cunfu', name: '村妇', gender: 'female' },
+      { id: 'baigujing', name: '白骨精', gender: 'female' },
+    ], {}, ...tts2, { scenes });
+    assert.equal(assignments.baigujing, 'zh_female_vv_uranus_bigtts', '白骨精有 2 句带指示，村妇 1 句');
+    assert.notEqual(assignments.cunfu, 'zh_female_vv_uranus_bigtts');
+  });
+
+  test('表演指示持平时按台词总数', () => {
+    const demand = directionDemand(scenes);
+    assert.deepEqual(demand.tangseng, { directed: 0, lines: 3 });
+    assert.deepEqual(demand.baigujing, { directed: 2, lines: 2 });
+    const tie = [{ id: 's', lines: [
+      { id: '1', type: 'dialogue', speakerId: 'x', text: '.', emotion: '愤怒' },
+      { id: '2', type: 'dialogue', speakerId: 'y', text: '.', emotion: '愤怒' },
+      { id: '3', type: 'dialogue', speakerId: 'y', text: '.' },
+    ] }];
+    const { assignments } = planCasting([{ id: 'x', gender: '女' }, { id: 'y', gender: '女' }], {}, ...tts2, { scenes: tie });
+    assert.equal(assignments.y, 'zh_female_vv_uranus_bigtts');
+  });
+
+  test('年龄已知时排除年龄明确不符的音色', () => {
+    const { assignments } = planCasting([
+      { id: 'laofuren', name: '老夫人', gender: '女', age: '老年' },
+      { id: 'xiaojie', name: '小姐', gender: '女', age: '青年' },
+    ], {}, ...tts2, { scenes: [] });
+    assert.equal(assignments.laofuren, 'zh_female_popo_uranus_bigtts');
+    assert.notEqual(assignments.xiaojie, 'zh_female_popo_uranus_bigtts');
+  });
+
+  test('年龄明确不符的音色不分给该角色（儿童不配大叔音）', () => {
+    const { assignments, notes } = planCasting([{ id: 'wa', name: '娃娃', gender: '男', age: '儿童' }], {}, ...tts2, { scenes: [] });
+    assert.equal(voiceGender(assignments.wa), 'male');
+    assert.notEqual(assignments.wa, 'zh_male_qingcang_uranus_bigtts');
+    assert.deepEqual(notes, [], '还有年龄未知的同性别音色可用，不需要退回');
+  });
+
+  test('完全没有性别信息：保持旧的轮换行为，并在注意事项说明', () => {
+    const { assignments, notes } = planCasting([{ id: 'narrator', name: '旁白' }, { id: 'tangseng', name: '唐僧' }], {}, ...tts2, { scenes });
+    assert.equal(assignments.tangseng, 'zh_female_vv_uranus_bigtts');
+    assert.match(notes.join(), /缺少性别\/年龄信息.*唐僧/);
+  });
+
+  test('部分角色缺性别：已知的先分，缺的标记出来', () => {
+    const { assignments, notes } = planCasting([{ id: 'x', name: '路人' }, { id: 'baigujing', name: '白骨精', gender: '女' }], {}, ...tts2, { scenes });
+    assert.equal(assignments.baigujing, 'zh_female_vv_uranus_bigtts');
+    assert.match(notes.join(), /缺少性别信息.*路人/);
+  });
+
+  test('用户已绑定的角色不参与；demo 不产生选角注意事项', () => {
+    const { assignments, notes } = planCasting([{ id: 'a', name: '甲', gender: '男' }, { id: 'b', name: '乙' }], { a: 'mine' }, 'demo', undefined, { scenes: [] });
+    assert.equal(assignments.a, undefined);
+    assert.ok(assignments.b);
+    assert.deepEqual(notes, []);
   });
 });
 
@@ -109,6 +209,18 @@ describe('runOneClickPipeline 阶段断点', () => {
     assert.equal(finished.status, 'completed');
     assert.equal(finished.result.sceneCount, 1);
     assert.ok(finished.result.attention.length, '角色有台词但未生成音频应进入注意事项');
+  });
+
+  test('选角注意事项写入 payload 并进入最终“需注意”', async () => {
+    const project = createProject({ name: '选角提示', state: { characters: [{ id: 'narrator', name: '旁白' }, { id: 'tangseng', name: '唐僧' }], scenes: [], voiceMap: {} } });
+    const task = createPersistentTask({ kind: 'one-click', projectId: project.id, payload: { completedStages: ['拆解', '生成'] } });
+    await runOneClickPipeline(task, { provider: 'volcengine-api-key', resourceId: 'seed-tts-2.0' }, {
+      inspectMedia: async () => ({ scenes: [], projectDurationMs: 0 }),
+      exportTimeline: async () => ({ url: '/media/exports/x.mp3', name: 'x.mp3', sceneCount: 0, durationMs: 0 }),
+    });
+    const finished = getPersistentTask(task.id);
+    assert.match(finished.payload.castingNotes.join(), /唐僧/);
+    assert.ok(finished.result.attention.some((item) => /缺少性别\/年龄信息/.test(item)), JSON.stringify(finished.result.attention));
   });
 
   test('生成阶段失败时保留断点，成功句写入项目', async () => {

@@ -30,53 +30,141 @@ import { applyResultsToProject, runGenerationRequests, sumBilledCharacters } fro
 // seed-icl-2.0 是用户自己的克隆音色，没有通用预设，留空 = 不自动映射。
 // Users can remap any character on the 角色音色 page; presets only ever fill
 // UNMAPPED characters.
+//
+// 音色元数据只写“有据可查”的：gender 来自 voice id 的 zh_female/zh_male；
+// age 只在音色名或已引用的公开列表里写明时才填（婆婆 = 老年，擎苍“低沉霸总
+// 大叔” = 中年），其余留 null = 未知，不猜。
 const PRESET_VOICES = {
   demo: { narrator: 'demo_narrator_warm', cast: ['demo_female_1', 'demo_male_1', 'demo_female_2', 'demo_male_2', 'demo_elder_1', 'demo_youth_1'] },
   'volcengine-api-key': {
     'seed-tts-2.0': {
-      narrator: 'zh_female_cancan_uranus_bigtts', // 知性灿灿 2.0
+      narrator: { voiceId: 'zh_female_cancan_uranus_bigtts', gender: 'female', age: null }, // 知性灿灿 2.0
       cast: [
-        'zh_female_vv_uranus_bigtts', // Vivi 2.0（实测可导戏）
-        'zh_male_ruyayichen_uranus_bigtts', // 儒雅逸辰 2.0
-        'zh_male_qingcang_uranus_bigtts', // 擎苍 2.0
-        'zh_female_gufengshaoyu_uranus_bigtts', // 古风少御 2.0
-        'zh_male_m191_uranus_bigtts', // 云舟 2.0
-        'zh_female_popo_uranus_bigtts', // 婆婆 2.0
+        { voiceId: 'zh_female_vv_uranus_bigtts', gender: 'female', age: null }, // Vivi 2.0（实测可导戏）
+        { voiceId: 'zh_male_ruyayichen_uranus_bigtts', gender: 'male', age: null }, // 儒雅逸辰 2.0
+        { voiceId: 'zh_male_qingcang_uranus_bigtts', gender: 'male', age: 'middle' }, // 擎苍 2.0（低沉霸总大叔）
+        { voiceId: 'zh_female_gufengshaoyu_uranus_bigtts', gender: 'female', age: null }, // 古风少御 2.0
+        { voiceId: 'zh_male_m191_uranus_bigtts', gender: 'male', age: null }, // 云舟 2.0
+        { voiceId: 'zh_female_popo_uranus_bigtts', gender: 'female', age: 'elder' }, // 婆婆 2.0
       ],
     },
     'seed-icl-2.0': null,
   },
 };
 
-// 角色轮换时实测可导戏的音色排前面（第一个非旁白角色通常是主角），
-// 实测不可导戏的排最后；未验证的保持原顺序。旁白不需要强导戏，不参与排序。
-const DIRECTABILITY_RANK = { true: 0, null: 1, false: 2 };
+const asVoice = (entry) => (typeof entry === 'string' ? { voiceId: entry, gender: null, age: null } : { gender: null, age: null, ...entry });
 
+// 可导戏的排前面，实测不可导戏的排最后；未验证的保持原顺序。
+const DIRECTABILITY_RANK = { true: 0, null: 1, false: 2 };
+const directabilityRank = (voiceId) => DIRECTABILITY_RANK[String(voiceDirectability(voiceId))];
+
+// 返回 { narrator, cast }，元素为 { voiceId, gender, age }（demo 的元数据为 null）。
 export function presetVoicesFor(provider, resourceId) {
   const presets = provider === 'volcengine-api-key'
     ? PRESET_VOICES['volcengine-api-key'][resourceId] ?? null
     : PRESET_VOICES[provider] || PRESET_VOICES.demo;
-  if (!presets || provider !== 'volcengine-api-key') return presets;
-  const cast = presets.cast
-    .map((voiceId, index) => ({ voiceId, index, rank: DIRECTABILITY_RANK[String(voiceDirectability(voiceId))] }))
-    .sort((a, b) => a.rank - b.rank || a.index - b.index)
-    .map((item) => item.voiceId);
-  return { ...presets, cast };
+  if (!presets) return null;
+  const cast = presets.cast.map((entry, index) => ({ ...asVoice(entry), index }))
+    .sort((a, b) => directabilityRank(a.voiceId) - directabilityRank(b.voiceId) || a.index - b.index)
+    .map(({ index: _index, ...voice }) => voice);
+  return { narrator: asVoice(presets.narrator), cast };
 }
+
+// 角色元数据：当前拆解提示词不产出性别/年龄，这里接受将来可能出现的
+// gender / age 字段（中英文都认），认不出就是 null，绝不从描述里猜。
+const GENDER_WORDS = { male: 'male', female: 'female', 男: 'male', 女: 'female', 男性: 'male', 女性: 'female' };
+const AGE_WORDS = { child: 'child', young: 'young', middle: 'middle', elder: 'elder', 儿童: 'child', 少年: 'young', 青年: 'young', 中年: 'middle', 老年: 'elder' };
+export function characterGender(character) { return GENDER_WORDS[String(character?.gender ?? '').trim().toLowerCase()] || null; }
+export function characterAge(character) { return AGE_WORDS[String(character?.age ?? '').trim().toLowerCase()] || null; }
+
+const NEUTRAL_EMOTIONS = new Set(['', '平静', '中性', '自然', '无', '正常']);
+// 每个角色“带表演指示的台词数”（有潜台词或非中性情绪）和总台词数。
+export function directionDemand(scenes) {
+  const demand = {};
+  for (const scene of scenes || []) for (const line of scene.lines || []) {
+    if (line.type !== 'dialogue' || !line.speakerId) continue;
+    const entry = demand[line.speakerId] ||= { directed: 0, lines: 0 };
+    entry.lines += 1;
+    if (String(line.subtext || '').trim() || !NEUTRAL_EMOTIONS.has(String(line.emotion || '').trim())) entry.directed += 1;
+  }
+  return demand;
+}
+
+const isNarratorCharacter = (character) => character.id === 'narrator' || character.role === '叙事者' || character.name === '旁白';
+const GENDER_LABEL = { male: '男', female: '女' };
 
 // Pure, exported for unit tests. Fills ONLY unmapped characters - a user's
 // voice choice is never overwritten by automation (design stage 2).
-export function mapCharactersToPresets(characters, voiceMap, provider, resourceId) {
+//
+// 规则：
+// 1. 角色有性别 → 只在同性别音色里选（音色性别未知的也算候选），绝不跨性别；
+//    角色有年龄 → 年龄明确相符的优先，其次年龄未知的，排除明确不符的；
+//    全部明确不符时退回只按性别并记一条注意。
+// 2. 候选内：可导戏且未被占用的优先 → 未验证 → 不可导戏 → 都占满后复用最少用的。
+//    分配顺序按“带表演指示的台词数”降序，台词总数次之，所以可导戏音色给戏最重的角色。
+// 3. 一个角色都没有性别信息时保持旧行为（按角色顺序轮换），并在注意事项里说明。
+export function planCasting(characters, voiceMap, provider, resourceId, { scenes } = {}) {
   const presets = presetVoicesFor(provider, resourceId);
   const assignments = {};
-  if (!presets) return assignments;
-  let castIndex = 0;
-  for (const character of characters || []) {
-    if (!character?.id || voiceMap?.[character.id]) continue;
-    const isNarrator = character.id === 'narrator' || character.role === '叙事者' || character.name === '旁白';
-    assignments[character.id] = isNarrator ? presets.narrator : presets.cast[castIndex++ % presets.cast.length];
+  const notes = [];
+  if (!presets) return { assignments, notes };
+  const pending = (characters || []).filter((character) => character?.id && !voiceMap?.[character.id]);
+  const hasVoiceMetadata = [presets.narrator, ...presets.cast].some((voice) => voice.gender);
+  const anyGender = pending.some((character) => characterGender(character));
+
+  if (!hasVoiceMetadata || !anyGender) {
+    let castIndex = 0;
+    for (const character of pending) {
+      assignments[character.id] = isNarratorCharacter(character) ? presets.narrator.voiceId : presets.cast[castIndex++ % presets.cast.length].voiceId;
+    }
+    const guessed = pending.filter((character) => !isNarratorCharacter(character));
+    if (hasVoiceMetadata && guessed.length) notes.push(`${guessed.length} 个角色缺少性别/年龄信息，预设音色按顺序轮换分配，可能性别不符，请在角色音色页核对：${guessed.map((item) => item.name || item.id).join('、')}`);
+    return { assignments, notes };
   }
-  return assignments;
+
+  const demand = directionDemand(scenes);
+  const usage = new Map();
+  const take = (character, candidates) => {
+    const pick = [...candidates].sort((a, b) => (usage.get(a.voiceId) || 0) - (usage.get(b.voiceId) || 0)
+      || directabilityRank(a.voiceId) - directabilityRank(b.voiceId))[0];
+    usage.set(pick.voiceId, (usage.get(pick.voiceId) || 0) + 1);
+    assignments[character.id] = pick.voiceId;
+  };
+
+  const ordered = pending.map((character, index) => ({ character, index, gender: characterGender(character), age: characterAge(character), demand: demand[character.id] || { directed: 0, lines: 0 } }))
+    // 性别已知的先分（它们约束更强），再按戏份排序；性别未知的最后，避免抢走可导戏音色。
+    .sort((a, b) => Number(!a.gender) - Number(!b.gender) || b.demand.directed - a.demand.directed || b.demand.lines - a.demand.lines || a.index - b.index);
+  const unknown = [];
+  const noMatch = [];
+  const ageFallback = [];
+  for (const item of ordered) {
+    const { character, gender, age } = item;
+    const narrator = isNarratorCharacter(character);
+    if (narrator && (!gender || !presets.narrator.gender || presets.narrator.gender === gender)) {
+      assignments[character.id] = presets.narrator.voiceId;
+      continue;
+    }
+    if (!gender) {
+      unknown.push(character);
+      take(character, presets.cast);
+      continue;
+    }
+    const sameGender = presets.cast.filter((voice) => !voice.gender || voice.gender === gender);
+    if (!sameGender.length) { noMatch.push(`${character.name || character.id}（${GENDER_LABEL[gender]}）`); continue; }
+    // 年龄：明确相符 > 未知 > 明确不符（只有全部明确不符时才退回并记注意）。
+    const exactAge = age ? sameGender.filter((voice) => voice.age === age) : [];
+    const ageOk = age ? sameGender.filter((voice) => !voice.age || voice.age === age) : sameGender;
+    if (!ageOk.length) ageFallback.push(character.name || character.id);
+    take(character, exactAge.length ? exactAge : ageOk.length ? ageOk : sameGender);
+  }
+  if (unknown.length) notes.push(`${unknown.length} 个角色缺少性别信息，音色可能性别不符，请在角色音色页核对：${unknown.map((item) => item.name || item.id).join('、')}`);
+  if (noMatch.length) notes.push(`${noMatch.length} 个角色没有同性别的预设音色，未自动绑定：${noMatch.join('、')}`);
+  if (ageFallback.length) notes.push(`${ageFallback.length} 个角色没有年龄相符的预设音色，已按性别分配：${ageFallback.join('、')}`);
+  return { assignments, notes };
+}
+
+export function mapCharactersToPresets(characters, voiceMap, provider, resourceId, options) {
+  return planCasting(characters, voiceMap, provider, resourceId, options).assignments;
 }
 
 function cancelledError() {
@@ -117,7 +205,9 @@ export async function runOneClickPipeline(task, config, deps = {}) {
   // Stage 2: 音色 - auto-map unmapped characters to preset voices.
   if (!skip('音色')) {
     const project = getProject(task.projectId);
-    const assignments = mapCharactersToPresets(project?.state?.characters, project?.state?.voiceMap, config.provider, config.resourceId);
+    const { assignments, notes } = planCasting(project?.state?.characters, project?.state?.voiceMap, config.provider, config.resourceId, { scenes: project?.state?.scenes });
+    // 选角说明存进 payload（浅合并），导出阶段并入“需注意”；断点续跑不丢。
+    updatePersistentTask(task.id, { payload: { castingNotes: notes } });
     const count = Object.keys(assignments).length;
     if (count) {
       progress(31, `音色 · 自动映射 ${count} 个角色（预设音色，可在角色音色页修改）`);
@@ -195,7 +285,7 @@ export async function runOneClickPipeline(task, config, deps = {}) {
       project: getProject(task.projectId), targetLufs: config.targetLufs,
       shouldCancel, onProgress: ({ progress: percent, message }) => progress(86 + Math.round(percent * 0.13), `导出 · ${message}`),
     });
-    const attention = buildAttentionList(getProject(task.projectId), media);
+    const attention = [...(getPersistentTask(task.id)?.payload?.castingNotes || []), ...buildAttentionList(getProject(task.projectId), media)];
     const attentionNote = attention.length ? `\n需注意：\n${attention.join('\n')}` : '';
     done('导出');
     updatePersistentTask(task.id, {

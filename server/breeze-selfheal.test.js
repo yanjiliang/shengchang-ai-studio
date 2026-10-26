@@ -12,10 +12,10 @@ process.env.HOME = scratch;
 process.env.SHENGCHANG_RUNTIME_DIR = path.join(scratch, 'runtime');
 const { parseBreezeVoices, listBreezeVoices, breezeHealth, normalizeBreezeEndpoint, breezeCustomConfig } = await import('./breeze.js');
 const { writeConfig, readConfig } = await import('./config-store.js');
-const { createProject } = await import('./database.js');
+const { createProject, getProject } = await import('./database.js');
 const { ensureRuntime, runtimePaths } = await import('./media-store.js');
 const { forgetRegisteredVoices } = await import('./voice-references.js');
-const { runGenerationRequests } = await import('./task-manager.js');
+const { runGenerationRequests, applyResultsToProject } = await import('./task-manager.js');
 
 let mock;
 let projectId;
@@ -155,5 +155,21 @@ describe('自动补注册', () => {
       assert.equal(outcome.failures[0].code, 'REFERENCE_FILE_MISSING');
       assert.ok(!mock.state.requests.slice(-2).some((item) => item.path === '/tts'));
     } finally { writeFileSync(referencePath(), toneWav(6)); }
+  });
+});
+
+describe('实际 seed', () => {
+  test('普通生成（不带 seed）记下 Breeze 返回的 X-Seed 为 renderSeed，audioSeed 仍为 null', async () => {
+    const line = request();
+    const withLine = createProject({ name: 'seed', state: { scenes: [{ id: 's1', title: '场', lines: [{ id: line.lineId, type: 'dialogue', speakerId: 'tang', speaker: '唐僧', text: line.text }] }], characters: [{ id: 'tang', name: '唐僧' }], voiceReferences: { tang: reference } } }).id;
+    const outcome = await runGenerationRequests(config(), [line], { projectId: withLine, sceneId: 's1' });
+    assert.equal(outcome.failures.length, 0, JSON.stringify(outcome.failures));
+    const tts = mock.state.requests.filter((item) => item.path === '/tts').at(-1);
+    assert.equal(tts.body.seed, undefined, '普通生成不应发 seed');
+    assert.equal(outcome.results[0].seed, 42, '模拟 Breeze 默认 X-Seed: 42');
+    applyResultsToProject(withLine, 's1', outcome.results);
+    const saved = getProject(withLine).state.scenes[0].lines[0];
+    assert.equal(saved.renderSeed, 42);
+    assert.equal(saved.audioSeed, null);
   });
 });

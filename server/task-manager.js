@@ -105,6 +105,11 @@ export function applyResultsToProject(projectId, sceneId, results) {
         ...(result.engine ? { audioEngine: result.engine } : {}),
         // 进缓存键的显式 seed（采用单句试听时）；普通生成清空。stale 判断要用它复算缓存键。
         audioSeed: Number.isSafeInteger(result.requestSeed) ? result.requestSeed : null,
+        // 实际出这段音频的 seed（Breeze 响应头 X-Seed）。普通生成也记，以后想“锁定这一版”
+        // 就用它。缓存命中拿不到 X-Seed：同一段音频（hash 相同）沿用原值，否则为 null。
+        // 只是记录，不进缓存键、不影响 stale（那是 audioSeed 的事）。
+        renderSeed: Number.isSafeInteger(result.seed) ? result.seed
+          : (line.audioHash === result.contentHash && Number.isSafeInteger(line.renderSeed) ? line.renderSeed : null),
         synthesizedText: result.synthesizedText,
         // 这段音频对应的原文（发音词典替换前）。stale 的 text 判断和存盘合并都对照它，
         // 而不是“上一次保存的文本”——否则改了再改回去永远清不掉。

@@ -8,7 +8,7 @@ import { after, describe, test } from 'node:test';
 // before importing anything that resolves media-store paths.
 const scratch = mkdtempSync(path.join(tmpdir(), 'shengchang-task-test-'));
 process.env.SHENGCHANG_RUNTIME_DIR = scratch;
-const { createProject, getProject } = await import('./database.js');
+const { createProject, getProject, updateProject } = await import('./database.js');
 const { applyResultsToProject, recoverCachedAudioFromDisk, runGenerationRequests } = await import('./task-manager.js');
 
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -19,6 +19,28 @@ const plainLine = (id, text) => ({ id, type: 'dialogue', speaker: '旁白', spea
 const resultFor = (lineId, text, url = '/media/new.wav') => ({ lineId, sceneId: 'scene-1', url, mime: 'audio/wav', text, synthesizedText: text, contentHash: 'hash-1', createdAt: 123 });
 
 describe('生成结果写回项目', () => {
+  test('记录实际 seed（X-Seed）为 renderSeed；audioSeed 只记显式请求的 seed', () => {
+    const project = createProject({ name: 'seed 测试', state: stateWith([plainLine('l1', '台词')]) });
+    const line = () => getProject(project.id).state.scenes[0].lines[0];
+    applyResultsToProject(project.id, 'scene-1', [{ ...resultFor('l1', '台词'), seed: 777 }]);
+    assert.equal(line().renderSeed, 777);
+    assert.equal(line().audioSeed, null, '普通生成不该变成锁定 seed，否则缓存键 / stale 会变');
+    // 缓存命中（没有 X-Seed）、同一段音频：沿用。
+    applyResultsToProject(project.id, 'scene-1', [{ ...resultFor('l1', '台词'), cached: true }]);
+    assert.equal(line().renderSeed, 777);
+    // 缓存命中、另一段音频：不知道 seed → null，不能张冠李戴。
+    applyResultsToProject(project.id, 'scene-1', [{ ...resultFor('l1', '台词'), contentHash: 'hash-2', cached: true }]);
+    assert.equal(line().renderSeed, null);
+    // 采用试听：显式 seed 两边都有。
+    applyResultsToProject(project.id, 'scene-1', [{ ...resultFor('l1', '台词'), seed: 9001, requestSeed: 9001 }]);
+    assert.equal(line().renderSeed, 9001);
+    assert.equal(line().audioSeed, 9001);
+    // 前端存盘不能覆盖服务端写的 renderSeed。
+    const state = getProject(project.id).state;
+    updateProject(project.id, { state: { ...state, scenes: [{ ...state.scenes[0], lines: [{ ...state.scenes[0].lines[0], renderSeed: 1 }] }] } });
+    assert.equal(line().renderSeed, 9001);
+  });
+
   test('重新生成后清除过期标记并记录合成文本', () => {
     const project = createProject({ name: '写回测试', state: stateWith([staleLine('l1', '当前台词')]) });
 

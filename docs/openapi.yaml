@@ -661,7 +661,8 @@ components:
         id: { type: string }
         type: { type: string, enum: [dialogue, sfx, ambient, music] }
         audioUrl: { type: string }
-        audioSeed: { type: integer }
+        audioSeed: { type: integer, description: '显式锁定的 seed（采用单句试听时写入），进缓存键；普通生成为 null' }
+        renderSeed: { type: [integer, 'null'], description: '实际出这段音频的 seed（Breeze X-Seed），普通生成也记；缓存命中且是同一段音频时沿用，否则 null。只记录，不进缓存键、不影响 stale' }
         stale: { type: boolean, description: '已有音频与当前文本 / 参数不一致，需要重新生成（只在响应里，不落盘）' }
         staleReason: { type: [string, 'null'], enum: [text, params, null] }
     Segment:

@@ -110,7 +110,7 @@ export function createProject({ name = '未命名作品', genre = '', state = { 
 // between load and save would otherwise be erased by a stale snapshot. Keep
 // whatever the server already has, and mark a clip stale (instead of deleting
 // it) when the text it was synthesized from has changed.
-const AUDIO_FIELDS = ['audioUrl', 'audioMime', 'audioHash', 'generatedAt', 'synthesizedText', 'audioEngine', 'audioSeed', 'audioText'];
+const AUDIO_FIELDS = ['audioUrl', 'audioMime', 'audioHash', 'generatedAt', 'synthesizedText', 'audioEngine', 'audioSeed', 'audioText', 'renderSeed'];
 
 function mergeServerOwnedAudio(incomingState, currentState) {
   const currentLines = new Map();

@@ -41,14 +41,28 @@ const pickSlot = (source) => Object.fromEntries(TTS_SLOT_FIELDS.filter((field) =
 // 旧的平铺配置（0035 之前）只有一份 endpoint/accessKey：
 // - 当前是豆包 / 自定义：整份归当前引擎。
 // - 当前是 Demo / Breeze（这两个不用这些字段）：0034 之前切引擎不清 Key，平铺字段其实是上一次用的
-//   豆包或自定义接口留下的。resourceId 是 seed-* 或地址不是 http(s)（Demo 预设）→ 归豆包，否则归自定义。
+//   豆包或自定义接口留下的，归属见 flatOwner（按地址判断）。
 // 幂等：已有 ttsProviders 就不再迁移。
+// e2e7：旧版 resourceId 默认就是 seed-tts-2.0，按“seed-* 归豆包”判断，自定义接口留下的地址和 Key 也会被塞进豆包槽，
+// 违反“Key 跟着地址走”。现在按地址判断归属：没有 http(s) 地址（只剩 Key = 豆包回落官方地址）、或地址是火山 / 字节的域名、
+// 或 resourceId 是只有豆包才有的 seed-icl-2.0 → 豆包；其余 http(s) 地址 → 自定义。
+// 已知代价：当年用 http 自建代理转发豆包、迁移时又停在 Demo / Breeze 的，会归到自定义槽，豆包槽需要重填（不会发错地方）。
+const VOLC_HOST = /(^|\.)(bytedance\.com|volces\.com|volcengine\.com|volcengineapi\.com)$/i;
+function flatOwner(flat) {
+  const endpoint = String(flat.endpoint || '').trim();
+  if (!/^https?:\/\//i.test(endpoint)) return 'volcengine-api-key';
+  if (String(flat.resourceId || '') === 'seed-icl-2.0') return 'volcengine-api-key';
+  let host = '';
+  try { host = new URL(endpoint).hostname; } catch { return 'custom'; }
+  return VOLC_HOST.test(host) ? 'volcengine-api-key' : 'custom';
+}
+
 export function migrateFlatTts(input, provider) {
   const flat = pickSlot(input);
   const slots = Object.fromEntries(TTS_PROVIDER_IDS.map((id) => [id, sanitizeTtsSlot(id, {})]));
   if (provider === 'volcengine-api-key' || provider === 'custom') slots[provider] = sanitizeTtsSlot(provider, flat);
   else if (flat.accessKey || /^https?:\/\//i.test(String(flat.endpoint || '').trim())) {
-    const owner = /^seed-/.test(String(flat.resourceId || '')) || !/^https?:\/\//i.test(String(flat.endpoint || '').trim()) ? 'volcengine-api-key' : 'custom';
+    const owner = flatOwner(flat);
     slots[owner] = sanitizeTtsSlot(owner, flat);
   }
   // Demo / Breeze 自己那一槽保留旧的非密钥字段（resourceId / model / 格式 / 采样率进缓存键，迁移后缓存不失效），

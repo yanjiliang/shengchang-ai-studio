@@ -93,8 +93,8 @@ describe('Breeze 配置', () => {
     assert.equal(sanitizeConfig({ breezeTimeoutMs: 60000 }).breezeTimeoutMs, 60000);
   });
   test('切到 Breeze 不动豆包的 endpoint / accessKey（豆包那一槽保留；顶层平铺字段 = 当前引擎 Breeze）', () => {
-    const config = sanitizeConfig({ provider: 'breeze', endpoint: 'https://openspeech.example/v3', accessKey: 'k' });
-    assert.equal(config.ttsProviders['volcengine-api-key'].endpoint, 'https://openspeech.example/v3');
+    const config = sanitizeConfig({ provider: 'breeze', endpoint: 'https://openspeech.bytedance.com/api/v3/tts/unidirectional', accessKey: 'k' });
+    assert.equal(config.ttsProviders['volcengine-api-key'].endpoint, 'https://openspeech.bytedance.com/api/v3/tts/unidirectional');
     assert.equal(config.ttsProviders['volcengine-api-key'].accessKey, 'k');
     assert.equal(config.accessKey, '');
   });

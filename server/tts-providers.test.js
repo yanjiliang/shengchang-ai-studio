@@ -339,3 +339,30 @@ for (const [name, old, expected] of [['显式地址', OLD_BYTE_V3, PROXY_URL], [
     });
   });
 }
+
+describe('e2e7：旧平铺配置迁移按地址归属（Key 跟着地址走）', () => {
+  const slots = (input) => sanitizeConfig(input).ttsProviders;
+  test('停在 Demo、平铺字段是自定义接口留下的（resourceId 是旧默认 seed-tts-2.0）→ 归自定义，豆包槽不沾', () => {
+    const s = slots({ provider: 'demo', endpoint: 'https://tts.my-company.example/v1', accessKey: 'custom-key', resourceId: 'seed-tts-2.0', audioFormat: 'wav' });
+    assert.equal(s.custom.endpoint, 'https://tts.my-company.example/v1');
+    assert.equal(s.custom.accessKey, 'custom-key');
+    assert.equal(s['volcengine-api-key'].endpoint, '');
+    assert.equal(s['volcengine-api-key'].accessKey, '');
+  });
+  test('官方豆包地址、火山域名、只有 Key、seed-icl-2.0 → 归豆包', () => {
+    for (const input of [
+      { endpoint: VOLCENGINE_DEFAULT_ENDPOINT, accessKey: 'k1' },
+      { endpoint: 'https://openspeech.volces.com/api/v3/tts/unidirectional', accessKey: 'k2' },
+      { endpoint: '', accessKey: 'k3' },
+      { endpoint: 'https://proxy.example/tts', accessKey: 'k4', resourceId: 'seed-icl-2.0' },
+    ]) {
+      const s = slots({ provider: 'breeze', ...input });
+      assert.equal(s['volcengine-api-key'].accessKey, input.accessKey, JSON.stringify(input));
+      assert.equal(s.custom.accessKey, '', JSON.stringify(input));
+    }
+  });
+  test('当前就是豆包 / 自定义：整份归当前引擎（不变）', () => {
+    assert.equal(slots({ provider: 'volcengine-api-key', endpoint: 'https://proxy.example/tts', accessKey: 'k' })['volcengine-api-key'].accessKey, 'k');
+    assert.equal(slots({ provider: 'custom', endpoint: VOLCENGINE_DEFAULT_ENDPOINT, accessKey: 'k' }).custom.accessKey, 'k');
+  });
+});

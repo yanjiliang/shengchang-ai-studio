@@ -1,5 +1,8 @@
-import { Check, CircleDot, FlaskConical, LockKeyhole, MapPin, Mic2, Sparkles, Volume2 } from 'lucide-react';
+import { AlertTriangle, Check, CircleDot, FlaskConical, LockKeyhole, MapPin, Mic2, Sparkles, Volume2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { DRIFT_RISK_HINT, emotionDriftRisk } from '../../lib/directable';
+import { intensityOf, showsNoEmotion, zeroIntensityHint, NO_SUBTEXT_NOTE } from '../../lib/intensity.js';
+import { DirectableBadge } from '../DirectableBadge';
 
 const emotions = ['警惕', '怀疑', '克制', '疲惫', '愤怒', '悲伤'];
 
@@ -12,16 +15,16 @@ const labPresets = (line) => [
   { name: 'C · 耳语试探', emotion: '警惕', intensity: 45, subtext: '贴近耳边，压低声音试探', distance: '耳语' },
 ];
 
-function RangeField({ label, value, suffix, min = 0, max = 100, onChange }) {
+function RangeField({ label, value, suffix, min = 0, max = 100, onChange, zeroLabel = '' }) {
   return (
     <label className="range-field">
-      <span><b>{label}</b><output>{value}{suffix}</output></span>
+      <span><b>{label}</b><output>{value}{suffix}{zeroLabel && Number(value) === 0 ? <em className="range-zero">{zeroLabel}</em> : null}</output></span>
       <input type="range" min={min} max={max} value={value} onChange={(event) => onChange(Number(event.target.value))} />
     </label>
   );
 }
 
-export function Inspector({ line, characters = [], voiceMap = {}, provider, onUpdate, onOpenVoices, onAcquireSound, onUnbindSound, onLabGenerate, lab, labGenerating }) {
+export function Inspector({ line, characters = [], voiceMap = {}, provider, config, onUpdate, onOpenVoices, onAcquireSound, onUnbindSound, onLabGenerate, lab, labGenerating }) {
   const [tab, setTab] = useState('performance');
   const [labOpen, setLabOpen] = useState(false);
   const [variants, setVariants] = useState(() => labPresets(line));
@@ -43,6 +46,13 @@ export function Inspector({ line, characters = [], voiceMap = {}, provider, onUp
 
   const character = characters.find((item) => item.id === line.speakerId) || { id: line.speakerId, name: line.speaker || '未命名角色' };
   const voiceId = voiceMap?.[line.speakerId] || '';
+  // 没验证过的音色 + 这句带情绪指令 → 在指令旁提示（只在真正发指令的 seed-tts-2.0 下）。
+  const driftRisk = emotionDriftRisk({ line, voiceId, config });
+  const driftHint = driftRisk ? <p className="drift-risk-hint" role="note"><AlertTriangle size={11} />{DRIFT_RISK_HINT}</p> : null;
+  // 强度 0：Breeze 只发语速（不发情绪、情绪来由）；豆包照旧发，所以只在 Breeze 下淡化并说明。
+  const noEmotion = line ? showsNoEmotion(line.intensity, provider) : false;
+  // 强度 0 时滑块旁的字：Breeze「不加情绪」；豆包「豆包上强度 0 按 40 处理」（数值照实显示 0）。
+  const zeroLabel = zeroIntensityHint(0, provider);
   return (
     <aside className="inspector">
       <div className="inspector-title"><strong>导演检查器</strong></div>
@@ -57,21 +67,23 @@ export function Inspector({ line, characters = [], voiceMap = {}, provider, onUp
             <div className="section-caption">当前角色</div>
             <button className="character-selector" type="button" onClick={onOpenVoices}>
               <span className="character-avatar" style={{ '--avatar-color': character.color || 'var(--color-accent)' }}>{character.name.slice(0, 1)}</span>
-              <span><strong>{character.name}</strong><small>{voiceId || '尚未绑定 voice_id'}</small></span>
+              <span><strong>{character.name}<DirectableBadge voiceId={voiceId} /></strong><small>{voiceId || '尚未绑定 voice_id'}</small></span>
               <span className="voice-lock"><LockKeyhole size={11} />{voiceId ? '已绑定' : '待配置'}</span>
             </button>
             <div className="similarity-row"><span>当前音频</span><b>{line.audioUrl ? '已生成' : '待生成'}</b></div>
           </section>
-          <section className="inspector-section">
+          <section className={`inspector-section ${noEmotion ? 'is-muted' : ''}`}>
             <div className="section-caption">说话意图</div>
             <textarea className="intent-editor" rows="4" value={line.subtext} onChange={(event) => onUpdate({ subtext: event.target.value })} />
+            {noEmotion ? <small className="muted-note">{NO_SUBTEXT_NOTE}</small> : null}
           </section>
           <section className="inspector-section">
             <div className="section-caption">情绪与力度</div>
-            <div className="emotion-options">
+            <div className={`emotion-options ${noEmotion ? 'is-muted' : ''}`}>
               {emotions.map((emotion) => <button key={emotion} className={line.emotion === emotion ? 'is-active' : ''} type="button" onClick={() => onUpdate({ emotion })}>{emotion}</button>)}
             </div>
-            <RangeField label="情绪强度" value={line.intensity} suffix="%" onChange={(intensity) => onUpdate({ intensity })} />
+            <RangeField label="情绪强度" value={intensityOf(line.intensity)} suffix="%" zeroLabel={zeroLabel} onChange={(intensity) => onUpdate({ intensity })} />
+            {driftHint}
             <RangeField label="语速" value={line.pace} suffix="%" min={70} max={120} onChange={(pace) => onUpdate({ pace })} />
           </section>
           <section className="inspector-section lab-section">
@@ -90,7 +102,7 @@ export function Inspector({ line, characters = [], voiceMap = {}, provider, onUp
                         <button type="button" onClick={() => onUpdate({ emotion: variant.emotion, intensity: variant.intensity, subtext: variant.subtext, distance: variant.distance })}>应用方向</button>
                       </div>
                       <label className="lab-field"><span>情绪</span><select value={variant.emotion} onChange={(event) => updateVariant(index, { emotion: event.target.value })}>{emotionOptions.map((emotion) => <option key={emotion} value={emotion}>{emotion}</option>)}</select></label>
-                      <RangeField label="强度" value={variant.intensity} suffix="%" onChange={(intensity) => updateVariant(index, { intensity })} />
+                      <RangeField label="强度" value={intensityOf(variant.intensity)} suffix="%" zeroLabel={zeroLabel} onChange={(intensity) => updateVariant(index, { intensity })} />
                       <label className="lab-field"><span>潜台词</span><input value={variant.subtext} onChange={(event) => updateVariant(index, { subtext: event.target.value })} /></label>
                       {audio ? <audio controls preload="none" src={audio} /> : null}
                     </div>

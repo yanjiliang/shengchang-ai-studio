@@ -1,5 +1,6 @@
 import { FileStack, MessageSquarePlus, Music2, Plus, Volume2, WandSparkles, X, Zap } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { intensityOf } from '../../lib/intensity.js';
 import { ScriptLine } from './ScriptLine';
 
 function formatMs(milliseconds) {
@@ -11,13 +12,13 @@ function formatMs(milliseconds) {
 // script order — never a decorative canned shape. Long scenes downsample to
 // at most 24 points so the bars stay readable.
 function intensityCurve(scene) {
-  const values = (scene.lines || []).filter((line) => line.type === 'dialogue').map((line) => Math.min(100, Math.max(0, Number(line.intensity) || 40)));
+  const values = (scene.lines || []).filter((line) => line.type === 'dialogue').map((line) => intensityOf(line.intensity));
   if (!values.length) return [];
   const step = Math.ceil(values.length / 24);
   return values.filter((_, index) => index % step === 0);
 }
 
-export function SceneCanvas({ scene, durationMs, sourceText, characters, selectedLineId, onSelectLine, onUpdateLine, onUpdateScene, onRegenerate, onPlayLine, onAddLine, onDeleteLine, onAcquireSound, generationProgress, generationMessage, onCancelTask }) {
+export function SceneCanvas({ scene, provider, durationMs, sourceText, characters, selectedLineId, onSelectLine, onUpdateLine, onUpdateScene, onRegenerate, onPlayLine, onAddLine, onDeleteLine, onAcquireSound, generationProgress, generationMessage, onCancelTask }) {
   const [showSource, setShowSource] = useState(false);
   useEffect(() => {
     if (!showSource) return undefined;
@@ -62,6 +63,7 @@ export function SceneCanvas({ scene, durationMs, sourceText, characters, selecte
           <ScriptLine
             key={line.id}
             line={line}
+            provider={provider}
             character={characters.find((item) => item.id === line.speakerId)}
             selected={line.id === selectedLineId}
             onSelect={() => onSelectLine(line.id)}

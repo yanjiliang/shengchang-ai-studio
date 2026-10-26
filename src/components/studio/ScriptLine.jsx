@@ -1,4 +1,5 @@
 import { Play, RefreshCcw, Sparkles, Trash2 } from 'lucide-react';
+import { deliveryLabel } from './delivery-label.js';
 import { Waveform } from './Waveform';
 
 const typeColors = {
@@ -7,13 +8,6 @@ const typeColors = {
   music: 'var(--color-violet)',
 };
 
-// Derived fresh from the live fields on every render — the stored
-// line.delivery snapshot could drift after Inspector edits.
-function deliveryLabel(line) {
-  const intensity = Math.min(100, Math.max(0, Number(line.intensity) || 40));
-  const pace = (Number(line.pace) || 90) / 100;
-  return `${line.emotion || '克制'} ${intensity}% · 语速 ${pace.toFixed(2)}`;
-}
 
 // Sound events carry no schedule of their own: the real entry point lives in
 // mix.startMs (the timeline previews it); unbound events have nothing to show
@@ -24,7 +18,7 @@ function eventTimeLabel(line) {
   return Number.isFinite(startMs) && line.mix.startMs !== '' ? `入点 ${(Math.max(0, startMs) / 1000).toFixed(1)}s` : '跟随场景';
 }
 
-export function ScriptLine({ line, character, selected, onSelect, onTextChange, onRegenerate, onPlay, onAcquire, onDelete }) {
+export function ScriptLine({ line, provider, character, selected, onSelect, onTextChange, onRegenerate, onPlay, onAcquire, onDelete }) {
   if (line.type !== 'dialogue') {
     return (
       <div className={`sound-event sound-${line.type}`}>
@@ -50,7 +44,7 @@ export function ScriptLine({ line, character, selected, onSelect, onTextChange, 
       <span className="line-selection" />
       <button className="speaker-button" type="button" style={{ color: character?.color }} onClick={onSelect}>{line.speaker}</button>
       <div className="dialogue-body">
-        <div className="delivery-line">{deliveryLabel(line)}</div>
+        <div className="delivery-line">{deliveryLabel(line, provider)}</div>
         <textarea
           className="dialogue-editor"
           value={line.text}

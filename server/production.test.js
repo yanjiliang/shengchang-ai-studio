@@ -15,7 +15,8 @@ const { queuePositionOf } = await import('./breeze-lane.js');
 const { createProject, getProject, updateProject, getPersistentTask, createPersistentTask } = await import('./database.js');
 const { runtimePaths, ensureRuntime } = await import('./media-store.js');
 const { registerProductionRoutes } = await import('./production-routes.js');
-const { LINE_TAKES_MAX, BREEZE_DEFAULT_SEED, pickFreshSeed, usedLineSeeds } = await import('./line-takes.js');
+const { LINE_TAKES_MAX, BREEZE_DEFAULT_SEED, pickFreshSeed, usedLineSeeds, acceptLineTake } = await import('./line-takes.js');
+const { applyResultsToProject } = await import('./task-manager.js');
 const { annotateStaleness, voiceReadiness, generationVoiceMap } = await import('./voice-references.js');
 const { oneClickMissingVoiceRoles, presetVoicesFor, runOneClickPipeline } = await import('./one-click.js');
 const express = (await import('express')).default;
@@ -226,6 +227,36 @@ describe('单句试听（seed）', () => {
     const again = await makeTake({ seed: 10 });
     assert.equal(again.task.result.take.cached, false);
     assert.equal(ttsRequests().length, n + 1);
+  });
+
+  test('采用期间另一段试听完成：新试听不丢，被挤掉的不会被写回', async () => {
+    const before = getProject(projectId).state.lineTakes.pl1;
+    const target = before.takes[before.takes.length - 1];
+    const pending = acceptLineTake('pl1', target.takeId, { projectId, applyResults: applyResultsToProject });
+    // acceptLineTake 此刻停在 await access：模拟 storeTake 在这个间隙写入一段新试听、挤掉一段。
+    const now = getProject(projectId);
+    const record = now.state.lineTakes.pl1;
+    const fresh = { ...record.takes[record.takes.length - 1], takeId: 'race-new-take', seed: 999 };
+    const kept = record.takes.filter((item) => item.takeId === record.acceptedTakeId || item.takeId === target.takeId);
+    const dropped = record.takes.find((item) => !kept.includes(item));
+    const takes = [...record.takes.filter((item) => item !== dropped), fresh];
+    updateProject(projectId, { trustedAudio: true, state: { ...now.state, lineTakes: { ...now.state.lineTakes, pl1: { ...record, takes } } } });
+    const result = await pending;
+    assert.equal(result.acceptedTakeId, target.takeId);
+    assert.ok(result.takes.some((item) => item.takeId === 'race-new-take'), '采用不能丢掉期间新生成的试听');
+    if (dropped) assert.ok(!result.takes.some((item) => item.takeId === dropped.takeId), '被挤掉的试听不能被写回');
+  });
+
+  test('采用的试听在等待期间被挤掉 → 410 TAKE_EXPIRED，不写回', async () => {
+    const now = getProject(projectId);
+    const record = now.state.lineTakes.pl1;
+    const victim = record.takes.find((item) => item.takeId !== record.acceptedTakeId);
+    const pending = acceptLineTake('pl1', victim.takeId, { projectId, applyResults: applyResultsToProject });
+    updateProject(projectId, { trustedAudio: true, state: { ...now.state, lineTakes: { ...now.state.lineTakes, pl1: { ...record, takes: record.takes.filter((item) => item !== victim) } } } });
+    await assert.rejects(pending, (error) => error.code === 'TAKE_EXPIRED' && error.status === 410);
+    const after = getProject(projectId).state.lineTakes.pl1;
+    assert.equal(after.acceptedTakeId, record.acceptedTakeId);
+    assert.ok(!after.takes.some((item) => item.takeId === victim.takeId));
   });
 
   test('采用不存在的试听 → 404 TAKE_NOT_FOUND', async () => {

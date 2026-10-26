@@ -216,9 +216,17 @@ export async function acceptLineTake(lineId, takeId, { projectId, applyResults }
   try { await access(path.join(runtimePaths.MEDIA_DIR, path.basename(take.audioUrl))); } catch {
     throw new LineTakeError('试听音频文件已不存在，请重新生成', { status: 410, code: 'TAKE_EXPIRED' });
   }
+  // await 期间这段可能已被上限清理挤掉（文件稍后才删）：以最新列表为准。
+  if (!getProject(project.id)?.state?.lineTakes?.[line.id]?.takes?.some((item) => item.takeId === take.takeId)) {
+    throw new LineTakeError('试听音频文件已不存在，请重新生成', { status: 410, code: 'TAKE_EXPIRED' });
+  }
   applyResults(project.id, scene.id, [{ lineId: line.id, sceneId: scene.id, url: take.audioUrl, mime: take.mime, contentHash: take.contentHash, text: take.text, synthesizedText: take.synthesizedText, engine: take.engine, seed: take.seed, requestSeed: take.requestedSeed, createdAt: Date.now() }]);
+  // 上面的 await access 会让出事件循环：期间另一段试听完成时 storeTake 可能已经新增
+  // 一段、挤掉一段。必须基于最新的 lineTakes 写回，不能用 await 之前读到的 record，
+  // 否则会丢掉刚生成的那段、并把已删文件的那段写回来。
   const fresh = getProject(project.id);
-  const lineTakes = { ...(fresh.state.lineTakes || {}), [line.id]: { ...record, acceptedTakeId: take.takeId } };
+  const freshRecord = fresh.state.lineTakes?.[line.id] || record;
+  const lineTakes = { ...(fresh.state.lineTakes || {}), [line.id]: { ...freshRecord, acceptedTakeId: take.takeId } };
   updateProject(project.id, { trustedAudio: true, state: { ...fresh.state, lineTakes } });
   return listLineTakes(line.id, project.id);
 }

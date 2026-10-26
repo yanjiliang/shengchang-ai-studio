@@ -99,7 +99,9 @@ async function breezeFetch(config, pathname, { method = 'POST', body, timeoutMs 
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch (error) {
-    throw explainBreezeFailure(error, { endpoint: settings.endpoint, timeoutMs: limit });
+    const explained = explainBreezeFailure(error, { endpoint: settings.endpoint, timeoutMs: limit });
+    if (isBreezeConnectionError(explained)) breezeLane.noteConnectionFailure?.();
+    throw explained;
   } finally { clearTimeout(timer); }
 }
 
@@ -162,6 +164,8 @@ export async function registerBreezeVoice(config, { id, transcript, wavBase64 })
 // 健康检查。永远不抛。
 // - 忙（Breeze 通道有在飞请求，或 HEALTH_BUSY_WINDOW_MS 内刚有请求成功返回）：不探测，直接
 //   status ok / reachable true / via 'busy'（latencyMs、voiceCount 为 null）。
+//   0042：任何一次连接类失败（/tts、/voices、探测本身）都会清掉“刚成功过”（breeze-lane.js
+//   noteConnectionFailure），之后在出现新的成功之前不再凭时间窗报忙，而是真的探测。
 // - 空闲：真的请求一次 GET /voices（HEALTH_TIMEOUT_MS 超时）并解析结果，via 'probe'。
 // status：ok | unreachable（连不上）| timeout | invalid（连上了但 /voices 报错或格式不认）
 // | misconfigured（地址无效，via 'config'）。reachable 只有 status = ok 时为 true。
@@ -179,6 +183,7 @@ export async function breezeHealth(config, { lane = breezeLane, now = Date.now()
     const voices = await listBreezeVoices(config, { timeoutMs });
     return { engine: 'breeze', status: 'ok', reachable: true, via: 'probe', endpoint, latencyMs: Date.now() - started, voiceCount: voices.length, error: '', inFlightCount: 0, lastSuccessAt: activity.lastSuccessAt };
   } catch (error) {
+    if (isBreezeConnectionError(error)) lane?.noteConnectionFailure?.();
     const status = error?.code === 'BREEZE_UNREACHABLE' ? 'unreachable' : error?.code === 'BREEZE_TIMEOUT' ? 'timeout' : 'invalid';
     return { engine: 'breeze', status, reachable: false, via: 'probe', endpoint, latencyMs: Date.now() - started, voiceCount: null, error: error.message, inFlightCount: 0, lastSuccessAt: activity.lastSuccessAt };
   }

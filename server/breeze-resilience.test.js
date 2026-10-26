@@ -155,7 +155,7 @@ describe('B 健康检查：生成期间不误报', () => {
 
   test('通道 activity：在飞数与最近成功时间', async () => {
     const lane = createLane({ concurrency: 1 });
-    assert.deepEqual(lane.activity(), { inFlight: 0, lastSuccessAt: null });
+    assert.deepEqual(lane.activity(), { inFlight: 0, lastSuccessAt: null, lastConnectionFailureAt: null });
     let finish;
     const running = lane.run({ jobId: 'j', fn: () => new Promise((resolve) => { finish = resolve; }) });
     await new Promise((resolve) => setImmediate(resolve));

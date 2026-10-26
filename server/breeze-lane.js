@@ -17,6 +17,9 @@ function cancelledError() {
   return error;
 }
 
+// 引擎连接类失败的错误码（breeze.js explainBreezeFailure 产生；这里不 import breeze.js，避免循环依赖）。
+export const CONNECTION_FAILURE_CODES = new Set(['BREEZE_UNREACHABLE', 'BREEZE_TIMEOUT']);
+
 const byPriority = (a, b) => a.priority - b.priority || a.sequence - b.sequence;
 
 export function createLane({ concurrency = 1 } = {}) {
@@ -27,6 +30,9 @@ export function createLane({ concurrency = 1 } = {}) {
   // 最近一次上游真正成功返回的时间（含已被取消丢弃的在飞项：上游确实回了）。健康检查据此判断
   // “刚刚还在正常出活”，不必在 Breeze 忙着生成时去探 GET /voices（会被生成阻塞）。
   let lastSuccessAt = null;
+  // 0042：一次连接类失败（连不上 / 被重置 / 超时）立刻清掉“刚成功过”，健康检查和预检不再凭它报忙 / 可达。
+  let lastConnectionFailureAt = null;
+  const noteConnectionFailure = () => { lastSuccessAt = null; lastConnectionFailureAt = Date.now(); };
 
   function pump() {
     while (running.size < limit && waiting.length) {
@@ -35,7 +41,7 @@ export function createLane({ concurrency = 1 } = {}) {
       running.add(item);
       Promise.resolve().then(item.fn).then(
         (value) => { lastSuccessAt = Date.now(); if (!item.discarded) item.resolve(value); },
-        (error) => { if (!item.discarded) item.reject(error); },
+        (error) => { if (CONNECTION_FAILURE_CODES.has(error?.code)) noteConnectionFailure(); if (!item.discarded) item.reject(error); },
       ).finally(() => { running.delete(item); pump(); });
     }
   }
@@ -76,7 +82,9 @@ export function createLane({ concurrency = 1 } = {}) {
       return { removed, discardedInFlight };
     },
     // inFlight：正在上游跑的请求数（含取消后仍在等上游结束的那一项）。
-    activity() { return { inFlight: running.size, lastSuccessAt }; },
+    activity() { return { inFlight: running.size, lastSuccessAt, lastConnectionFailureAt }; },
+    // 通道外的 Breeze 请求（GET/POST /voices、健康探测）连不上时也走这里。
+    noteConnectionFailure,
     snapshot() {
       const inFlight = [...running].map((item) => item.jobId);
       return { concurrency: limit, inFlight: inFlight[0] ?? null, inFlightJobs: inFlight, waiting: waiting.length };

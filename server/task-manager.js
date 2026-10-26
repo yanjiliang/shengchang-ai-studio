@@ -181,10 +181,12 @@ export async function runGenerationRequests(config, requests, { projectId, scene
     for (let attempt = 0; ; attempt += 1) {
       try { return await fn(); } catch (error) {
         if (!isBreezeConnectionError(error) || attempt >= retryDelaysMs.length) throw error;
-        // 超时（不是连不上 / 被重置）：直接重试可能再等满 breezeTimeoutMs（默认 180 秒）两次。先强制
-        // 探一次 GET /voices（lane: null = 不看忙信号，HEALTH_TIMEOUT_MS 10 秒）；探不通就别重试，
-        // 按原超时错误往上抛 → 停掉任务（BREEZE_UNREACHABLE，causeCode BREEZE_TIMEOUT）。
-        if (error.code === 'BREEZE_TIMEOUT' && config.provider === 'breeze') {
+        // 重试之前先强制探一次 GET /voices（lane: null = 不看忙信号，HEALTH_TIMEOUT_MS 10 秒）；
+        // 探不通就别重试，按原错误往上抛 → 停掉任务（BREEZE_UNREACHABLE，causeCode = 原错误码）。
+        // - 超时：直接重试可能再等满 breezeTimeoutMs（默认 180 秒）两次。
+        // - 连不上 / 被重置（0042）：服务挂了时 2 s + 5 s 的退避只是白等（e2e4 Bug 1，约 7 秒、3 次 /tts）；
+        //   探测对连不上是毫秒级的。探得通（偶发的重置）才按退避重试。
+        if (config.provider === 'breeze') {
           const health = await preflight(config, { lane: null });
           if (shouldCancel?.()) throw cancelledError();
           if (!health.reachable) throw error;

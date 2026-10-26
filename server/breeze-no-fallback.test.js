@@ -177,7 +177,8 @@ describe('6 运行中 BREEZE_TIMEOUT：重试前先 10 秒探一次', () => {
     assert.deepEqual(probes, ['lazy', 'forced']);
   });
 
-  test('连不上 / 被重置（BREEZE_UNREACHABLE）不额外探测，照旧重试', async () => {
+  // 0042：连不上 / 被重置也先强制探一次（之前不探、直接 2 s + 5 s 退避重试，Breeze 挂了时白等约 7 秒）。
+  test('连不上 / 被重置（BREEZE_UNREACHABLE）：探得通（偶发重置）→ 照旧重试', async () => {
     const probes = [];
     let attempts = 0;
     const outcome = await runGenerationRequests({ provider: 'breeze', breezeEndpoint: DEAD }, [line('t4')], {
@@ -187,7 +188,24 @@ describe('6 运行中 BREEZE_TIMEOUT：重试前先 10 秒探一次', () => {
     });
     assert.equal(outcome.status, 'done');
     assert.equal(attempts, 3);
-    assert.deepEqual(probes, ['lazy']);
+    assert.deepEqual(probes, ['lazy', 'forced', 'forced']);
+  });
+
+  test('连不上（BREEZE_UNREACHABLE）：探不通 → 不等退避，1 次 /tts 后立即停', async () => {
+    const probes = [];
+    let attempts = 0;
+    const started = Date.now();
+    const outcome = await runGenerationRequests({ provider: 'breeze', breezeEndpoint: DEAD }, [line('t5'), line('t6')], {
+      projectId, sceneId: 's1', retryDelaysMs: [5_000, 5_000],
+      preflight: async (config, options) => { probes.push(options.lane === null ? 'forced' : 'lazy'); return probes.length === 1 ? { status: 'ok', reachable: true, via: 'busy' } : { status: 'unreachable', reachable: false }; },
+      synthesize: async () => { attempts += 1; throw new BreezeError('ECONNREFUSED（模拟）', { status: 503, code: 'BREEZE_UNREACHABLE' }); },
+    });
+    assert.ok(Date.now() - started < 2_000, '没有等 5 秒重试间隔');
+    assert.equal(attempts, 1);
+    assert.deepEqual(probes, ['lazy', 'forced']);
+    assert.equal(outcome.status, 'unreachable');
+    assert.equal(outcome.causeCode, 'BREEZE_UNREACHABLE');
+    assert.equal(outcome.skippedCount, 2);
   });
 });
 

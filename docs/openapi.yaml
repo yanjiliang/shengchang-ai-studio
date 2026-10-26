@@ -85,7 +85,8 @@ paths:
     get:
       operationId: getEnginesBreezeHealth
       tags: [engine]
-      summary: Breeze-TTS-2 服务是否可达（永远 200）
+      summary: Breeze-TTS-2 服务是否可用（永远 200）
+      description: 真的请求一次 Breeze `GET /voices` 并解析结果（`{id: transcript}`、`[{id, transcript}]`、`{voices: [...]}` 三种形状都认）。端口开着但 /voices 报错或格式不认 → `status: invalid`、`reachable: false`。
       responses:
         '200':
           description: OK
@@ -488,6 +489,7 @@ components:
         - BREEZE_TIMEOUT           # 504
         - BREEZE_UPSTREAM          # 上游 4xx → 422，5xx → 502
         - BREEZE_BAD_RESPONSE      # 502
+        - BREEZE_VOICE_REGISTER_FAILED  # 502，合成前自动补注册失败（生成失败项的 code）
         - BREEZE_ERROR             # 502，其他 Breeze 错误
         - LINE_TAKE_INVALID        # 400，其他单句试听参数错误
         - GENERATION_FAILED        # 任务事件里的 code
@@ -519,7 +521,8 @@ components:
       type: object
       properties:
         engine: { const: breeze }
-        reachable: { type: boolean }
+        status: { enum: [ok, unreachable, timeout, invalid, misconfigured], description: 'ok = GET /voices 成功且格式可识别' }
+        reachable: { type: boolean, description: '只有 status = ok 时为 true' }
         endpoint: { type: string }
         latencyMs: { type: [integer, 'null'] }
         voiceCount: { type: [integer, 'null'] }

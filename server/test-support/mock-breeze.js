@@ -20,10 +20,13 @@ const GENERATION_PATHS = new Set(['/tts', '/voice_design', '/voice_clone', '/voi
 export async function startMockBreeze({ port = 0, delayMs = 0, clipSeconds = 1.2 } = {}) {
   const state = {
     requests: [], voices: new Map(), inFlight: 0, inFlightPeak: 0, delayMs, clipSeconds,
-    // failNext: { path, status, text } —— 下一次命中该路径时返回错误。
+    // failNext: { path, method?, status, text } —— 下一次命中该路径时返回错误。
     failNext: null,
     // hold: true 时生成请求挂起，直到调用 release()（用来测取消/排队）。
     hold: false, held: [],
+    // GET /voices 的返回形状。真 Breeze 返回 { id: transcript }（'object'）；
+    // 'array' = [{id, transcript}]，'wrapped' = { voices: [...] }，'garbage' = 无法识别。
+    voicesShape: 'object',
   };
   const release = () => { const pending = state.held.splice(0); for (const resume of pending) resume(); };
   const server = http.createServer((request, response) => {
@@ -36,11 +39,16 @@ export async function startMockBreeze({ port = 0, delayMs = 0, clipSeconds = 1.2
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { response.writeHead(400, { 'Content-Type': 'text/plain' }); return response.end('invalid json'); }
       }
       state.requests.push({ method: request.method, path: url.pathname, body, headers: { authorization: request.headers.authorization }, at: Date.now() });
-      const fail = state.failNext && state.failNext.path === url.pathname ? state.failNext : null;
+      const fail = state.failNext && state.failNext.path === url.pathname && (!state.failNext.method || state.failNext.method === request.method) ? state.failNext : null;
       if (fail) { state.failNext = null; response.writeHead(fail.status, { 'Content-Type': 'text/plain' }); return response.end(fail.text || 'mock failure'); }
       if (url.pathname === '/voices' && request.method === 'GET') {
+        const list = [...state.voices.values()].map(({ id, transcript }) => ({ id, transcript }));
+        const payload = state.voicesShape === 'array' ? list
+          : state.voicesShape === 'wrapped' ? { voices: list }
+            : state.voicesShape === 'garbage' ? 'not a voice list'
+              : Object.fromEntries(list.map(({ id, transcript }) => [id, transcript]));
         response.writeHead(200, { 'Content-Type': 'application/json' });
-        return response.end(JSON.stringify([...state.voices.values()].map(({ id, transcript }) => ({ id, transcript }))));
+        return response.end(JSON.stringify(payload));
       }
       if (url.pathname === '/voices' && request.method === 'POST') {
         if (!body?.id || !body?.transcript || !(body.wav_base64 || body.wav_path)) { response.writeHead(400, { 'Content-Type': 'text/plain' }); return response.end('id, transcript and wav_path|wav_base64 are required'); }
@@ -66,5 +74,7 @@ export async function startMockBreeze({ port = 0, delayMs = 0, clipSeconds = 1.2
   });
   await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
   const endpoint = `http://127.0.0.1:${server.address().port}`;
-  return { endpoint, state, release, close: () => new Promise((resolve) => { release(); server.closeAllConnections?.(); server.close(resolve); }) };
+  // restart()：模拟 Breeze 进程重启——注册表清空（它不落盘）。
+  const restart = () => { state.voices.clear(); };
+  return { endpoint, state, release, restart, close: () => new Promise((resolve) => { release(); server.closeAllConnections?.(); server.close(resolve); }) };
 }

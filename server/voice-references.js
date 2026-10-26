@@ -144,16 +144,32 @@ async function registerReference(config, reference, wav) {
   registered.add(key);
 }
 
-export async function ensureReferenceRegistered(config, reference) {
+// 合成前调用：这个参考的 voice 在 Breeze 里不在就从本地存的参考音频 + 参考文本补注册。
+// 每个进程第一次用到时核对一次（声场重启 → 重新核对）；Breeze 自己重启后进程内记录会
+// 过期，那种情况由 healReferenceRegistration 在 /tts 报错时兜底。
+export async function ensureReferenceRegistered(config, reference, { force = false } = {}) {
   const key = `${config.breezeEndpoint}|${reference.breezeVoiceId}`;
-  if (registered.has(key)) return;
+  if (!force && registered.has(key)) return { registered: false };
+  registered.delete(key);
   const voices = await listBreezeVoices(config);
-  if (voices.some((voice) => (typeof voice === 'string' ? voice : voice?.id) === reference.breezeVoiceId)) { registered.add(key); return; }
+  if (voices.some((voice) => voice.id === reference.breezeVoiceId)) { registered.add(key); return { registered: false }; }
   try { await access(referenceFilePath(reference.audioHash)); } catch {
-    throw new ReferenceError(`角色参考音频文件丢失（${reference.audioUrl}），请重新锁定参考音`, { status: 409, code: 'REFERENCE_FILE_MISSING' });
+    throw new ReferenceError(`角色参考音频文件丢失（${reference.audioUrl}），无法在 Breeze 重新注册，请重新锁定参考音`, { status: 409, code: 'REFERENCE_FILE_MISSING' });
   }
-  await registerReference(config, reference);
+  try { await registerReference(config, reference); } catch (error) {
+    throw new BreezeError(`Breeze 里没有这个角色的音色（${reference.breezeVoiceId}），自动重新注册失败：${error.message}`, { status: error.status || 502, code: 'BREEZE_VOICE_REGISTER_FAILED' });
+  }
+  return { registered: true };
 }
+
+// /tts 报 4xx 时调用：重新核对 GET /voices（不信进程内缓存），voice 确实不在才补注册。
+// 返回 true = 补注册了，调用方重试一次；false = voice 在，报错另有原因，原样抛出。
+export async function healReferenceRegistration(config, reference) {
+  const outcome = await ensureReferenceRegistered(config, reference, { force: true });
+  return outcome.registered;
+}
+
+export const isBreezeRejection = (error) => error?.code === 'BREEZE_UPSTREAM' && [400, 404, 422].includes(error.upstreamStatus);
 
 // 锁定：wav 已经是单声道 wav。先注册到 Breeze，成功后才写项目——Breeze 不可达
 // 时项目里不会留下一个“锁了但用不了”的参考。

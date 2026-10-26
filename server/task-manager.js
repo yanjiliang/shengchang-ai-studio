@@ -9,7 +9,7 @@ import { analyzeNovel } from './story-analyzer.js';
 import { runOneClickPipeline } from './one-click.js';
 import { buildAttribution } from './attribution.js';
 import { ensureBuiltinAssets } from './builtin-assets.js';
-import { ensureReferenceRegistered, resolveReferenceRequest, applyPronunciation } from './voice-references.js';
+import { ensureReferenceRegistered, healReferenceRegistration, isBreezeRejection, resolveReferenceRequest, applyPronunciation } from './voice-references.js';
 import { cancelJobEverywhere, laneFor, PRIORITY, queuePositionOf } from './breeze-lane.js';
 import { createVoiceDesignJob, runVoiceDesignTask } from './voice-design.js';
 import { createLineTakeJob, runLineTakeTask } from './line-takes.js';
@@ -157,14 +157,23 @@ export async function runGenerationRequests(config, requests, { projectId, scene
           cacheAudio({ contentHash, url: recovered.url, mime: recovered.mime, provider: config.provider || '', model: config.model || '', voiceId: resolved.voiceId || '' });
           results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: recovered.url, mime: recovered.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', engine: config.provider || '', cached: true, createdAt: Date.now() });
         } else {
-          if (resolved.referenceHash) await ensureReferenceRegistered(config, projectState.voiceReferences[request.speakerId]);
+          const reference = resolved.referenceHash ? projectState.voiceReferences[request.speakerId] : null;
+          if (reference) await ensureReferenceRegistered(config, reference);
           // 取消可能发生在上面的 await 期间（此时还不在通道里，cancelJobEverywhere 摸不到）：
           // 进通道前同步再查一次；轮到它时再查一次，已取消的绝不发给引擎。
           if (shouldCancel?.()) return { status: 'cancelled', results, failures };
-          const audio = await laneFor(config.provider, config).run({ jobId, priority, fn: () => {
+          const synthesizeOnce = () => laneFor(config.provider, config).run({ jobId, priority, fn: () => {
             if (shouldCancel?.()) throw Object.assign(new Error('任务已取消'), { code: 'TASK_CANCELLED' });
             return synthesizeLine(config, resolved);
           } });
+          let audio;
+          try { audio = await synthesizeOnce(); } catch (error) {
+            // 自愈：Breeze 重启后注册表是空的，/tts 拒收这个 voiceId。重新核对 GET /voices，
+            // 确实不在就用本地参考音补注册，然后重试一次（只一次）；voice 在则原样报错。
+            if (!reference || !isBreezeRejection(error) || !(await healReferenceRegistration(config, reference))) throw error;
+            if (shouldCancel?.()) return { status: 'cancelled', results, failures };
+            audio = await synthesizeOnce();
+          }
           const extension = extensionForMime(audio.mime, config.audioFormat);
           const saved = await saveMedia(contentHash, extension, audio.buffer);
           cacheAudio({ contentHash, url: saved.url, mime: audio.mime, provider: config.provider || '', model: config.model || '', voiceId: resolved.voiceId || '' });
@@ -173,7 +182,7 @@ export async function runGenerationRequests(config, requests, { projectId, scene
       }
     } catch (error) {
       if (error.code === 'TASK_CANCELLED') return { status: 'cancelled', results, failures };
-      failures.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, text: request.text, error: error.name === 'AbortError' ? '模型请求超时' : error.message });
+      failures.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, text: request.text, error: error.name === 'AbortError' ? '模型请求超时' : error.message, ...(error.code ? { code: error.code } : {}) });
     }
   }
   return { status: 'done', results, failures };

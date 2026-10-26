@@ -118,12 +118,29 @@ export async function breezeAudio(config, pathname, body) {
   return { buffer, mime, seed: parseSeedHeader(response.headers.get('x-seed')) };
 }
 
+// GET /voices 的三种形状都认（Breeze 这边不改格式）：
+//   { "<id>": "<transcript>", ... }   ← 真 Breeze 现在的返回
+//   [ { id, transcript }, ... ] 或 [ "<id>", ... ]
+//   { voices: [ ... ] }
+// 统一成 [{ id, transcript }]。
+export function parseBreezeVoices(payload) {
+  const fromList = (list) => list.map((item) => (typeof item === 'string' ? { id: item, transcript: '' } : { id: String(item?.id ?? ''), transcript: String(item?.transcript ?? '') })).filter((item) => item.id);
+  if (Array.isArray(payload)) return fromList(payload);
+  if (payload && typeof payload === 'object') {
+    if (Array.isArray(payload.voices)) return fromList(payload.voices);
+    const entries = Object.entries(payload);
+    if (entries.every(([, value]) => typeof value === 'string' || (value && typeof value === 'object' && !Array.isArray(value)))) {
+      return entries.map(([id, value]) => ({ id, transcript: typeof value === 'string' ? value : String(value?.transcript ?? '') }));
+    }
+  }
+  return null;
+}
+
 export async function listBreezeVoices(config, { timeoutMs } = {}) {
   const response = await breezeFetch(config, '/voices', { method: 'GET', timeoutMs });
   if (!response.ok) throw await upstreamError(response, '/voices');
-  const payload = await response.json().catch(() => null);
-  const voices = Array.isArray(payload) ? payload : Array.isArray(payload?.voices) ? payload.voices : null;
-  if (!voices) throw new BreezeError('Breeze /voices 返回格式无法识别（需要数组或 {voices: []}）', { status: 502, code: 'BREEZE_BAD_RESPONSE' });
+  const voices = parseBreezeVoices(await response.json().catch(() => null));
+  if (!voices) throw new BreezeError('Breeze /voices 返回格式无法识别（需要 {id: 参考文本}、[{id, transcript}] 或 {voices: [...]}）', { status: 502, code: 'BREEZE_BAD_RESPONSE' });
   return voices;
 }
 
@@ -134,19 +151,21 @@ export async function registerBreezeVoice(config, { id, transcript, wavBase64 })
   return { id };
 }
 
-// 健康检查：GET /voices（轻量、只读、不占生成槽）。永远不抛：返回 reachable。
+// 健康检查：真的请求一次 GET /voices（轻量、只读、不占生成槽）并解析结果。永远不抛。
+// status：ok | unreachable（连不上）| timeout | invalid（连上了但 /voices 报错或格式不认）
+// | misconfigured（地址无效）。reachable 只有 status = ok 时为 true——“端口开着但接口坏了”
+// 不算健康（0020 起；以前那种情况 reachable 也是 true）。
 export async function breezeHealth(config) {
   let endpoint;
   try { endpoint = breezeSettings(config).endpoint; } catch (error) {
-    return { engine: 'breeze', reachable: false, endpoint: String(config.breezeEndpoint || ''), latencyMs: null, voiceCount: null, error: error.message };
+    return { engine: 'breeze', status: 'misconfigured', reachable: false, endpoint: String(config.breezeEndpoint || ''), latencyMs: null, voiceCount: null, error: error.message };
   }
   const started = Date.now();
   try {
     const voices = await listBreezeVoices(config, { timeoutMs: HEALTH_TIMEOUT_MS });
-    return { engine: 'breeze', reachable: true, endpoint, latencyMs: Date.now() - started, voiceCount: voices.length, error: '' };
+    return { engine: 'breeze', status: 'ok', reachable: true, endpoint, latencyMs: Date.now() - started, voiceCount: voices.length, error: '' };
   } catch (error) {
-    // 能连上但 /voices 报错也算“可达”：服务在，只是这个接口有问题。
-    const reachable = error instanceof BreezeError && error.code !== 'BREEZE_UNREACHABLE' && error.code !== 'BREEZE_TIMEOUT';
-    return { engine: 'breeze', reachable, endpoint, latencyMs: Date.now() - started, voiceCount: null, error: error.message };
+    const status = error?.code === 'BREEZE_UNREACHABLE' ? 'unreachable' : error?.code === 'BREEZE_TIMEOUT' ? 'timeout' : 'invalid';
+    return { engine: 'breeze', status, reachable: false, endpoint, latencyMs: Date.now() - started, voiceCount: null, error: error.message };
   }
 }

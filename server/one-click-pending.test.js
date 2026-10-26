@@ -69,3 +69,21 @@ test('unchanged lines never become pending: Doubao lines with matching hash, leg
   assert.deepEqual(ids, [], '没改过的句子一句都不能因为 0051 变成要重配');
   assert.equal(exportPrecheck(doubao, createProject({ name: 'unchanged', state })).pendingLineCount, 0);
 });
+
+test('e2e7 upgrade: legacy lines (audioHash but no audioEngine) voiced by another engine are not pending under Doubao; text edits still are', () => {
+  mkdirSync(runtimePaths.MEDIA_DIR, { recursive: true });
+  for (const name of ['g1.wav', 'g2.wav', 'g3.wav']) writeFileSync(path.join(runtimePaths.MEDIA_DIR, name), 'x');
+  const doubao = { provider: 'volcengine-api-key', resourceId: 'seed-tts-2.0' };
+  const base = { type: 'dialogue', speaker: '林夏', speakerId: 'linxia', emotion: '平静' };
+  const state = { assets: [], characters: [{ id: 'linxia', name: '林夏', role: '角色' }], voiceMap: { linxia: 'zh_female_vv_uranus_bigtts' }, scenes: [{ id: 's1', title: '场景', lines: [
+    // 旧代码用 demo 配的：哈希按 demo 算，现在启用豆包复算必然对不上。
+    { ...base, id: 'g1', text: '旧 demo 句。', audioUrl: '/media/g1.wav', audioText: '旧 demo 句。', audioHash: 'legacy-demo-hash' },
+    { ...base, id: 'g2', text: '旧句改了字。', audioUrl: '/media/g2.wav', audioText: '旧句原文。', audioHash: 'legacy-demo-hash-2' },
+    { ...base, id: 'g3', text: '旧豆包句。', audioUrl: '/media/g3.wav', audioText: '旧豆包句。' },
+  ] }] };
+  state.scenes[0].lines[2].audioHash = expectedAudioHash(doubao, state, state.scenes[0].lines[2]);
+  const ids = buildGenerationRequests(state, { needGeneration: needsGenerationPredicate(doubao, state) }).map((item) => item.lineId);
+  assert.deepEqual(ids, ['g2'], '只有改过文本的老句子要重配，没改过的不能拿豆包重配');
+  const precheck = exportPrecheck(doubao, createProject({ name: 'legacy', state }));
+  assert.equal(precheck.pendingLineCount, 1);
+});

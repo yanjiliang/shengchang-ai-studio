@@ -264,6 +264,11 @@ export function lineStaleness(config, state, line, voiceMap = effectiveVoiceMap(
   if (!line.audioHash || (line.audioEngine && line.audioEngine !== (config.provider || ''))) return textChanged ? { stale: true, staleReason: 'text' } : { stale: false, staleReason: null };
   const expected = expectedAudioHash(config, state, line, voiceMap);
   if (expected === line.audioHash) return { stale: false, staleReason: null };
+  // e2e7 升级检查：d04fa3f（4174 生产）配的句子有 audioHash、没有 audioEngine。哈希对不上时分不清是
+  // “参数改了”还是“当时是别的引擎配的”（demo / 自定义的句子在启用豆包后全部对不上），按“别的引擎”处理、
+  // 只看文本——否则升级后一键成片会拿豆包把没改过的老句子整批重配。代价：老句子同引擎下只改情绪 / 语速
+  // 不会显示过期（重配一次后就带上 audioEngine，恢复精确判断）。
+  if (!line.audioEngine) return textChanged ? { stale: true, staleReason: 'text' } : { stale: false, staleReason: null };
   return { stale: true, staleReason: textChanged ? 'text' : 'params' };
 }
 

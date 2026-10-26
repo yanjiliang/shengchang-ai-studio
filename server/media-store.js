@@ -27,48 +27,62 @@ export async function saveUploadedAsset(id, extension, buffer) {
   return saveMedia(`asset-${id}`, safeExtension, buffer);
 }
 
+// ffmpeg/ffprobe failures: drop the version/build banner and keep the last few
+// stderr lines, which is where the real error is (e.g. "No such file", "Invalid
+// argument"). Exported for tests.
+const BANNER_LINE = /^(ffmpeg|ffprobe) version |^\s+(built with|configuration:|lib(avutil|avcodec|avformat|avdevice|avfilter|swscale|swresample|postproc)\s)/;
+export function ffmpegFailureMessage(command, stderr, maxLines = 5) {
+  const lines = String(stderr || '').split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line.trim() && !BANNER_LINE.test(line));
+  const tail = lines.slice(-maxLines).join('\n').slice(-1200);
+  return tail || `${command}执行失败`;
+}
+
+function withHideBanner(command, args) {
+  return command === 'ffmpeg' && !args.includes('-hide_banner') ? ['-hide_banner', ...args] : args;
+}
+
 function run(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawn(command, withHideBanner(command, args), { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
     child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(stderr.slice(-1200) || `${command}执行失败`))));
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(ffmpegFailureMessage(command, stderr)))));
   });
 }
 
 function runWithOutput(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, withHideBanner(command, args), { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = '';
     child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
     child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve(stdout) : reject(new Error(stderr.slice(-1200) || `${command}执行失败`))));
+    child.on('close', (code) => (code === 0 ? resolve(stdout) : reject(new Error(ffmpegFailureMessage(command, stderr)))));
   });
 }
 
 // Binary stdout variant, for piping raw PCM out of ffmpeg.
 function runBinary(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, withHideBanner(command, args), { stdio: ['ignore', 'pipe', 'pipe'] });
     const chunks = [];
     let stderr = '';
     child.stdout.on('data', (chunk) => chunks.push(chunk));
     child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(stderr.slice(-1200) || `${command}执行失败`))));
+    child.on('close', (code) => (code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(ffmpegFailureMessage(command, stderr)))));
   });
 }
 
 // stderr-capturing variant: ffmpeg prints filter summaries (ebur128) there.
 function runStderr(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawn(command, withHideBanner(command, args), { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
     child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve(stderr) : reject(new Error(stderr.slice(-1200) || `${command}执行失败`))));
+    child.on('close', (code) => (code === 0 ? resolve(stderr) : reject(new Error(ffmpegFailureMessage(command, stderr)))));
   });
 }
 

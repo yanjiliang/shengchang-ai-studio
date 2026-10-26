@@ -61,6 +61,51 @@ function runBinary(command, args) {
   });
 }
 
+// stderr-capturing variant: ffmpeg prints filter summaries (ebur128) there.
+function runStderr(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', reject);
+    child.on('close', (code) => (code === 0 ? resolve(stderr) : reject(new Error(stderr.slice(-1200) || `${command}执行失败`))));
+  });
+}
+
+/**
+ * Integrated loudness (EBU R128, LUFS) of a rendered file. Never throws:
+ * returns { lufs: null, lufsReason } when ffmpeg is missing or the
+ * measurement can't be parsed, so an export never fails on the meter.
+ */
+export async function measureLoudness(source) {
+  try {
+    const stderr = await runStderr('ffmpeg', ['-hide_banner', '-nostats', '-i', source, '-af', 'ebur128=framelog=quiet', '-f', 'null', '-']);
+    const summary = stderr.slice(stderr.lastIndexOf('Summary:'));
+    const match = summary.match(/Integrated loudness:\s*\n\s*I:\s*(-?[\d.]+|-inf)\s*LUFS/);
+    if (!match) return { lufs: null, lufsReason: 'LOUDNESS_UNPARSEABLE' };
+    if (match[1] === '-inf') return { lufs: null, lufsReason: 'SILENT' };
+    return { lufs: Math.round(Number(match[1]) * 10) / 10, lufsReason: null };
+  } catch (error) {
+    return { lufs: null, lufsReason: error.code === 'ENOENT' ? 'FFMPEG_UNAVAILABLE' : 'LOUDNESS_MEASURE_FAILED' };
+  }
+}
+
+/**
+ * Where each line sits in the mix: [{ lineId, sceneId, type, startMs, endMs }]
+ * from the resolved timeline (dialogue start = previous line's end + its
+ * gapAfterMs, unless mix.startMs pins it). offsetMs shifts a scene into
+ * episode time. Sorted by start, dialogue first on ties.
+ */
+export function timelineSegments(resolved, { sceneId = null, offsetMs = 0 } = {}) {
+  return (resolved?.tracks || [])
+    .map((track) => ({
+      lineId: track.lineId, sceneId, type: track.type,
+      startMs: Math.round(offsetMs + track.start * 1000),
+      endMs: Math.round(offsetMs + (track.start + track.duration) * 1000),
+    }))
+    .sort((a, b) => a.startMs - b.startMs || (a.type === 'dialogue' ? -1 : 0) - (b.type === 'dialogue' ? -1 : 0));
+}
+
 function clamp(value, min, max, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback;
@@ -288,7 +333,8 @@ export async function exportSceneTimeline({ projectId, scene, targetLufs = -16 }
   const safeTitle = String(scene.title || '未命名场景').replace(/[\\/:*?"<>|]/g, '-');
   const output = path.join(EXPORT_DIR, `${safeId(projectId)}-${safeId(scene.id)}-${safeTitle}.mp3`);
   const rendered = await renderTimeline(scene, output, { targetLufs, normalize: true, tailPadMs: 350 });
-  return { url: `/media/exports/${path.basename(output)}`, name: path.basename(output), durationMs: rendered.durationMs, trackCount: rendered.tracks.length, missingLineIds: rendered.missing };
+  const loudness = await measureLoudness(output);
+  return { url: `/media/exports/${path.basename(output)}`, name: path.basename(output), durationMs: rendered.durationMs, trackCount: rendered.tracks.length, missingLineIds: rendered.missing, segments: timelineSegments(rendered, { sceneId: scene.id }), targetLufs, ...loudness };
 }
 
 export async function renderScenePreview({ projectId, scene }) {
@@ -313,7 +359,7 @@ export async function exportProjectTimeline({ project, targetLufs = -16, onProgr
       const scene = eligible[index];
       onProgress?.({ current: index + 1, total: eligible.length, progress: 8 + Math.round(index / eligible.length * 72), message: `正在混音场景 ${index + 1} / ${eligible.length}` });
       const output = path.join(EXPORT_DIR, `${safeId(project.id)}-${safeId(scene.id)}-episode.wav`);
-      const rendered = await renderTimeline(scene, output, { normalize: false, tailPadMs: 900 });
+      const rendered = await renderTimeline(scene, output, { normalize: false, tailPadMs: EPISODE_TAIL_PAD_MS });
       renderedScenes.push({ scene, output, rendered });
     }
     await writeFile(manifest, renderedScenes.map(({ output }) => `file '${output.replaceAll("'", "'\\''")}'`).join('\n'));
@@ -322,13 +368,54 @@ export async function exportProjectTimeline({ project, targetLufs = -16, onProgr
     const output = path.join(EXPORT_DIR, `${safeId(project.id)}-${safeName}-整集.mp3`);
     await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', manifest, '-af', `loudnorm=I=${targetLufs}:TP=-1:LRA=11,alimiter=limit=0.95`, '-ar', '48000', '-ac', '2', '-codec:a', 'libmp3lame', '-b:a', '192k', output]);
     const durationMs = renderedScenes.reduce((sum, item) => sum + item.rendered.durationMs, 0);
-    return { url: `/media/exports/${path.basename(output)}`, name: path.basename(output), durationMs, sceneCount: renderedScenes.length, trackCount: renderedScenes.reduce((sum, item) => sum + item.rendered.tracks.length, 0) };
+    const { scenes, segments } = episodeLayout(renderedScenes.map(({ scene, rendered }) => ({ scene, rendered })));
+    const loudness = await measureLoudness(output);
+    return { url: `/media/exports/${path.basename(output)}`, name: path.basename(output), durationMs, sceneCount: renderedScenes.length, trackCount: renderedScenes.reduce((sum, item) => sum + item.rendered.tracks.length, 0), scenes, segments, missingLineIds: renderedScenes.flatMap((item) => item.rendered.missing), targetLufs, ...loudness };
   } finally {
     // Per-scene intermediate WAVs and the concat manifest are only inputs to
     // the final encode; never leave them behind.
     await unlink(manifest).catch(() => {});
     await Promise.all(renderedScenes.map(({ output }) => unlink(output).catch(() => {})));
   }
+}
+
+const EPISODE_TAIL_PAD_MS = 900;
+
+// Scenes are concatenated back to back; each rendered scene already carries
+// its tail pad in durationMs, so scene N starts at the sum of 0..N-1.
+function episodeLayout(items) {
+  let cursor = 0;
+  const scenes = [];
+  const segments = [];
+  for (const { scene, rendered } of items) {
+    const sceneSegments = timelineSegments(rendered, { sceneId: scene.id, offsetMs: cursor });
+    scenes.push({ sceneId: scene.id, title: scene.title || '', startMs: cursor, endMs: cursor + rendered.durationMs, durationMs: rendered.durationMs });
+    segments.push(...sceneSegments);
+    cursor += rendered.durationMs;
+  }
+  return { scenes, segments, durationMs: cursor };
+}
+
+/**
+ * The episode timeline without rendering: same layout as exportProjectTimeline
+ * (ffprobe for durations only). Scenes with no usable dialogue are skipped,
+ * as the export skips them; a scene whose timeline can't be resolved is
+ * reported in skippedScenes with the reason.
+ */
+export async function resolveProjectTimeline(project) {
+  const items = [];
+  const missingLineIds = [];
+  const skippedScenes = [];
+  for (const scene of project.state?.scenes || []) {
+    if (!scene.lines?.some((line) => line.type === 'dialogue' && line.audioUrl)) { skippedScenes.push({ sceneId: scene.id, reason: 'NO_DIALOGUE_AUDIO' }); continue; }
+    try {
+      const resolved = await resolveSceneTimeline(scene);
+      items.push({ scene, rendered: { ...resolved, durationMs: Math.round(resolved.totalDuration * 1000 + EPISODE_TAIL_PAD_MS) } });
+      missingLineIds.push(...resolved.missing);
+    } catch (error) { skippedScenes.push({ sceneId: scene.id, reason: 'TIMELINE_INVALID', message: error.message }); }
+  }
+  const layout = episodeLayout(items);
+  return { ...layout, missingLineIds, skippedScenes };
 }
 
 export const runtimePaths = { MEDIA_DIR, EXPORT_DIR };

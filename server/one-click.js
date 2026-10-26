@@ -382,7 +382,7 @@ export async function runOneClickPipeline(task, config, deps = {}) {
     updatePersistentTask(task.id, {
       status: 'completed', progress: 100, completedAt: Date.now(),
       message: `一键成片完成：${report.sceneCount} 个场景已导出${cacheNote}${attention.length ? `，${attention.length} 项待处理` : ''}${attentionNote}`,
-      result: { url: report.url, name: report.name, sceneCount: report.sceneCount, durationMs: report.durationMs, attention, stages: completedStages, billedCharacters: billing.billedCharacters ?? null, freshCount: billing.freshCount ?? 0, cacheHits: billing.cacheHits ?? 0, missingUsageCount: billing.missingUsageCount ?? 0, results: billing.lineResults || [] },
+      result: { url: report.url, name: report.name, sceneCount: report.sceneCount, durationMs: report.durationMs, scenes: report.scenes || [], segments: report.segments || [], lufs: report.lufs ?? null, lufsReason: report.lufsReason ?? null, targetLufs: report.targetLufs ?? config.targetLufs ?? null, attention, stages: completedStages, billedCharacters: billing.billedCharacters ?? null, freshCount: billing.freshCount ?? 0, cacheHits: billing.cacheHits ?? 0, missingUsageCount: billing.missingUsageCount ?? 0, results: billing.lineResults || [] },
     });
   }
 }

@@ -1,7 +1,8 @@
 // 生产链路接口（Breeze 端到端）：任务取消 / 查询、单句试听（带 seed）、音色就绪。
 // 错误统一 { error, code[, ...details] }，见 docs/openapi.yaml。
 import { readConfig } from './config-store.js';
-import { getProject } from './database.js';
+import { getProject, listPersistentTasks } from './database.js';
+import { resolveProjectTimeline } from './media-store.js';
 import { sendError } from './breeze-routes.js';
 import { acceptLineTake, listLineTakes } from './line-takes.js';
 import { applyResultsToProject, cancelTask, enqueueLineTake, getTask, taskWithQueuePosition, waitForTaskToSettle } from './task-manager.js';
@@ -25,6 +26,19 @@ const lineAnnotated = async (payload) => {
   const line = project?.state.scenes.flatMap((scene) => scene.lines || []).find((item) => item.id === payload.lineId);
   return { ...payload, line: line || null };
 };
+
+export function latestEpisodeExport(projectId) {
+  const task = listPersistentTasks(projectId, 100).find((item) => (item.kind === 'export-project' || item.kind === 'one-click') && item.status === 'completed' && item.result?.url);
+  if (!task) return null;
+  const { url, name, durationMs, lufs = null, lufsReason = null, targetLufs = null } = task.result;
+  return { taskId: task.id, kind: task.kind, completedAt: task.completedAt, url, name, durationMs, lufs, lufsReason: lufs === null ? (lufsReason || 'NOT_MEASURED') : null, targetLufs };
+}
+
+export async function projectTimeline(project) {
+  const timeline = await resolveProjectTimeline(project);
+  const lastExport = latestEpisodeExport(project.id);
+  return { ...timeline, lufs: lastExport?.lufs ?? null, lufsReason: lastExport ? lastExport.lufsReason : 'NOT_EXPORTED', lastExport };
+}
 
 export function registerProductionRoutes(app) {
   app.get('/api/jobs/:jobId', (request, response, next) => {
@@ -57,6 +71,16 @@ export function registerProductionRoutes(app) {
     try {
       const result = await acceptLineTake(request.params.lineId, request.params.takeId, { projectId: request.body?.projectId, applyResults: applyResultsToProject });
       response.json(await lineAnnotated(result));
+    } catch (error) { sendError(response, error, next); }
+  });
+
+  // 整集时间轴：每句在成片里的起止（ms），和最近一次整集导出（含一键成片）
+  // 测得的响度。lufs 是那次导出的成片的，之后改过的台词不会反映进去。
+  app.get('/api/projects/:projectId/timeline', async (request, response, next) => {
+    try {
+      const project = getProject(request.params.projectId);
+      if (!project) throw httpError(404, 'PROJECT_NOT_FOUND', '项目不存在');
+      response.json({ projectId: project.id, ...(await projectTimeline(project)) });
     } catch (error) { sendError(response, error, next); }
   });
 

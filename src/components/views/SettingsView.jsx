@@ -28,13 +28,16 @@ export function SettingsView({ config, onSave, onTestLlm, onToast, onReload }) {
     setTestingLlm(true); setLlmResult(null);
     try {
       const result = await onTestLlm(draft);
-      setLlmResult({ type: 'success', text: `连接通过 · ${result.latencyMs} ms · 识别到 ${result.sceneCount} 个场景` });
+      // 上游失败也是 200 + ok:false（code 见 docs/openapi.yaml TestLlmResult）。
+      setLlmResult(result.ok ? { type: 'success', text: `${result.message} · ${result.latencyMs} ms` } : { type: 'error', text: result.message });
     } catch (error) { setLlmResult({ type: 'error', text: error.message }); }
     finally { setTestingLlm(false); }
   };
 
   if (!draft) return <main className="asset-view settings-view"><div className="settings-loading"><AlertCircle size={20} /><p>本地配置读取失败，无法编辑。</p><button className="button secondary-button" type="button" onClick={onReload}>重新读取</button></div></main>;
   const requiresCredential = draft.provider !== 'demo';
+  // 服务端只在地址不变时沿用已保存的 Key（防止把 Key 发给另一家服务）。
+  const llmEndpointChanged = (draft.llmEndpoint || '').trim().replace(/\/+$/, '') !== (config?.llmEndpoint || '').trim().replace(/\/+$/, '');
   return (
     <main className="asset-view settings-view">
       <header className="view-header"><div><span className="view-kicker">凭证仅存储在本机</span><h2>模型连接</h2><p>这里只配置语音与文本模型。角色音色在当前作品的“角色音色”中单独锁定。</p></div><span className={`provider-state ${draft.provider === 'demo' || draft.hasAccessKey || (draft.provider === 'custom' && draft.endpoint) ? 'is-ready' : ''}`}><ShieldCheck size={14} />{draft.provider === 'demo' ? '开发测试模式' : draft.hasAccessKey ? '凭证已保存' : draft.provider === 'custom' && draft.endpoint ? '无需凭证' : '等待配置'}</span></header>
@@ -53,8 +56,8 @@ export function SettingsView({ config, onSave, onTestLlm, onToast, onReload }) {
         <div className="settings-side-column">
           <section className="settings-panel llm-settings-panel">
             <div className="settings-panel-head"><BrainCircuit size={17} /><div><strong>文本理解模型</strong><p>用于把小说原文拆解为人物、场景、对白和声音事件。</p></div></div>
-            <label className="setting-field"><span>Chat Completions 地址</span><input value={draft.llmEndpoint || ''} placeholder="https://.../chat/completions" onChange={(event) => change('llmEndpoint', event.target.value)} /></label>
-            <label className="setting-field"><span>API Key {draft.hasLlmApiKey ? <em>已保存 {draft.llmSecretHint}</em> : null}</span><input type="password" value={draft.llmApiKey || ''} placeholder={draft.hasLlmApiKey ? '留空则继续使用已保存凭证' : '文本模型 API Key'} autoComplete="new-password" onChange={(event) => change('llmApiKey', event.target.value)} /></label>
+            <label className="setting-field"><span>Base URL</span><input value={draft.llmEndpoint || ''} placeholder="例如 https://api.example.com/v1" onChange={(event) => change('llmEndpoint', event.target.value)} /><small>填到 /v1 即可；完整的 …/chat/completions 地址也可以。</small></label>
+            <label className="setting-field"><span>API Key {draft.hasLlmApiKey ? <em>已保存 {draft.llmSecretHint}</em> : null}</span><input type="password" value={draft.llmApiKey || ''} placeholder={draft.hasLlmApiKey ? (llmEndpointChanged ? '地址已更改，请重新填写 Key' : '留空则继续使用已保存凭证') : '文本模型 API Key'} autoComplete="new-password" onChange={(event) => change('llmApiKey', event.target.value)} /></label>
             <label className="setting-field"><span>模型名称</span><input value={draft.llmModel || ''} placeholder="例如 doubao-seed-1-6-250615" onChange={(event) => change('llmModel', event.target.value)} /></label>
             {llmResult ? <div className={`test-result is-${llmResult.type}`}>{llmResult.type === 'success' ? <Check size={14} /> : <AlertCircle size={14} />}<span>{llmResult.text}</span></div> : null}
             <div className="settings-actions"><button className="button secondary-button" type="button" disabled={testingLlm} onClick={testLlm}>{testingLlm ? <LoaderCircle size={14} className="spin" /> : <BrainCircuit size={14} />}{testingLlm ? '正在测试' : '测试文本理解'}</button></div>

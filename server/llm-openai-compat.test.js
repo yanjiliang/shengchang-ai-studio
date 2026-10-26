@@ -91,12 +91,20 @@ describe('OpenAI 兼容文本模型', () => {
 
   test('服务不支持 json_object → 去掉 response_format 重试一次', async () => {
     state.rejectJsonMode = true;
-    const result = await testLlm(localConfig());
+    const result = await analyzeNovel(localConfig(), { text: '雨夜，林夏敲响了旧旅馆的门。', filename: 'a.txt' });
     assert.equal(state.requests.length, 2);
     assert.equal(state.requests[1].body.response_format, undefined);
-    assert.equal(result.sceneCount, 1);
-    assert.equal(result.voiceDescriptionCount, 1);
-    assert.equal(result.endpoint, `${base}/v1/chat/completions`);
+    assert.equal(result.scenes.length, 1);
+  });
+
+  test('测试连接：打一次很短的请求（不带 response_format，max_tokens 很小）', async () => {
+    const result = await testLlm(localConfig());
+    assert.deepEqual({ ok: result.ok, code: result.code, status: result.status }, { ok: true, code: null, status: 200 });
+    assert.equal(typeof result.latencyMs, 'number');
+    assert.equal(state.requests.length, 1);
+    assert.equal(state.requests[0].path, '/v1/chat/completions');
+    assert.equal(state.requests[0].body.response_format, undefined);
+    assert.ok(state.requests[0].body.max_tokens <= 32);
   });
 
   test('推理模型的 <think> 段被剥离', async () => {

@@ -106,7 +106,7 @@ npm run test:e2e  # 沙箱端到端：真实起服务、走完生成/一键成�
 - 自定义 HTTP：使用 JSON 请求头和请求体模板连接其他服务。请求体模板支持 `{{text}}`、`{{voiceId}}`、`{{emotion}}`、`{{emotionScale}}`、`{{speed}}`、`{{model}}`、`{{subtext}}`、`{{distance}}` 等变量。
 - 开发测试引擎（demo）：只用于离线验证生成、回放和导出链路，不用于正式制作。
 
-小说拆解使用 OpenAI Chat Completions 兼容接口（默认指向火山方舟；也可以接 DeepSeek / OpenAI，或本机的 Ollama、LM Studio、vLLM、llama.cpp server——地址可以只填 base URL，如 `http://127.0.0.1:11434/v1`，本地服务的 API Key 可留空；不支持 `response_format: json_object` 的服务会自动降级重试）。拆解结果里每个角色可带一句可选的 `voiceDescription`（给 Breeze 音色设计用的声音描述）。在设置页填写 endpoint、API Key（如需要）和模型名称后，可用“测试连接”发起一次真实请求验证。长篇原文按段落分块处理（兼容单换行分段的网文格式），并携带已经确认的角色表来保持人物 ID 连续。拆解的输出是体量很大的 JSON（每句台词都带完整导演参数），请求会显式要求 8192 token 输出——请选择输出上限不低于它的模型；若任务报“输出被截断”，请换用输出上限更大的模型，或分章导入减少单段篇幅。
+小说拆解使用 OpenAI Chat Completions 兼容接口（默认指向火山方舟；也可以接 DeepSeek / OpenAI，或本机的 Ollama、LM Studio、vLLM、llama.cpp server——地址可以只填 base URL，如 `http://127.0.0.1:11434/v1`，本地服务的 API Key 可留空；不支持 `response_format: json_object` 的服务会自动降级重试）。拆解结果里每个角色可带一句可选的 `voiceDescription`（给 Breeze 音色设计用的声音描述）。在设置页填写 Base URL、API Key（如需要）和模型名称后，可用“测试连接”发起一次很短的真实请求验证（20 秒超时，结果区分 Key 错误 / 地址或模型名错误 / 连不上 / 其他上游错误，见 `docs/openapi.yaml` 的 `TestLlmResult`）。API Key 只保存在本机，不会回传给浏览器；更换地址后需要重新填写 Key，已保存的 Key 不会发给新地址。长篇原文按段落分块处理（兼容单换行分段的网文格式），并携带已经确认的角色表来保持人物 ID 连续。拆解的输出是体量很大的 JSON（每句台词都带完整导演参数），请求会显式要求 8192 token 输出——请选择输出上限不低于它的模型；若任务报“输出被截断”，请换用输出上限更大的模型，或分章导入减少单段篇幅。
 
 未配置文本模型时，导入小说会自动退回到规则拆解：按章节标题（或固定段落数）切分场景，用引号与说话人动词（“X说：「…」”，含英文直引号）推断对白归属，代词跟随最近说话人，无法归属的文本一律归为旁白。规则拆解的结果会在场景侧栏标记“规则拆解 · 建议人工校对”，角色归属与场景切分可在工作台内手动修正。
 

@@ -225,12 +225,74 @@ export function heuristicAnalysis(text, fallbackName) {
   return { project: { name: fallbackName, genre: '' }, characters, scenes };
 }
 
-export async function testLlm(config) {
+// 设置页「测试连接」：只验证地址 / Key / 模型名能不能通，不跑拆解（拆解慢且贵）。
+// 上游失败也算“测试成功地报告了结果”，所以返回值而不是抛错；本地校验错误由路由层回 400。
+export const LLM_TEST_TIMEOUT_MS = 20_000;
+const LLM_TEST_MESSAGE_MAX = 300;
+
+// 上游报错原文可能回显请求头或 Key（有的代理会把整个请求打进错误信息），一律抹掉。
+export function redactLlmSecret(text, apiKey) {
+  let value = String(text ?? '');
+  if (apiKey) value = value.split(apiKey).join('***');
+  return value.replace(/(authorization["']?\s*[:=]\s*["']?)(bearer\s+)?[^\s"',}]+/gi, '$1$2***').replace(/bearer\s+[A-Za-z0-9._~+\/=-]{6,}/gi, 'Bearer ***');
+}
+
+function upstreamMessage(text) {
+  try {
+    const payload = JSON.parse(text);
+    const error = payload?.error;
+    const message = typeof error === 'string' ? error : error?.message || payload?.message || payload?.msg;
+    if (message) return String(message);
+  } catch { /* not JSON */ }
+  return String(text || '').trim();
+}
+
+const truncate = (text) => (text.length > LLM_TEST_MESSAGE_MAX ? `${text.slice(0, LLM_TEST_MESSAGE_MAX)}…` : text);
+
+// 测试请求时，请求体没带 Key → 只有地址（规范化后）和已保存的一致才沿用已保存的 Key，
+// 否则把用户的 Key 发给了另一家服务。保存配置时同样用这条规则。
+export function resolveLlmApiKey(incoming, saved) {
+  if (incoming?.llmApiKey) return String(incoming.llmApiKey);
+  const endpoint = incoming?.llmEndpoint === undefined ? saved?.llmEndpoint : incoming.llmEndpoint;
+  return llmChatUrl(endpoint) === llmChatUrl(saved?.llmEndpoint) ? String(saved?.llmApiKey || '') : '';
+}
+
+export async function testLlm(config, { fetchImpl = fetch, timeoutMs = LLM_TEST_TIMEOUT_MS } = {}) {
   validateLlmConfig(config);
+  const apiKey = config.llmApiKey || '';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = Date.now();
-  const result = await callLlm(config, '将这句话分析为一个广播剧场景：雨夜，林夏敲响了旧旅馆的门。');
-  const characters = Array.isArray(result.characters) ? result.characters : [];
-  return { latencyMs: Date.now() - startedAt, sceneCount: result.scenes.length, endpoint: llmChatUrl(config.llmEndpoint), model: config.llmModel, characterCount: characters.length, voiceDescriptionCount: characters.filter((item) => String(item?.voiceDescription || '').trim()).length };
+  const fail = (code, message, status) => ({ ok: false, latencyMs: Date.now() - startedAt, code, message: truncate(redactLlmSecret(message, apiKey)), ...(status ? { status } : {}) });
+  try {
+    let response;
+    try {
+      response = await fetchImpl(llmChatUrl(config.llmEndpoint), {
+        method: 'POST',
+        signal: controller.signal,
+        headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
+        body: JSON.stringify({ model: config.llmModel, max_tokens: 16, temperature: 0, messages: [{ role: 'user', content: '回复“好”。' }] }),
+      });
+    } catch (error) {
+      const timedOut = controller.signal.aborted || error?.name === 'AbortError' || error?.name === 'TimeoutError';
+      const cause = error?.cause?.code || error?.code || '';
+      return fail('LLM_UNREACHABLE', timedOut ? `连接超时（${Math.round(timeoutMs / 1000)} 秒内没有响应）` : `连不上这个地址${cause ? `（${cause}）` : ''}`);
+    }
+    let text;
+    try { text = await response.text(); }
+    catch (error) {
+      if (controller.signal.aborted) return fail('LLM_UNREACHABLE', `连接超时（${Math.round(timeoutMs / 1000)} 秒内没有响应）`, response.status);
+      return fail('LLM_UPSTREAM', `读取响应失败：${error?.message || error}`, response.status);
+    }
+    if (!response.ok) {
+      const code = [401, 403].includes(response.status) ? 'LLM_AUTH' : response.status === 404 ? 'LLM_NOT_FOUND' : 'LLM_UPSTREAM';
+      return fail(code, upstreamMessage(text) || `HTTP ${response.status}`, response.status);
+    }
+    let payload;
+    try { payload = JSON.parse(text); } catch { return fail('LLM_UPSTREAM', `响应不是 JSON：${text.trim()}`, response.status); }
+    if (!Array.isArray(payload?.choices) || !payload.choices.length) return fail('LLM_UPSTREAM', `响应里没有 choices，不像 chat/completions 接口：${text.trim()}`, response.status);
+    return { ok: true, latencyMs: Date.now() - startedAt, code: null, message: '连接正常', status: response.status };
+  } finally { clearTimeout(timer); }
 }
 
 export const LLM_DEFAULT_TIMEOUT_MS = 180_000;

@@ -66,21 +66,28 @@ paths:
     post:
       operationId: postConfigTestLlm
       tags: [engine]
-      summary: 用一小段示例文本真实调用一次文本模型
-      description: 不填 API Key 时，只有火山方舟（*.volces.com）会报错；本地 Ollama / LM Studio / vLLM 可以不填。
+      summary: 设置页「测试连接」，真实发一次很短的 chat/completions 请求
+      description: '只验证地址、Key、模型名能否连通（max_tokens 16，超时 20 秒），不跑拆解。请求体是设置页的草稿（llmEndpoint、llmApiKey、llmModel）。llmApiKey 留空时，只有规范化后的地址与已保存的一致才沿用已保存的 Key，换了地址就不带 Key（保存配置 PUT /api/config 同样规则，换地址会清空已保存的 Key）。上游失败也回 200，看 ok 和 code；本地校验没过回 400。message 不会包含 Key 或 Authorization 头。'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                llmEndpoint: { type: string, description: 'base URL（…/v1）或完整 …/chat/completions，服务端统一规范化' }
+                llmApiKey: { type: string, description: '留空 = 地址没变时沿用已保存的 Key' }
+                llmModel: { type: string }
       responses:
         '200':
-          description: OK
+          description: 测试已完成（连通与否看 ok / code）
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  ok: { type: boolean }
-                  endpoint: { type: string, example: 'http://127.0.0.1:11434/v1/chat/completions' }
-                  model: { type: string, example: qwen2.5:14b }
-                  characterCount: { type: integer, minimum: 0 }
-                  voiceDescriptionCount: { type: integer, minimum: 0, description: '拆解结果里带 voiceDescription 的角色数' }
+              schema: { $ref: '#/components/schemas/TestLlmResult' }
+        '400':
+          description: '本地校验没过（缺地址、地址不是合法 URL、缺模型名、方舟缺 Key），code 为 LLM_CONFIG_INVALID，latencyMs 为 null，不发请求'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestLlmResult' }
   /api/engines/breeze/health:
     get:
       operationId: getEnginesBreezeHealth
@@ -547,6 +554,26 @@ components:
         status: { $ref: '#/components/schemas/TaskStatus' }
         missingVoiceRoles: { type: array, items: { $ref: '#/components/schemas/MissingRole' } }
       additionalProperties: true
+    TestLlmCode:
+      type: [string, 'null']
+      description: 测试连接结果码，成功时为 null
+      enum:
+        - null
+        - LLM_CONFIG_INVALID       # 400，本地校验没过
+        - LLM_AUTH                 # 上游 401 / 403：Key 不对或已过期
+        - LLM_NOT_FOUND            # 上游 404：地址或模型名不对
+        - LLM_UNREACHABLE          # 超时、DNS 失败、连接被拒等网络错误
+        - LLM_UPSTREAM             # 其他非 2xx，或 2xx 但不是 chat/completions 的 JSON
+    TestLlmResult:
+      type: object
+      required: [ok, latencyMs, code, message]
+      properties:
+        ok: { type: boolean }
+        latencyMs: { type: [integer, 'null'], description: '从发出请求到拿到结果的毫秒数；本地校验失败时为 null' }
+        code: { $ref: '#/components/schemas/TestLlmCode' }
+        message: { type: string, description: '成功为「连接正常」；失败为中文说明或上游原始报错（截断到约 300 字，已抹掉 Key）', example: The API key is invalid }
+        status: { type: integer, description: '上游 HTTP 状态码；网络错误和本地校验失败时没有' }
+        error: { type: string, description: '仅 400 时附带，同 message（兼容旧的前端错误处理）' }
     PublicConfig:
       type: object
       description: 只列出生产链路相关字段

@@ -12,7 +12,7 @@ import { taskWithQueuePosition, cancelTask, enqueueGeneration, enqueueNovelAnaly
 import { seedSampleProject } from './sample-project.js';
 import { ensureBuiltinAssets, listBuiltinAssets } from './builtin-assets.js';
 import { recommendForEvent } from './asset-recommend.js';
-import { testLlm, validateLlmConfig } from './story-analyzer.js';
+import { redactLlmSecret, resolveLlmApiKey, testLlm, validateLlmConfig } from './story-analyzer.js';
 import { registerBreezeRoutes, sendError } from './breeze-routes.js';
 import { oneClickMissingVoiceRoles, voiceNotReadyError } from './one-click.js';
 import { annotateStaleness, generationVoiceMap, staleLineCount } from './voice-references.js';
@@ -89,19 +89,25 @@ app.put('/api/config', async (request, response, next) => {
     const current = await readConfig();
     const nextConfig = { ...current, ...request.body };
     if (!request.body.accessKey && current.accessKey && request.body.preserveSecret !== false) nextConfig.accessKey = current.accessKey;
-    if (!request.body.llmApiKey && current.llmApiKey && request.body.preserveSecret !== false) nextConfig.llmApiKey = current.llmApiKey;
+    // 没填新 Key 时，只有地址没变才沿用已保存的 Key；换了地址就清空，不能把 Key 带到另一家服务。
+    if (request.body.preserveSecret !== false) nextConfig.llmApiKey = resolveLlmApiKey(request.body, current);
     if (request.body.customHeaders?.includes('__SAVED_SECRET__')) nextConfig.customHeaders = mergeRedactedHeaders(request.body.customHeaders, current.customHeaders);
     response.json(publicConfig(await writeConfig(nextConfig)));
   } catch (error) { next(error); }
 });
-app.post('/api/config/test-llm', async (request, response, next) => {
+// 永远回 JSON {ok, latencyMs, code, message, status?}。本地校验没过 → 400 LLM_CONFIG_INVALID；
+// 上游失败（401/404/超时/其他）→ 200 + ok:false，测试本身成功地报告了结果。
+app.post('/api/config/test-llm', async (request, response) => {
+  let config;
   try {
     const current = await readConfig();
-    const config = { ...current, ...request.body };
-    if (!request.body.llmApiKey && current.llmApiKey) config.llmApiKey = current.llmApiKey;
+    config = { ...current, ...request.body, llmApiKey: resolveLlmApiKey(request.body, current) };
     validateLlmConfig(config);
-    response.json(await testLlm(config));
-  } catch (error) { next(error); }
+  } catch (error) {
+    return response.status(400).json({ ok: false, latencyMs: null, code: 'LLM_CONFIG_INVALID', message: error.message, error: error.message });
+  }
+  try { response.json(await testLlm(config)); }
+  catch (error) { response.status(500).json({ ok: false, latencyMs: null, code: 'LLM_UPSTREAM', message: redactLlmSecret(error.message, config.llmApiKey).slice(0, 300), error: '测试连接失败' }); }
 });
 app.get('/api/projects', (_request, response) => response.json({ projects: listProjects() }));
 app.post('/api/projects', (request, response, next) => {

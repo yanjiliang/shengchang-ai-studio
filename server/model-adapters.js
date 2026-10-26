@@ -52,9 +52,43 @@ function parseJsonLines(text) {
   return payloads.length ? payloads : null;
 }
 
+// 豆包 v3 流式接口：音频分片 code=0，流的最后一个事件 code=20000000 表示正常结束
+// （同时携带 usage）。其余非零码才是业务错误。
+const DOUBAO_SUCCESS_CODES = new Set([0, 20000000]);
+
 function assertNoServiceError(payload) {
   const code = Number(payload?.code);
-  if (Number.isFinite(code) && code !== 0) throw new Error(`模型服务返回错误码 ${code}: ${payload.message || payload.Message || '没有错误描述'}`);
+  if (Number.isFinite(code) && !DOUBAO_SUCCESS_CODES.has(code)) throw new Error(`模型服务返回错误码 ${code}: ${payload.message || payload.Message || '没有错误描述'}`);
+}
+
+// 请求头 X-Control-Require-Usage-Tokens-Return: * 让豆包在结束事件里返回用量，
+// 例如 { usage: { text_words: 12 } }。保留原始对象，另外归一出计费字数。
+function normalizeUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const billed = Number(usage.text_words ?? usage.textWords);
+  return { ...usage, billedCharacters: Number.isFinite(billed) ? billed : null };
+}
+
+// 音色代际 vs 模型资源校验：1.0 音色（*_mars_bigtts / *_moon_bigtts）不能用于
+// seed-tts-2.0 / seed-icl-2.0。识别不了的 id（克隆音色 S_xxx 等）放行，交给服务端判断。
+const VOICE_GENERATION_RULES = [
+  { pattern: /_(mars|moon)_bigtts$/, generation: '1.0' },
+  { pattern: /_uranus_bigtts$/, generation: '2.0' },
+];
+const RESOURCE_GENERATIONS = { 'seed-tts-2.0': '2.0', 'seed-icl-2.0': '2.0' };
+
+export function voiceGeneration(voiceId) {
+  return VOICE_GENERATION_RULES.find((rule) => rule.pattern.test(String(voiceId || '')))?.generation || null;
+}
+
+export function assertVoiceMatchesResource(resourceId, voiceId) {
+  const expected = RESOURCE_GENERATIONS[resourceId];
+  const actual = voiceGeneration(voiceId);
+  if (expected && actual && expected !== actual) {
+    const error = new Error(`音色 ${voiceId} 属于豆包 ${actual} 音色，不能用于 ${resourceId}；请在“角色音色”中换成 ${expected} 音色（如 *_uranus_bigtts）`);
+    error.code = 'VOICE_MODEL_MISMATCH';
+    throw error;
+  }
 }
 
 async function parseAudioResponse(response, config) {
@@ -72,32 +106,52 @@ async function parseAudioResponse(response, config) {
   catch { payloads = parseJsonLines(text); }
   if (!payloads) throw new Error(`模型服务返回的响应不是有效 JSON: ${text.slice(0, 300)}`);
   const slices = [];
+  let usage = null;
   for (const payload of payloads) {
     assertNoServiceError(payload);
     const base64 = extractBase64(payload);
     if (base64) slices.push(decodeBase64Audio(base64));
+    if (payload?.usage) usage = normalizeUsage(payload.usage);
   }
   if (!slices.length) throw new Error('响应中没有找到音频数据，请检查响应方式和接口版本');
-  return { buffer: Buffer.concat(slices), mime: audioMime(config.audioFormat) };
+  return { buffer: Buffer.concat(slices), mime: audioMime(config.audioFormat), usage };
 }
 
-// The current API supports voice instructions for seed-tts-2.0 official
-// voices. Director fields (潜台词/情绪强度/声音距离) only reach the model
-// through this channel, so they all fold into one instruction sentence.
-function voiceInstructions(request) {
+// seed-tts-2.0 官方音色的语音指令（additions.context_texts）。2026-10-26 实测
+// （zh_female_vv_uranus_bigtts）：情绪和节奏类指令有效，音色类指令（耳语、
+// 沙哑、哭腔等）无效，所以这里只写情绪 + 节奏，不出现任何音色词。措辞学官方
+// 示例的口语化祈使句（“用特别痛心的语气说”），而不是参数化的“强度约 N%”。
+// 声音距离不再进指令：模型不认它，距离感应由混音层处理。
+const EMOTION_DEGREE = [
+  { min: 0.8, word: '特别特别' },
+  { min: 0.6, word: '特别' },
+  { min: 0.4, word: '比较' },
+  { min: 0, word: '略带一点' },
+];
+
+function pacingPhrase(speed) {
+  const value = Number(speed) || 1;
+  if (value <= 0.9) return '语速放慢，句间多停顿一下';
+  if (value >= 1.1) return '语速加快，说得紧凑一些';
+  return '';
+}
+
+export function voiceInstructions(request) {
   const fragments = [];
   if (request.emotion) {
-    const scale = Math.round(Math.min(1, Math.max(0.1, Number(request.emotionScale) || 0.4)) * 100);
-    fragments.push(`以${request.emotion}的情绪自然表达（强度约 ${scale}%）`);
+    const scale = Math.min(1, Math.max(0.1, Number(request.emotionScale) || 0.4));
+    const degree = EMOTION_DEGREE.find((item) => scale >= item.min).word;
+    fragments.push(`用${degree}${request.emotion}的语气说`);
   }
+  const pacing = pacingPhrase(request.speed);
+  if (pacing) fragments.push(pacing);
   const subtext = String(request.subtext || '').trim().slice(0, 100);
-  if (subtext) fragments.push(`说话意图：${subtext}`);
-  const distance = String(request.distance || '').trim();
-  if (distance && distance !== '近讲') fragments.push(`声音距离感：${distance}`);
-  return fragments.length ? [`请${fragments.join('；')}，保持当前基础音色稳定。`] : [];
+  if (subtext) fragments.push(`这句话的情绪来由是：${subtext}`);
+  return fragments.length ? [`${fragments.join('，')}。`] : [];
 }
 
 async function synthesizeVolcengineApiKey(config, request) {
+  assertVoiceMatchesResource(config.resourceId, request.voiceId);
   const timeout = requestTimeout();
   try {
     const instructions = config.resourceId === 'seed-tts-2.0' ? voiceInstructions(request) : [];

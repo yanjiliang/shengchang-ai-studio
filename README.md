@@ -101,7 +101,7 @@ npm run test:e2e  # 沙箱端到端：真实起服务、走完生成/一键成�
 
 进入左下角“设置”。支持三种语音合成连接：
 
-- 豆包语音（火山引擎新版 API Key）：`/api/v3/tts/unidirectional` 流式接口，使用 `X-Api-Key` 请求头，按 Resource ID 选择模型（`seed-tts-2.0` 或 `seed-icl-2.0`）。`seed-tts-2.0` 下，台词的情绪、情绪强度、潜台词和声音距离会合并为一条语音指令送入 `context_texts`；`seed-icl-2.0` 仅使用台词文本与语速。
+- 豆包语音（火山引擎新版 API Key）：`/api/v3/tts/unidirectional` 流式接口，使用 `X-Api-Key` 请求头，按 Resource ID 选择模型（`seed-tts-2.0` 或 `seed-icl-2.0`）。`seed-tts-2.0` 下，台词的情绪、情绪强度、语速和潜台词会合并为一条只描述情绪与节奏的语音指令送入 `additions.context_texts`（实测音色类指令无效，声音距离不再进指令）；哪些音色实测“可导戏”记录在 `server/directable-voices.json`，用 `scripts/measure-instruction.mjs` 复测；`seed-icl-2.0` 仅使用台词文本与语速。
 - 自定义 HTTP：使用 JSON 请求头和请求体模板连接其他服务。请求体模板支持 `{{text}}`、`{{voiceId}}`、`{{emotion}}`、`{{emotionScale}}`、`{{speed}}`、`{{model}}`、`{{subtext}}`、`{{distance}}` 等变量。
 - 开发测试引擎（demo）：只用于离线验证生成、回放和导出链路，不用于正式制作。
 

@@ -8,7 +8,8 @@ import { after, describe, test } from 'node:test';
 const scratch = mkdtempSync(path.join(tmpdir(), 'shengchang-oneclick-test-'));
 process.env.SHENGCHANG_RUNTIME_DIR = scratch;
 const { createProject, createPersistentTask, getPersistentTask, getProject, updateProject } = await import('./database.js');
-const { mapCharactersToPresets, runOneClickPipeline } = await import('./one-click.js');
+const { flagUndirectableVoices, mapCharactersToPresets, presetVoicesFor, runOneClickPipeline } = await import('./one-click.js');
+const { voiceGeneration } = await import('./model-adapters.js');
 const { buildGenerationRequests } = await import('../shared/generation-requests.mjs');
 
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -31,6 +32,28 @@ describe('mapCharactersToPresets', () => {
     assert.equal(Object.keys(assignments).length, 8);
     assert.notEqual(assignments.c0, assignments.c1, '不同角色默认不同预设');
     assert.equal(assignments.c6, assignments.c0, '第 7 个角色循环回第一个预设');
+  });
+});
+
+describe('豆包预设按 resourceId 分组', () => {
+  test('seed-tts-2.0 预设全部是 2.0 音色', () => {
+    const presets = presetVoicesFor('volcengine-api-key', 'seed-tts-2.0');
+    for (const voiceId of [presets.narrator, ...presets.cast]) assert.equal(voiceGeneration(voiceId), '2.0', voiceId);
+  });
+
+  test('seed-tts-2.0 自动映射使用 2.0 音色', () => {
+    const assignments = mapCharactersToPresets([{ id: 'narrator', name: '旁白' }, { id: 'wukong', name: '悟空' }], {}, 'volcengine-api-key', 'seed-tts-2.0');
+    assert.equal(assignments.narrator, 'zh_female_cancan_uranus_bigtts');
+    assert.equal(assignments.wukong, 'zh_female_vv_uranus_bigtts', '实测可导戏的音色优先分给第一个角色');
+  });
+
+  test('标记未确认可导戏的 2.0 音色，demo/克隆音色不标记', () => {
+    const flagged = flagUndirectableVoices({ a: 'zh_female_vv_uranus_bigtts', b: 'zh_male_sunwukong_uranus_bigtts', c: 'zh_male_qingcang_uranus_bigtts', d: 'demo_male_1', e: 'S_abc' });
+    assert.deepEqual(flagged.map((item) => [item.characterId, item.directable]), [['b', false], ['c', null]]);
+  });
+
+  test('seed-icl-2.0（克隆音色）没有通用预设，不自动映射', () => {
+    assert.deepEqual(mapCharactersToPresets([{ id: 'c1', name: '甲' }], {}, 'volcengine-api-key', 'seed-icl-2.0'), {});
   });
 });
 

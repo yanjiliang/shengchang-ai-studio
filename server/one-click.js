@@ -15,29 +15,61 @@
 // enqueue-and-wait would burn a worker slot for the whole run (eng-review A1).
 // Stage functions are called directly, reusing runGenerationRequests and
 // analyzeNovel in-process.
+import { voiceDirectability } from './directable-voices.js';
 import { buildGenerationRequests } from '../shared/generation-requests.mjs';
 import { getPersistentTask, getProject, updatePersistentTask, updateProject } from './database.js';
 import { exportProjectTimeline, inspectProjectMedia } from './media-store.js';
 import { analyzeNovel } from './story-analyzer.js';
-import { applyResultsToProject, runGenerationRequests } from './task-manager.js';
+import { applyResultsToProject, runGenerationRequests, sumBilledCharacters } from './task-manager.js';
 
 // Preset roster (design OQ1: hardcoded known-good voices, simple > clever).
-// Demo accepts any voice id (pitch derives from the string). The 豆包 ids are
-// best-effort public official voices - users can remap any character on the
-// 角色音色 page; presets only ever fill UNMAPPED characters.
+// Demo accepts any voice id (pitch derives from the string). 豆包预设按
+// resourceId 分组：音色代际必须和模型匹配（1.0 的 *_mars_bigtts 不能用于
+// seed-tts-2.0）。seed-tts-2.0 的 id 取自豆包语音合成 2.0 公开音色列表
+// （标注“指令遵循”）；后续换成经复测确认的白名单时只改这张表。
+// seed-icl-2.0 是用户自己的克隆音色，没有通用预设，留空 = 不自动映射。
+// Users can remap any character on the 角色音色 page; presets only ever fill
+// UNMAPPED characters.
 const PRESET_VOICES = {
   demo: { narrator: 'demo_narrator_warm', cast: ['demo_female_1', 'demo_male_1', 'demo_female_2', 'demo_male_2', 'demo_elder_1', 'demo_youth_1'] },
   'volcengine-api-key': {
-    narrator: 'zh_female_cancan_mars_bigtts',
-    cast: ['zh_male_chunhui_mars_bigtts', 'zh_female_wanwanxiaohe_mars_bigtts', 'zh_male_shaun_mars_bigtts', 'zh_female_tianmeiyueyue_mars_bigtts', 'zh_male_dongchanghong_mars_bigtts', 'zh_female_nuanxinyuan_mars_bigtts'],
+    'seed-tts-2.0': {
+      narrator: 'zh_female_cancan_uranus_bigtts', // 知性灿灿 2.0
+      cast: [
+        'zh_female_vv_uranus_bigtts', // Vivi 2.0（实测可导戏）
+        'zh_male_ruyayichen_uranus_bigtts', // 儒雅逸辰 2.0
+        'zh_male_qingcang_uranus_bigtts', // 擎苍 2.0
+        'zh_female_gufengshaoyu_uranus_bigtts', // 古风少御 2.0
+        'zh_male_m191_uranus_bigtts', // 云舟 2.0
+        'zh_female_popo_uranus_bigtts', // 婆婆 2.0
+      ],
+    },
+    'seed-icl-2.0': null,
   },
 };
 
+// 角色轮换时实测可导戏的音色排前面（第一个非旁白角色通常是主角），
+// 实测不可导戏的排最后；未验证的保持原顺序。旁白不需要强导戏，不参与排序。
+const DIRECTABILITY_RANK = { true: 0, null: 1, false: 2 };
+
+export function presetVoicesFor(provider, resourceId) {
+  const presets = provider === 'volcengine-api-key'
+    ? PRESET_VOICES['volcengine-api-key'][resourceId] ?? null
+    : PRESET_VOICES[provider] || PRESET_VOICES.demo;
+  if (!presets || provider !== 'volcengine-api-key') return presets;
+  const cast = presets.cast
+    .map((voiceId, index) => ({ voiceId, index, rank: DIRECTABILITY_RANK[String(voiceDirectability(voiceId))] }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map((item) => item.voiceId);
+  return { ...presets, cast };
+}
+
 // Pure, exported for unit tests. Fills ONLY unmapped characters - a user's
 // voice choice is never overwritten by automation (design stage 2).
-export function mapCharactersToPresets(characters, voiceMap, provider) {
-  const presets = PRESET_VOICES[provider] || PRESET_VOICES.demo;
+export function mapCharactersToPresets(characters, voiceMap, provider, resourceId) {
+  const presets = presetVoicesFor(provider, resourceId);
   const assignments = {};
+  if (!presets) return assignments;
   let castIndex = 0;
   for (const character of characters || []) {
     if (!character?.id || voiceMap?.[character.id]) continue;
@@ -85,7 +117,7 @@ export async function runOneClickPipeline(task, config, deps = {}) {
   // Stage 2: 音色 - auto-map unmapped characters to preset voices.
   if (!skip('音色')) {
     const project = getProject(task.projectId);
-    const assignments = mapCharactersToPresets(project?.state?.characters, project?.state?.voiceMap, config.provider);
+    const assignments = mapCharactersToPresets(project?.state?.characters, project?.state?.voiceMap, config.provider, config.resourceId);
     const count = Object.keys(assignments).length;
     if (count) {
       progress(31, `音色 · 自动映射 ${count} 个角色（预设音色，可在角色音色页修改）`);
@@ -106,6 +138,14 @@ export async function runOneClickPipeline(task, config, deps = {}) {
     const unmapped = allRequests.length - requests.length;
     const results = [];
     let processed = 0;
+    // 本集累计计费字数：存进 payload（浅合并），失败重试时累加而不是覆盖，
+    // 因为失败那一轮已经付过费的句子在重试时走缓存、不会再返回 usage。
+    const recordBilled = (sceneResults) => {
+      const billed = sumBilledCharacters(sceneResults);
+      if (billed === null) return;
+      const prior = getPersistentTask(task.id)?.payload?.billedCharacters || 0;
+      updatePersistentTask(task.id, { payload: { billedCharacters: prior + billed } });
+    };
     const byScene = new Map();
     for (const request of requests) {
       if (!byScene.has(request.sceneId)) byScene.set(request.sceneId, []);
@@ -122,6 +162,7 @@ export async function runOneClickPipeline(task, config, deps = {}) {
       });
       if (outcome.status === 'cancelled') throw cancelledError();
       results.push(...outcome.results);
+      recordBilled(outcome.results);
       if (outcome.failures.length) {
         // Successful lines (this scene AND earlier scenes) are applied so a
         // retry only pays for the failures; the stage checkpoint is
@@ -160,9 +201,17 @@ export async function runOneClickPipeline(task, config, deps = {}) {
     updatePersistentTask(task.id, {
       status: 'completed', progress: 100, completedAt: Date.now(),
       message: `一键成片完成：${report.sceneCount} 个场景已导出${attention.length ? `，${attention.length} 项待处理` : ''}${attentionNote}`,
-      result: { url: report.url, name: report.name, sceneCount: report.sceneCount, durationMs: report.durationMs, attention, stages: completedStages },
+      result: { url: report.url, name: report.name, sceneCount: report.sceneCount, durationMs: report.durationMs, attention, stages: completedStages, billedCharacters: getPersistentTask(task.id)?.payload?.billedCharacters ?? null },
     });
   }
+}
+
+// 只标记豆包 2.0 官方音色（*_uranus_bigtts）；demo / 克隆音色不适用这张白名单。
+export function flagUndirectableVoices(voiceMap, characterIds) {
+  return (characterIds || Object.keys(voiceMap || {}))
+    .map((characterId) => ({ characterId, voiceId: voiceMap?.[characterId] }))
+    .filter((item) => /_uranus_bigtts$/.test(item.voiceId || '') && voiceDirectability(item.voiceId) !== true)
+    .map((item) => ({ ...item, directable: voiceDirectability(item.voiceId) }));
 }
 
 function buildAttentionList(project, mediaReport) {
@@ -171,6 +220,8 @@ function buildAttentionList(project, mediaReport) {
   const speakers = [...new Set((state.scenes || []).flatMap((scene) => (scene.lines || []).filter((line) => line.type === 'dialogue' && line.speakerId).map((line) => line.speakerId)))];
   const unmappedVoices = speakers.filter((id) => !state.voiceMap?.[id]);
   if (unmappedVoices.length) attention.push(`${unmappedVoices.length} 个角色未绑定音色（相关台词未生成）`);
+  const notDirectable = flagUndirectableVoices(state.voiceMap, speakers);
+  if (notDirectable.length) attention.push(`${notDirectable.length} 个角色的音色未确认可导戏（情绪/节奏指令可能不生效）：${notDirectable.map((item) => `${item.characterId}=${item.voiceId}${item.directable === false ? '（实测不可导戏）' : '（未验证）'}`).join('、')}`);
   const stale = (state.scenes || []).flatMap((scene) => (scene.lines || []).filter((line) => line.audioUrl && line.audioStale));
   if (stale.length) attention.push(`${stale.length} 句台词改动后音频过期，进入成片的是旧音频`);
   const missing = (state.scenes || []).flatMap((scene) => (scene.lines || []).filter((line) => line.type === 'dialogue' && !line.audioUrl));

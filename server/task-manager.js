@@ -146,7 +146,7 @@ export async function runGenerationRequests(config, requests, { projectId, scene
           const extension = extensionForMime(audio.mime, config.audioFormat);
           const saved = await saveMedia(contentHash, extension, audio.buffer);
           cacheAudio({ contentHash, url: saved.url, mime: audio.mime, provider: config.provider || '', model: config.model || '', voiceId: resolved.voiceId || '' });
-          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: saved.url, mime: audio.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: false, createdAt: Date.now() });
+          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: saved.url, mime: audio.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: false, usage: audio.usage || null, createdAt: Date.now() });
         }
       }
     } catch (error) {
@@ -154,6 +154,13 @@ export async function runGenerationRequests(config, requests, { projectId, scene
     }
   }
   return { status: 'done', results, failures };
+}
+
+// 计费字数只统计真正调用了模型的句子（缓存命中不计费）；没有 usage 的
+// 提供方（demo / custom）返回 null，避免把“未知”显示成 0。
+export function sumBilledCharacters(results) {
+  const billed = results.map((item) => item.usage?.billedCharacters).filter((value) => Number.isFinite(value));
+  return billed.length ? billed.reduce((sum, value) => sum + value, 0) : null;
 }
 
 async function runGenerationTask(task, config) {
@@ -179,6 +186,7 @@ async function runGenerationTask(task, config) {
     await evictAudioCacheIfNeeded(config.cacheLimitGb);
     const { results, failures } = outcome;
     const cacheHits = results.filter((item) => item.cached).length;
+    const billedCharacters = sumBilledCharacters(results);
     if (failures.length) {
       // All-failed runs keep the failed status so one-click retry applies;
       // partial failures complete so the good audio lands in the project.
@@ -189,13 +197,13 @@ async function runGenerationTask(task, config) {
         status: allFailed ? 'failed' : 'completed', progress: 100,
         message: allFailed ? `生成失败：${failures.length} 句全部失败` : `生成完成：${results.length} 句成功，${failures.length} 句失败（任务历史可逐句查看）`,
         error: allFailed ? failures[0].error : '',
-        result: { results, failures, cacheHits }, completedAt: Date.now(),
+        result: { results, failures, cacheHits, billedCharacters }, completedAt: Date.now(),
       });
       return;
     }
     updatePersistentTask(task.id, { status: 'completed', progress: 100, message: isDirectionLab
       ? `方向对比已生成（${results.length} 组，可在检查器试听）`
-      : cacheHits ? `生成完成，复用了 ${cacheHits} 条缓存` : '语音已生成并写入项目', result: { results, cacheHits }, completedAt: Date.now() });
+      : cacheHits ? `生成完成，复用了 ${cacheHits} 条缓存` : '语音已生成并写入项目', result: { results, cacheHits, billedCharacters }, completedAt: Date.now() });
   } catch (error) {
     updatePersistentTask(task.id, { status: 'failed', message: '生成失败', error: error.name === 'AbortError' ? '模型请求超时' : error.message, completedAt: Date.now() });
   }

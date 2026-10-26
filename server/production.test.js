@@ -11,6 +11,7 @@ const scratch = mkdtempSync(path.join(tmpdir(), 'shengchang-production-test-'));
 process.env.HOME = scratch;
 process.env.SHENGCHANG_RUNTIME_DIR = path.join(scratch, 'runtime');
 const { writeConfig, readConfig } = await import('./config-store.js');
+const { queuePositionOf } = await import('./breeze-lane.js');
 const { createProject, getProject, updateProject, getPersistentTask, createPersistentTask } = await import('./database.js');
 const { runtimePaths, ensureRuntime } = await import('./media-store.js');
 const { registerProductionRoutes } = await import('./production-routes.js');
@@ -239,18 +240,21 @@ describe('任务取消 DELETE /api/jobs/:jobId', () => {
     const running = await postJson('/api/lines/pl1/takes', { projectId, seed: 9001 });
     await waitFor(() => mock.state.held.length === 1);
     const queued = await postJson('/api/lines/pl1/takes', { projectId, seed: 9002 });
-    await waitFor(() => getPersistentTask(queued.body.jobId).status === 'running' || getPersistentTask(queued.body.jobId).status === 'queued');
+    // 等它真的排进 Breeze 车道（位置 1，前面是在飞的那段）。
+    await waitFor(() => queuePositionOf(queued.body.jobId) === 1);
     const position = (await api(`/api/jobs/${running.body.jobId}`)).body.queuePosition;
     assert.equal(position, 0);
 
     const cancelQueued = await api(`/api/jobs/${queued.body.jobId}`, { method: 'DELETE' });
     assert.equal(cancelQueued.status, 200, JSON.stringify(cancelQueued.body));
     assert.equal(cancelQueued.body.status, 'cancelled');
-    assert.equal(cancelQueued.body.discardedInFlight, 0);
+    assert.strictEqual(cancelQueued.body.removed, true);
+    assert.strictEqual(cancelQueued.body.discardedInFlight, false);
 
     const cancelRunning = await api(`/api/jobs/${running.body.jobId}`, { method: 'DELETE' });
     assert.equal(cancelRunning.body.status, 'cancelled');
-    assert.equal(cancelRunning.body.discardedInFlight, 1);
+    assert.strictEqual(cancelRunning.body.removed, false);
+    assert.strictEqual(cancelRunning.body.discardedInFlight, true);
     assert.equal(getPersistentTask(running.body.jobId).result.events.at(-1).type, 'cancelled');
 
     mock.release(); mock.state.hold = false;

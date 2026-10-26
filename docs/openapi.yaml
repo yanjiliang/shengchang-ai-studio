@@ -345,10 +345,11 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [jobId, status, removed, discardedInFlight]
                 properties:
                   jobId: { type: string }
                   status: { $ref: '#/components/schemas/TaskStatus' }
-                  removed: { type: boolean, description: '从等待队列里移出' }
+                  removed: { type: boolean, description: '从等待队列里移出（一次都没跑）' }
                   discardedInFlight: { type: boolean, description: '正在跑，结果到了会被丢弃' }
                   task: { $ref: '#/components/schemas/Task' }
         '404': { $ref: '#/components/responses/Error' }

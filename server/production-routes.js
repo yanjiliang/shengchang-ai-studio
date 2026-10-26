@@ -17,7 +17,10 @@ export async function cancelJob(jobId) {
   if (before.status === 'completed' || before.status === 'failed') throw httpError(409, 'JOB_NOT_CANCELLABLE', `任务已${before.status === 'completed' ? '完成' : '失败'}，不能取消`, { status: before.status });
   const cancelled = cancelTask(jobId);
   const settled = await waitForTaskToSettle(jobId);
-  return { jobId, status: settled?.status || cancelled.status, removed: cancelled.lane.removed, discardedInFlight: cancelled.lane.discardedInFlight, task: taskWithQueuePosition(settled) };
+  // removed / discardedInFlight 对外是布尔（文档如此）；车道内部按段计数，这里折算。
+  // 还没进车道就被取消的 queued 任务也算 removed（它确实从等待里拿掉了，一次都没跑）。
+  const removed = cancelled.lane.removed > 0 || before.status === 'queued';
+  return { jobId, status: settled?.status || cancelled.status, removed, discardedInFlight: cancelled.lane.discardedInFlight > 0, task: taskWithQueuePosition(settled) };
 }
 
 const lineAnnotated = async (payload) => {

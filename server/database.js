@@ -256,13 +256,17 @@ function ttsGeneratorKey(config) {
 }
 
 export function audioContentHash(config, request) {
-  return createHash('sha256').update(JSON.stringify({ ...ttsGeneratorKey(config), provider: config.provider, endpoint: config.provider === 'breeze' ? config.breezeEndpoint : config.endpoint, model: config.model, resourceId: config.resourceId, voiceId: request.voiceId, text: request.text, subtext: request.subtext, emotion: request.emotion, emotionScale: request.emotionScale, speed: request.speed, distance: request.distance, format: config.audioFormat, sampleRate: config.sampleRate,
+  // Breeze + 强度 0（emotionOff）：请求体里不发 emotion / subtext / emotionScale，指令只剩语速，
+  // 所以这三项不进键（值为 undefined，JSON 里整项消失）；其他情况键与之前逐字相同。
+  const breezeEmotionOff = config.provider === 'breeze' && request.emotionOff === true;
+  return createHash('sha256').update(JSON.stringify({ ...ttsGeneratorKey(config), provider: config.provider, endpoint: config.provider === 'breeze' ? config.breezeEndpoint : config.endpoint, model: config.model, resourceId: config.resourceId, voiceId: request.voiceId, text: request.text,
+    subtext: breezeEmotionOff ? undefined : request.subtext, emotion: breezeEmotionOff ? undefined : request.emotion, emotionScale: breezeEmotionOff ? undefined : request.emotionScale, speed: request.speed, distance: request.distance, format: config.audioFormat, sampleRate: config.sampleRate,
     // 只在出现时才加入：既有台词（无参考音、无显式 seed）的缓存键保持不变。
     // referenceHash = 角色参考音指纹（Breeze 参考音角色）；seed = 显式指定的生成种子。
     ...(request.referenceHash ? { referenceHash: request.referenceHash } : {}),
     ...(Number.isSafeInteger(request.seed) ? { seed: request.seed } : {}),
     // 强度恰好 0 = 不要情绪：只改 Breeze 指令，所以只进 Breeze 的键；豆包 / 自定义的键与 0036 逐字相同。
-    ...(config.provider === 'breeze' && request.emotionOff === true ? { emotionOff: true } : {}) })).digest('hex');
+    ...(breezeEmotionOff ? { emotionOff: true } : {}) })).digest('hex');
 }
 
 // Generated sound effects / beds: same content-addressed cache, different key

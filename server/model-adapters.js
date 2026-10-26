@@ -303,7 +303,14 @@ async function synthesizeCustom(config, request) {
       instruction: config.breeze ? breezeInstruction(request) : (voiceInstructions(request, { stableSpeaker: config.ttsStableSpeaker !== false })[0] || ''),
     });
     // Breeze 预设：显式种子（单句换种子重生成）才进请求体；没有就让服务用默认种子。
-    if (config.breeze && Number.isSafeInteger(request.seed)) body = JSON.stringify({ ...JSON.parse(body), seed: request.seed });
+    // 强度 0（emotionOff）：emotion / subtext / emotionScale 整项不发（不是发空）——Breeze 服务在
+    // 没有 instruction 时会拿 emotion / subtext 自己拼情绪指令（breeze-deploy/server.py voice_instruction）。
+    const breezeEmotionOff = config.breeze && request.emotionOff === true;
+    if (breezeEmotionOff || (config.breeze && Number.isSafeInteger(request.seed))) {
+      const parsed = JSON.parse(body);
+      if (breezeEmotionOff) { delete parsed.emotion; delete parsed.subtext; delete parsed.emotionScale; }
+      body = JSON.stringify({ ...parsed, ...(Number.isSafeInteger(request.seed) ? { seed: request.seed } : {}) });
+    }
     const response = await fetch(config.endpoint, { method: 'POST', signal: timeout.signal, headers: { 'Content-Type': 'application/json', ...headers }, body });
     if (config.breeze && !response.ok) throw await upstreamError(response, '/tts');
     const seed = parseSeedHeader(response.headers.get('x-seed'));

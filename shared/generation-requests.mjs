@@ -20,6 +20,13 @@ export function emotionScaleFor(intensity) {
 // 豆包 / 自定义引擎完全忽略这个标记。
 export const isEmotionOff = (intensity) => numberOr(intensity, 40) === 0;
 
+// 浏览器提交的生成请求（整场 / 单句 / 方向实验）里的 emotionOff：只认布尔 true，其余（false / 'true' / 1）
+// 一律去掉。方向实验的变体是在台词请求上展开的，前端给强度非 0 的变体发 emotionOff: false 就能清掉。
+export function normalizeEmotionOff(item) {
+  const { emotionOff, ...rest } = item || {};
+  return emotionOff === true ? { ...rest, emotionOff: true } : rest;
+}
+
 export function buildGenerationRequest(line, voiceMap) {
   return {
     lineId: line.id,

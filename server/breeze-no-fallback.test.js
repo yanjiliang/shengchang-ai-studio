@@ -37,7 +37,7 @@ const { runGenerationRequests, enqueueGeneration, enqueueLineTake, enqueueOneCli
 const { runOneClickPipeline } = await import('./one-click.js');
 const { breezeInstruction, voiceInstructions } = await import('./model-adapters.js');
 const { audioContentHash } = await import('./database.js');
-const { buildGenerationRequest } = await import('../shared/generation-requests.mjs');
+const { buildGenerationRequest, normalizeEmotionOff } = await import('../shared/generation-requests.mjs');
 const { TTS_UI_PRESETS, VOLCENGINE_DEFAULT_ENDPOINT } = await import('../shared/tts-presets.mjs');
 const ttsProviders = await import('./tts-providers.js');
 
@@ -281,8 +281,72 @@ describe('情绪强度 0 = 不要情绪（只对 Breeze）', () => {
     const config = { provider: 'breeze', breezeEndpoint: 'http://127.0.0.1:8000', audioFormat: 'wav', sampleRate: 24000 };
     const zero = { ...request({ intensity: 0 }), voiceId: 'ref-a' };
     const one = { ...request({ intensity: 1 }), voiceId: 'ref-a' };
-    assert.equal(zero.emotionScale, one.emotionScale);
     assert.notEqual(audioContentHash(config, zero), audioContentHash(config, one));
+  });
+
+  // 0039：发给 Breeze 的请求体逐字节核对。强度 0 时 emotion / subtext / emotionScale 整项不发。
+  test('对模拟 Breeze：强度 0 的请求体（有 / 无潜台词 × 语速 90 / 100）逐字节', async () => {
+    const mock = await startMockBreeze();
+    try {
+      mock.state.voices.set('ref-x', { id: 'ref-x', transcript: 'x' });
+      await writeConfig({ provider: 'breeze', breezeEndpoint: mock.endpoint });
+      const pid = createProject({ name: '零-体', state: { scenes: [], characters: [] } }).id;
+      const cases = [
+        [{ pace: 100 }, '{"text":"不要情绪。","voiceId":"ref-x","speed":1,"instruction":""}'],
+        [{ pace: 100, subtext: '被冤枉' }, '{"text":"不要情绪。","voiceId":"ref-x","speed":1,"instruction":""}'],
+        [{ pace: 90 }, '{"text":"不要情绪。","voiceId":"ref-x","speed":0.9,"instruction":"语速稍慢、从容。"}'],
+        [{ pace: 90, subtext: '被冤枉' }, '{"text":"不要情绪。","voiceId":"ref-x","speed":0.9,"instruction":"语速稍慢、从容。"}'],
+      ];
+      for (const [extra, expected] of cases) {
+        const req = { ...buildGenerationRequest({ id: 'zb', text: '不要情绪。', emotion: '愤怒', intensity: 0, ...extra }, {}), voiceId: 'ref-x', sceneId: 's1' };
+        const outcome = await runGenerationRequests(await readConfig(), [req], { projectId: pid, sceneId: 's1' });
+        assert.equal(outcome.status, 'done');
+        assert.equal(mock.state.requests.filter((item) => item.path === '/tts').at(-1).raw, expected, JSON.stringify(extra));
+      }
+      // 对照：强度 1 照旧带齐 emotion / subtext / emotionScale。
+      const one = { ...buildGenerationRequest({ id: 'zb1', text: '有情绪。', emotion: '愤怒', subtext: '被冤枉', intensity: 1, pace: 100 }, {}), voiceId: 'ref-x', sceneId: 's1' };
+      await runGenerationRequests(await readConfig(), [one], { projectId: pid, sceneId: 's1' });
+      assert.equal(mock.state.requests.filter((item) => item.path === '/tts').at(-1).raw,
+        '{"text":"有情绪。","voiceId":"ref-x","emotion":"愤怒","subtext":"被冤枉","speed":1,"emotionScale":0.1,"instruction":"用略带一点愤怒的语气说，这句话的情绪来由是：被冤枉。"}');
+      // 显式种子 + 强度 0：种子照样进请求体。
+      const seeded = { ...buildGenerationRequest({ id: 'zb2', text: '换种子。', emotion: '愤怒', intensity: 0, pace: 100 }, {}), voiceId: 'ref-x', sceneId: 's1', seed: 7 };
+      await runGenerationRequests(await readConfig(), [seeded], { projectId: pid, sceneId: 's1' });
+      assert.equal(mock.state.requests.filter((item) => item.path === '/tts').at(-1).raw, '{"text":"换种子。","voiceId":"ref-x","speed":1,"instruction":"","seed":7}');
+    } finally { await mock.close(); }
+  });
+
+  test('Breeze 缓存键：强度 0 时 emotion / subtext / emotionScale 不进键（它们不影响 Breeze 输出）', () => {
+    const config = { provider: 'breeze', breezeEndpoint: 'http://127.0.0.1:8000', audioFormat: 'wav', sampleRate: 24000 };
+    const key = (extra) => audioContentHash(config, { ...request(extra), voiceId: 'ref-a' });
+    assert.equal(key({}), key({ emotion: '悲伤', subtext: '被冤枉' }));
+    assert.equal(key({}), audioContentHash(config, { ...request({}), emotionScale: 0.4, voiceId: 'ref-a' }), '方向实验变体的 emotionScale 不同也同键');
+    assert.notEqual(key({}), key({ pace: 90 }), '语速仍进键');
+    assert.notEqual(key({ intensity: 1 }), key({ intensity: 1, subtext: '被冤枉' }), '强度 1–100 照旧');
+  });
+
+  test('方向实验：变体带 emotionOff:true 与台词强度 0 一样；emotionOff:false / 非布尔会被清掉', async () => {
+    assert.deepEqual(normalizeEmotionOff({ a: 1, emotionOff: true }), { a: 1, emotionOff: true });
+    for (const value of [false, 'true', 1, null, undefined]) assert.deepEqual(normalizeEmotionOff({ a: 1, emotionOff: value }), { a: 1 }, String(value));
+    const mock = await startMockBreeze();
+    try {
+      mock.state.voices.set('ref-x', { id: 'ref-x', transcript: 'x' });
+      await writeConfig({ provider: 'breeze', breezeEndpoint: mock.endpoint });
+      const line = dialogue('lab1', 'tangseng', '方向实验。', { intensity: 0, pace: 90 });
+      const pid = createProject({ name: '实验', state: { characters, voiceMap: {}, scenes: [{ id: 's1', title: '一', lines: [line] }] } }).id;
+      // 与 App.jsx runDirectionLab 相同的展开方式：变体覆盖 emotion / emotionScale / subtext / distance。
+      const base = { ...buildGenerationRequest(line, {}), voiceId: 'ref-x', sceneId: 's1' };
+      const variants = [
+        normalizeEmotionOff({ ...base, emotion: '悲伤', emotionScale: 0.4, subtext: '心虚', emotionOff: true }),
+        normalizeEmotionOff({ ...base, emotion: '悲伤', emotionScale: 0.6, subtext: '心虚', emotionOff: false }),
+      ];
+      const task = await waitForTaskToSettle(enqueueGeneration({ projectId: pid, sceneId: 's1', kind: 'direction-lab', requests: variants }).id, 15_000);
+      assert.equal(task.status, 'completed', task.error);
+      const raws = mock.state.requests.filter((item) => item.path === '/tts').map((item) => item.raw);
+      assert.deepEqual(raws, [
+        '{"text":"方向实验。","voiceId":"ref-x","speed":0.9,"instruction":"语速稍慢、从容。"}',
+        '{"text":"方向实验。","voiceId":"ref-x","emotion":"悲伤","subtext":"心虚","speed":0.9,"emotionScale":0.6,"instruction":"用特别悲伤的语气说，语速稍慢、从容，这句话的情绪来由是：心虚。"}',
+      ]);
+    } finally { await mock.close(); }
   });
 
   test('对模拟 Breeze：强度 0、正常语速、有潜台词 → 发 instruction: ""（纯克隆）', async () => {
@@ -296,7 +360,9 @@ describe('情绪强度 0 = 不要情绪（只对 Breeze）', () => {
       assert.equal(outcome.status, 'done');
       const sent = mock.state.requests.filter((item) => item.path === '/tts').at(-1).body;
       assert.equal(sent.instruction, '');
-      assert.equal(sent.emotionScale, 0.1);
+      assert.equal('emotionScale' in sent, false);
+      assert.equal('emotion' in sent, false);
+      assert.equal('subtext' in sent, false);
     } finally { await mock.close(); }
   });
 });

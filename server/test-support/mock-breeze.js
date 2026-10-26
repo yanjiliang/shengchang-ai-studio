@@ -47,7 +47,7 @@ export async function startMockBreeze({ port = 0, delayMs = 0, clipSeconds = 1.2
       if (chunks.length) {
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { response.writeHead(400, { 'Content-Type': 'text/plain' }); return response.end('invalid json'); }
       }
-      state.requests.push({ method: request.method, path: url.pathname, body, headers: { authorization: request.headers.authorization }, at: Date.now() });
+      state.requests.push({ method: request.method, path: url.pathname, body, raw: Buffer.concat(chunks).toString('utf8'), headers: { authorization: request.headers.authorization }, at: Date.now() });
       if (state.down) { request.socket.destroy(); return; }
       const fail = state.failNext && state.failNext.path === url.pathname && (!state.failNext.method || state.failNext.method === request.method) ? state.failNext : null;
       if (fail) { state.failNext = null; response.writeHead(fail.status, { 'Content-Type': 'text/plain' }); return response.end(fail.text || 'mock failure'); }

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { unlink } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { buildGenerationRequests } from '../shared/generation-requests.mjs';
+import { buildGenerationRequests, normalizeEmotionOff } from '../shared/generation-requests.mjs';
 import { publicConfig, readConfig, writeConfig } from './config-store.js';
 import { TTS_SLOT_FIELDS, applyTtsUpdate } from './tts-providers.js';
 import { archiveProject, createProject, getProject, listPersistentTasks, listProjects, updateProject } from './database.js';
@@ -292,7 +292,7 @@ app.post('/api/generate', async (request, response, next) => {
       const line = scene?.lines?.find((candidate) => candidate.id === item.lineId);
       if (!scene || !line || line.type !== 'dialogue') throw new Error('生成任务中存在无效的对白位置');
       if (!String(item.text || '').trim()) throw new Error('生成任务中存在空白台词');
-      return { ...item, sceneId };
+      return { ...normalizeEmotionOff(item), sceneId };
     });
     response.status(202).json(enqueueGeneration({ ...request.body, requests }));
   } catch (error) { next(error); }

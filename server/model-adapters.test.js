@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import { after, before, describe, test } from 'node:test';
 import { directableVoiceIds, voiceDirectability } from './directable-voices.js';
-import { assertVoiceMatchesResource, synthesize, voiceGeneration, voiceInstructions } from './model-adapters.js';
+import { assertVoiceMatchesResource, synthesize, validateProviderConfig, voiceGeneration, voiceInstructions } from './model-adapters.js';
 
 // Distinct byte patterns per slice keep ordering assertions meaningful, and the
 // 256-byte size clears the length heuristic in extractBase64 the way real
@@ -278,5 +278,45 @@ describe('可导演音色白名单', () => {
     assert.equal(voiceDirectability('zh_male_sunwukong_uranus_bigtts'), false);
     assert.equal(voiceDirectability('zh_male_qingcang_uranus_bigtts'), null);
     assert.deepEqual(directableVoiceIds(), ['zh_female_vv_uranus_bigtts']);
+  });
+});
+
+describe('自定义 HTTP 接口可不鉴权（本机 Breeze 等）', () => {
+  let server;
+  let origin;
+  let seen;
+  const WAV = Buffer.from('RIFF0000WAVEfmt ');
+  const template = '{"text":"{{text}}","voiceId":"{{voiceId}}","emotion":"{{emotion}}","emotionScale":{{emotionScale}},"speed":{{speed}},"subtext":"{{subtext}}"}';
+  const config = (extra = {}) => ({ provider: 'custom', endpoint: `${origin}/tts`, accessKey: '', audioFormat: 'wav', sampleRate: 24000, responseMode: 'auto', customHeaders: '{}', customBodyTemplate: template, ...extra });
+
+  before(async () => {
+    server = http.createServer(async (incoming, response) => {
+      let body = '';
+      for await (const chunk of incoming) body += chunk;
+      seen = { headers: incoming.headers, body: JSON.parse(body) };
+      response.writeHead(200, { 'content-type': 'audio/wav' });
+      response.end(WAV);
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    origin = `http://127.0.0.1:${server.address().port}`;
+  });
+  after(() => server.close());
+
+  test('custom 无凭证通过校验，豆包仍要求凭证', () => {
+    assert.doesNotThrow(() => validateProviderConfig(config()));
+    assert.throws(() => validateProviderConfig({ ...config(), endpoint: '' }), /请填写接口地址/);
+    assert.throws(() => validateProviderConfig({ provider: 'volcengine-api-key', endpoint: 'https://x', accessKey: '', resourceId: 'seed-tts-2.0' }), /请填写访问凭证/);
+  });
+
+  test('无凭证时不发送 Authorization，模板里的 emotionScale 以数字传出', async () => {
+    const result = await synthesize(config(), { text: '妖怪！吃俺老孙一棒！', voiceId: 'sunwukong_v2', emotion: '愤怒', emotionScale: 0.95, speed: 1.12, subtext: '出手不留情' });
+    assert.deepEqual(result.buffer, WAV);
+    assert.equal(seen.headers.authorization, undefined);
+    assert.deepEqual(seen.body, { text: '妖怪！吃俺老孙一棒！', voiceId: 'sunwukong_v2', emotion: '愤怒', emotionScale: 0.95, speed: 1.12, subtext: '出手不留情' });
+  });
+
+  test('填了凭证仍附带 Bearer 头', async () => {
+    await synthesize(config({ accessKey: 'local-token' }), { text: '测试', voiceId: 'narrator', speed: 1 });
+    assert.equal(seen.headers.authorization, 'Bearer local-token');
   });
 });

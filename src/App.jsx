@@ -154,8 +154,10 @@ function App() {
 
   const ensureVoiceConfigured = () => {
     if (!config || config.provider === 'unavailable') { setToast('本地模型服务未启动'); return false; }
-    // voiceReady 由服务端按引擎规则判断（custom / Breeze 可以不需要凭证）；旧服务没有该字段时退回旧判断。
-    if (config.provider !== 'demo' && !(config.voiceReady ?? config.hasAccessKey)) { setView('settings'); setToast('请先配置真实语音模型凭证'); return false; }
+    // 服务端 voiceReady 按引擎规则判断（custom / Breeze 可不鉴权）；旧服务没有该字段时退回：
+    // 自定义接口只要求接口地址，凭证仅豆包必填。
+    const voiceReady = config.voiceReady ?? (config.provider === 'demo' || (config.provider === 'custom' ? Boolean(config.endpoint) : config.hasAccessKey));
+    if (!voiceReady) { setView('settings'); setToast(config.provider === 'custom' ? '请先填写自定义语音接口地址' : '请先配置真实语音模型凭证'); return false; }
     return true;
   };
   const generationRequest = (line) => buildGenerationRequest(line, state.voiceMap);

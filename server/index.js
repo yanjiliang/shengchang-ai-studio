@@ -64,7 +64,6 @@ app.use('/media', express.static(runtimePaths.MEDIA_DIR, { fallthrough: false })
 
 app.get('/api/health', async (_request, response) => {
   const config = await readConfig();
-  // configured 以适配器自己的校验为准：Breeze 无凭证也算已配置。
   let configured = true;
   try { validateProviderConfig(config); } catch { configured = false; }
   response.json({ ok: true, provider: config.provider, configured, ffmpeg: await probeFfmpeg() });

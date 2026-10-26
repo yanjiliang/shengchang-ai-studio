@@ -368,8 +368,8 @@ export function validateProviderConfig(config) {
   // 本地 Breeze 服务不需要凭证，只要地址合法。
   if (config.provider === 'breeze') { breezeSettings(config); return; }
   if (!config.endpoint) throw new Error('请填写接口地址');
-  // 只有豆包强制要凭证；custom 可以是本机/内网不鉴权的服务（如 Breeze、本地 TTS），
-  // 有 accessKey 时照常带 Authorization: Bearer。
+  // 自定义 HTTP 接口（如本机 Breeze TTS）可以不鉴权：凭证只对豆包必填，
+  // custom 填了 accessKey 才会附带 Authorization 头。
   if (config.provider === 'volcengine-api-key' && !config.accessKey) throw new Error('请填写访问凭证');
   if (config.provider === 'volcengine-api-key' && !config.resourceId) throw new Error('请选择豆包语音模型');
 }

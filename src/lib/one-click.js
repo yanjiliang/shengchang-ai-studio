@@ -38,3 +38,9 @@ export function exportOnlyDialogue(scenes = []) {
 }
 export const EXPORT_ONLY_DIALOGUE = '导出只有对白';
 export const EXPORT_ONLY_DIALOGUE_DETAIL = '音效和背景音乐都还没有素材，导出的 mp3 里只有台词。';
+
+// 一键成片预估里 0 句要配（全部已有音频、也不用先拆解）：确认框主按钮改成「导出整集」，直接走整集导出。
+export function oneClickNothingPending(estimate) {
+  if (!estimate || estimate.needsLlm) return false;
+  return Number(estimate.requestCount) === 0 && estimate.requestCount !== null && estimate.requestCount !== '' && Number(estimate.sceneCount) > 0;
+}

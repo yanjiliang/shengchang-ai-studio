@@ -221,3 +221,6 @@ export function exportSummary(result) {
 }
 
 export const randomSeed = () => Math.floor(Math.random() * 2 ** 31);
+
+// 审听页读取中（fe-0010）：知道几句就写几句，不知道就不写数字。
+export const readingLinesText = (count) => (Number(count) > 0 ? `正在读取 ${Number(count)} 句台词` : '正在读取台词');

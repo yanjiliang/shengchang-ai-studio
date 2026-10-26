@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { exportOnlyDialogue, goFixText, missingDetail, missingText, missingVoiceRoles } from './one-click.js';
+import { exportOnlyDialogue, goFixText, missingDetail, missingText, missingVoiceRoles, oneClickNothingPending } from './one-click.js';
 import { breezePreset, DOUBAO_PRESET } from './engine.js';
 
 const breeze = breezePreset();
@@ -32,4 +32,13 @@ test('导出只有对白：有音效行但都没素材才提示', () => {
   assert.equal(exportOnlyDialogue(scenes), true);
   assert.equal(exportOnlyDialogue([{ lines: [{ type: 'sfx', assetUrl: '/x' }] }]), false);
   assert.equal(exportOnlyDialogue([{ lines: [{ type: 'dialogue' }] }]), false);
+});
+
+test('oneClickNothingPending：0 句要配且有场景才直接导出整集', () => {
+  assert.equal(oneClickNothingPending({ sceneCount: 8, requestCount: 0 }), true);
+  assert.equal(oneClickNothingPending({ sceneCount: 8, requestCount: 3 }), false);
+  assert.equal(oneClickNothingPending({ sceneCount: 0, requestCount: 0, needsLlm: true }), false);
+  assert.equal(oneClickNothingPending({ sceneCount: 8, requestCount: 0, needsLlm: true }), false);
+  assert.equal(oneClickNothingPending({ sceneCount: 8, requestCount: null }), false);
+  assert.equal(oneClickNothingPending(null), false);
 });

@@ -1,10 +1,10 @@
 import { AlertCircle, AudioWaveform, BrainCircuit, Check, Cpu, Eye, EyeOff, KeyRound, LoaderCircle, RefreshCw, Save, ShieldCheck } from 'lucide-react';
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { HEADERS_REENTER, REENTER_KEY, configForSave, hasSavedHeaderSecret, llmSecretState, maskHeaders, providerSaved, secretState, ttsDraftFor, unmaskHeaders } from '../../lib/secrets.js';
 import { sameEndpoint } from '../../../shared/endpoint.mjs';
 import { TTS_UI_PRESETS } from '../../../shared/tts-presets.mjs';
 import { effectiveTtsEndpoint } from '../../../server/tts-providers.js';
-import { LLM_BASE_PLACEHOLDER, LLM_KEY_NOTE, LLM_MODEL_PLACEHOLDER, llmBaseHint, llmFieldErrors, llmFingerprint, llmKeyPlaceholder, llmTestOutcome, llmUrlChanged, normalizeLlmBase, writeLlmVerified } from '../../lib/llm.js';
+import { LLM_BASE_PLACEHOLDER, LLM_KEY_NOTE, LLM_MODEL_PLACEHOLDER, llmBaseHint, llmConfigForView, llmFieldErrors, llmFingerprint, llmKeyPlaceholder, llmTestOutcome, llmUrlChanged, normalizeLlmBase, writeLlmVerified } from '../../lib/llm.js';
 import { BREEZE_DEFAULT_BASE, BREEZE_HARDWARE_NOTE, BREEZE_LICENSE_FULL, BREEZE_START_HINT, BREEZE_TIME_NOTE, DOUBAO_PRESET, breezeBaseHint, breezeBaseOf, breezePreset, normalizeBreezeBase, engineOf, llmKeyRequired, needsCredential } from '../../lib/engine.js';
 import { useBreezeStatus } from '../../lib/useBreezeStatus.js';
 
@@ -134,14 +134,16 @@ export function LlmSettings({ draft, config, keyRequired, onChange, onSave, onTe
 const providerPresets = TTS_UI_PRESETS;
 
 export function SettingsView({ config, onSave, onTestLlm, onToast, onReload }) {
-  const [draft, setDraft] = useState(config);
+  // 文本模型地址前端默认空白：服务端出厂默认的方舟地址（没配过时）在这里显示成空（lib/llm.js llmConfigForView）。
+  const viewConfig = useMemo(() => llmConfigForView(config), [config]);
+  const [draft, setDraft] = useState(viewConfig);
   const [saving, setSaving] = useState(false);
   const [demoBannerDismissed, setDemoBannerDismissed] = useState(false);
 
-  useEffect(() => setDraft(config), [config]);
+  useEffect(() => setDraft(viewConfig), [viewConfig]);
   const breeze = useBreezeStatus(true);
   // 服务端按已保存的地址算 llmApiKeyRequired；草稿改了地址就按同一规则现算。
-  const llmKeyNeeded = (draft.llmEndpoint || '') === (config.llmEndpoint || '') && typeof config.llmApiKeyRequired === 'boolean' ? config.llmApiKeyRequired : llmKeyRequired(draft.llmEndpoint);
+  const llmKeyNeeded = (draft.llmEndpoint || '') === (viewConfig.llmEndpoint || '') && typeof viewConfig.llmApiKeyRequired === 'boolean' ? viewConfig.llmApiKeyRequired : llmKeyRequired(draft.llmEndpoint);
 
   const change = (field, value) => setDraft((current) => ({ ...current, [field]: value }));
   // 切引擎时带上那个引擎自己已保存的地址（0035 起每个引擎各存一份；之前只有当前保存的那个）。
@@ -188,7 +190,7 @@ export function SettingsView({ config, onSave, onTestLlm, onToast, onReload }) {
           <div className="settings-actions"><button className="button primary-button" type="button" disabled={saving} onClick={save}><Save size={14} />{saving ? '保存中' : '保存语音连接'}</button></div>
         </section>
         <div className="settings-side-column">
-          <LlmSettings draft={draft} config={config} keyRequired={llmKeyNeeded} onChange={change} onSave={saveLlm} onTest={onTestLlm} />
+          <LlmSettings draft={draft} config={viewConfig} keyRequired={llmKeyNeeded} onChange={change} onSave={saveLlm} onTest={onTestLlm} />
           <section className="settings-panel sfx-settings-panel">
             <div className="settings-panel-head"><AudioWaveform size={17} /><div><strong>音效与音乐生成</strong><p>在场景里按描述生成音效、环境声与音乐垫，与语音模型相互独立。</p></div></div>
             <label className="setting-field"><span>生成引擎</span><select value={draft.sfxProvider || 'demo'} onChange={(event) => change('sfxProvider', event.target.value)}><option value="demo">演示引擎 · 离线占位音</option><option value="custom">自定义 HTTP 接口（text-to-SFX 服务）</option></select></label>

@@ -1,10 +1,12 @@
 import { AlertTriangle, ChevronLeft, ChevronRight, Download, Flag, LoaderCircle, Pause, Play, RefreshCw, Wrench } from 'lucide-react';
-import { EXPORT_LOCK_TEXT, exportErrorText } from '../../lib/export-lock.js';
+import { EXPORT_LOCK_TEXT } from '../../lib/export-lock.js';
+import { exportFailureView } from '../../lib/export-failure.js';
+import { ExportFailure } from '../ExportFailure';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { chainApi } from '../../lib/chain-api.js';
 import {
   OFFLINE_REGEN, OVERSCAN, ROW_HEIGHT, driftBanner, filterLines, formatClock, indexAt, isDrifted, isMarked,
-  doubaoRegenConfirm, lineAriaLabel, lineBadges, mixTimeline, randomSeed, reviewLines, rowWindow, staleMixLineIds, stepLine,
+  doubaoRegenConfirm, lineAriaLabel, lineBadges, mixTimeline, randomSeed, readingLinesText, reviewLines, rowWindow, staleMixLineIds, stepLine,
 } from '../../lib/review.js';
 import { ModalShell } from '../ModalShell';
 import { singleAudio } from '../../lib/single-audio.js';
@@ -29,6 +31,10 @@ export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, 
   const projectId = project.id;
   const scenes = project.state?.scenes || [];
   const lines = useMemo(() => reviewLines(scenes), [scenes]);
+  // 审听页的读取中状态（fe-0010）：项目内容 / 整集时间轴还没读到时写「正在读取 N 句台词」，不留空白。
+  // N 取项目已知的台词数（已读到的台词，或项目列表给的 lineCount / dialogueCount），不知道就不写数字。
+  const linesLoading = !project.state || project.loading === true;
+  const expectedLineCount = lines.length || Number(project.lineCount ?? project.dialogueCount) || 0;
   const indexOf = useMemo(() => new Map(lines.map((line, index) => [line.id, index])), [lines]);
   const nameOf = useCallback((id) => project.state?.characters?.find((role) => role.id === id)?.name || id || '', [project.state?.characters]);
   const emotions = useMemo(() => [...new Set(lines.map((line) => line.emotion).filter(Boolean))], [lines]);
@@ -235,8 +241,11 @@ export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, 
     setCursor(sec);
     if (play) singleAudio.playAt(EPISODE, nextMix.url, sec);
   };
+  // 重新混音失败（fe-0010）：固定文案 + 重试 + 详情（服务端原文），留在播放条下面直到重试成功或关掉。
+  const [remixFailure, setRemixFailure] = useState(null);
   const doRemix = async () => {
     const wasPlaying = episodePlaying;
+    setRemixFailure(null);
     if (wasPlaying) singleAudio.pause();
     const previousId = mix.mix?.mixId;
     const count = staleIds.length;
@@ -246,7 +255,11 @@ export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, 
       // 服务端只留最新一份成片（同名覆盖），chainApi.capabilities.undoRemix 为 false 时不给「撤销」。
       showToast(count ? `已重新混音，换上了 ${count} 句新版` : '已重新混音', previousId && chainApi.capabilities.undoRemix ? { label: '撤销', run: async () => { const restored = await mix.restore(previousId); keepPosition(restored, singleAudio.state.id === EPISODE && singleAudio.state.playing); } } : null);
       return next;
-    } catch (error) { showToast(Number(error?.status) === 409 ? exportErrorText(error) : `重新混音失败：${error.message}`); throw error; }
+    } catch (error) {
+      const view = exportFailureView(error);
+      if (view.locked) showToast(view.text); else setRemixFailure(view);
+      throw error;
+    }
   };
 
   // ---- 导出 ----
@@ -279,7 +292,7 @@ export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, 
     if (exportLocked) return;
     singleAudio.pause();
     // 导出就是按当前每句的音频重新拼一遍整集（服务端没有单独的「混音」），所以先混音和直接导出是同一件事。
-    setExportState((current) => ({ ...current, phase: 'running', progress: 0, message: remixFirst ? '正在重新混音' : '正在准备', error: '' }));
+    setExportState((current) => ({ ...current, phase: 'running', progress: 0, message: remixFirst ? '正在重新混音' : '正在准备', error: '', failure: null }));
     try {
       const { jobId } = await chainApi.exportEpisode(projectId);
       const result = await watchToEnd(jobId, (progress, message) => setExportState((current) => ({ ...current, progress, message })));
@@ -289,9 +302,9 @@ export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, 
       setAnnounce('整集已导出');
       if (!exportOpenRef.current) showToast('整集已导出', { label: '查看', run: () => setExportState((current) => ({ ...current, open: true })) });
     } catch (error) {
-      const reason = exportErrorText(error);
-      setExportState((current) => ({ ...current, phase: 'failed', error: reason }));
-      if (!exportOpenRef.current) showToast(Number(error?.status) === 409 ? reason : `导出失败：${reason}`, { label: '查看', run: () => setExportState((current) => ({ ...current, open: true })) });
+      const view = exportFailureView(error);
+      setExportState((current) => ({ ...current, phase: 'failed', error: view.detail, failure: view }));
+      if (!exportOpenRef.current) showToast(view.text, { label: '查看', run: () => setExportState((current) => ({ ...current, open: true })) });
     }
   };
 
@@ -347,7 +360,7 @@ export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, 
   const playIndex = currentIndex >= 0 ? currentIndex : selectedIndex;
   const playLine = lines[playIndex];
   const remixing = mix.status === 'remixing';
-  const mixStatus = remixing ? `正在重新混音 ${Math.round((mix.progress || 0) * 100)}%` : !mix.mix ? (mix.error ? `还没有整集混音：${mix.error}` : (mix.status === 'loading' ? '正在读取整集时间轴…台词多时要等十几秒' : '正在准备整集混音')) : staleIds.length ? `需重新混音 · 已换 ${staleIds.length} 句` : '整集混音是最新的';
+  const mixStatus = remixing ? `正在重新混音 ${Math.round((mix.progress || 0) * 100)}%` : !mix.mix ? (remixFailure ? '还没有整集混音' : mix.error ? `还没有整集混音：${mix.error}` : (mix.status === 'loading' ? readingLinesText(lines.length) : '正在准备整集混音')) : staleIds.length ? `需重新混音 · 已换 ${staleIds.length} 句` : '整集混音是最新的';
   const prevLine = selectedIndex > 0 ? lines[selectedIndex - 1] : null;
   const selectedStart = startOf(selected);
   const tailSegment = mix.mix?.url && Number.isFinite(selectedStart) && prevLine ? { url: mix.mix.url, from: Math.max(0, selectedStart - 2), to: selectedStart } : null;
@@ -398,6 +411,7 @@ export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, 
           <button type="button" className="button primary-button" disabled={!mix.mix || remixing || (exportLocked && exportState.phase !== 'running')} aria-describedby={exportLocked ? 'review-export-lock' : undefined} onClick={openExport}>{exportState.phase === 'running' ? <LoaderCircle size={13} className="spin" /> : <Download size={13} />}导出 mp3</button>
           {exportLocked ? <span id="review-export-lock" className="export-lock-note" role="status">{EXPORT_LOCK_TEXT}</span> : null}
         </div>
+        {remixFailure ? <ExportFailure className="review-remix-failure" text={remixFailure.text} detail={remixFailure.detail} retryDisabled={remixing || exportLocked} onRetry={() => doRemix().catch(() => {})} onClose={() => setRemixFailure(null)} /> : null}
         <p className="playbar-keys muted" aria-hidden="true">空格 播放/暂停 · J/K 上一句/下一句 · M 标记</p>
       </div>
 
@@ -419,12 +433,14 @@ export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, 
       <div className="review-body">
         <div className="review-list-column">
           <div className="review-filters" role="tablist" aria-label="筛选">
-            {[['all', '全部'], ['marked', '已标记'], ['drift', '可能换人']].map(([key, label]) => (
+            {/* fe-0010：没有音色相似度数据（可能换人 0）就不显示这个筛选，免得一个「0」看着像查过了。 */}
+            {[['all', '全部'], ['marked', '已标记'], ['drift', '可能换人']].filter(([key]) => key !== 'drift' || counts.drift > 0 || filter === 'drift').map(([key, label]) => (
               <button key={key} type="button" role="tab" aria-selected={filter === key} aria-controls="review-list" className={`filter-tab ${filter === key ? 'is-active' : ''}`} onClick={() => setFilter(key)}>{label} <span>{counts[key]}</span></button>
             ))}
           </div>
           <div id="review-list" ref={listRef} className="review-list" role="list" aria-label={`台词（${visible.length} 句）`} onScroll={onScroll}>
-            {!visible.length ? <p className="review-list-empty muted">{filter === 'marked' ? '没有标记的句子。' : '没有可能换人的句子。'}</p> : null}
+            {!visible.length && !lines.length && linesLoading ? <p className="review-list-loading" role="status"><LoaderCircle size={14} className="spin" aria-hidden="true" />{readingLinesText(expectedLineCount)}</p> : null}
+            {!visible.length && !(linesLoading && !lines.length) ? <p className="review-list-empty muted">{filter === 'marked' ? '没有标记的句子。' : filter === 'drift' ? '没有可能换人的句子。' : '还没有台词。'}</p> : null}
             <div className="review-list-spacer" style={{ height: windowRange.total }}>
               {visible.slice(windowRange.start, windowRange.end).map((line, offset) => {
                 const position = windowRange.start + offset;
@@ -477,7 +493,7 @@ export function ReviewMode({ project, exportLocked = false, breezeMode, breeze, 
       {exportState.open ? (
         <ReviewExportDialog
           episodeLabel={project.name || project.title || '本集'} phase={exportState.phase} mixStale={staleIds.length > 0} markedCount={issueCount} driftCount={0}
-          sfxUnbound={sfxUnbound} breeze={breezeNote} progress={exportState.progress} message={exportState.message} result={exportState.result} error={exportState.error}
+          sfxUnbound={sfxUnbound} breeze={breezeNote} progress={exportState.progress} message={exportState.message} result={exportState.result} error={exportState.error} failure={exportState.failure || null}
           precheck={precheck} locked={exportLocked} onStart={startExport} onFixStale={onRegenerateLines ? fixStale : null}
           onReview={() => { setExportState((current) => ({ ...current, open: false })); setFilter(counts.marked ? 'marked' : 'drift'); }}
           onClose={() => setExportState((current) => ({ ...current, open: false }))}

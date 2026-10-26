@@ -3,11 +3,13 @@ import { EXPORT_LOCK_TEXT } from '../../lib/export-lock.js';
 import { useEffect, useRef } from 'react';
 import { exportNotes, exportPrecheck, exportSummary, pendingRenderText, staleExportText } from '../../lib/review.js';
 import { ModalShell } from '../ModalShell';
+import { ExportFailure } from '../ExportFailure';
+import { exportFailureView } from '../../lib/export-failure.js';
 
 // 导出整集（handoff 第 2 节「导出」）。phase: check | running | done | failed。
 // 导出进行中可以关掉窗口，导出会继续，完成后由外面弹 toast「整集已导出」+「查看」。
 // precheck = GET /export-precheck 的结果（打开窗口时取）：{ loading, staleLineCount, missingAudioLineCount, staleLineIds, error }。
-export function ReviewExportDialog({ episodeLabel, phase, mixStale, markedCount, driftCount, precheck, sfxUnbound, breeze, progress, message, result, error, locked = false, onStart, onFixStale, onReview, onClose }) {
+export function ReviewExportDialog({ episodeLabel, phase, mixStale, markedCount, driftCount, precheck, sfxUnbound, breeze, progress, message, result, error, failure = null, locked = false, onStart, onFixStale, onReview, onClose }) {
   const check = exportPrecheck({ mixStale, markedCount, driftCount, staleLineCount: precheck?.staleLineCount || 0 });
   const checking = phase === 'check' && precheck?.loading;
   const notes = exportNotes({ sfxUnbound, breeze });
@@ -39,7 +41,7 @@ export function ReviewExportDialog({ episodeLabel, phase, mixStale, markedCount,
           <div className="review-progress" role="progressbar" aria-label="导出进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((progress || 0) * 100)}><span style={{ width: `${Math.round((progress || 0) * 100)}%` }} /></div>
           <p className="muted">可以关掉这个窗口，导出会继续，完成后会提示。</p>
         </div> : null}
-        {phase === 'failed' ? <div className="export-box is-error" role="alert"><strong>导出失败</strong><p>原因：{error || '未知错误'}</p><p className="muted">整集混音不受影响，可以直接重试。</p></div> : null}
+        {phase === 'failed' ? <div className="export-box is-error"><ExportFailure {...(failure || exportFailureView(error))} /><p className="muted">整集混音不受影响，可以直接重试。</p></div> : null}
         {phase === 'done' && summary?.staleLineCount ? <div className="export-box is-warning" role="note"><strong>{staleExportText(summary.staleLineCount)}</strong><p>这些句子按原来的音频导出了；重配之后可以再导出一次。</p></div> : null}
         {phase === 'done' && summary ? <dl className="export-result">
           <dt>文件</dt><dd>{summary.name}</dd>

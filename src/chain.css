@@ -316,3 +316,19 @@
 p.export-lock-note { display: block; margin: 6px 0 0; white-space: normal; }
 .player-tools .export-lock-note { margin-left: 6px; }
 @media (max-width: 640px) { .player-tools .export-lock-note { display: none; } }
+
+/* fe-0010 导出失败：一句人话 + 重试 + 可展开的详情（服务端原文，等宽，可复制）。 */
+.export-failure { display: grid; gap: 6px; min-width: 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--color-danger) 45%, var(--color-line-strong)); border-radius: var(--radius-sm); background: var(--color-paper-4); color: var(--color-text); font-size: 12px; }
+.export-failure-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.export-failure-head > svg { flex: none; color: var(--color-danger); }
+.export-failure-head strong { flex: 1; min-width: 0; font-weight: 600; }
+.export-failure-retry { flex: none; }
+.export-failure-close { flex: none; }
+.export-failure-detail summary { cursor: pointer; color: var(--color-muted); font-size: 11px; }
+.export-failure-detail pre { max-height: 180px; margin: 6px 0 4px; padding: 8px; overflow: auto; border-radius: var(--radius-sm); background: rgba(0, 0, 0, 0.35); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+.export-failure-detail .link-button { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+.export-failure-notice { position: fixed; left: 50%; bottom: 140px; z-index: 21; width: min(520px, calc(100vw - 24px)); transform: translateX(-50%); box-shadow: var(--shadow-popover); }
+.task-copy > .export-failure { height: auto; margin: 5px 0 7px; background: var(--color-paper-4); }
+.task-copy > .export-failure p { margin: 0; }
+.review-remix-failure { margin: 8px 0 0; }
+.review-list-loading { display: flex; align-items: center; gap: 8px; padding: 16px 14px; color: var(--color-muted); font-size: 12px; }

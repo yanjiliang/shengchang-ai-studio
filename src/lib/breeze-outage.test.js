@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { breezeOutage, steadyBreezeStatus, doubaoSwitchConfirm, outageCounts, BEFORE_START_TEXT } from './breeze-outage.js';
+import { breezeOutage, steadyBreezeStatus, doubaoSwitchConfirm, doubaoSwitchDialog, outageCounts, BEFORE_START_TEXT } from './breeze-outage.js';
 
 test('开始前连不上：不开始、不花额度，只给重试和去设置', () => {
   const error = Object.assign(new Error('Breeze 连不上'), { status: 503, code: 'BREEZE_UNREACHABLE', payload: { code: 'BREEZE_UNREACHABLE' } });
@@ -54,4 +54,13 @@ test('0037：causeCode BREEZE_TIMEOUT 仍是一条横幅，多一行原因；单
   assert.match(lineTakeError({ code: 'BREEZE_UNREACHABLE' }), /^Breeze 连不上/);
   assert.equal(lineTakeError({ code: 'X', error: '别的错' }), '别的错');
   assert.doesNotMatch(lineTakeError({ code: 'BREEZE_UNREACHABLE' }), /豆包/);
+});
+
+test('doubaoSwitchDialog：标题只写上限「最多约扣 X 字额度」，X 取全部待生成字数', () => {
+  assert.deepEqual(doubaoSwitchDialog({ requestCount: 19, estimatedBillableCharacters: null, characters: 390 }), { title: '最多约扣 390 字额度', detail: '接下来 19 句会用豆包生成，声音也会和 Breeze 不一样' });
+  assert.equal(doubaoSwitchDialog({ requestCount: 30, estimatedBillableCharacters: 1200, characters: 1500 }).title, '最多约扣 1500 字额度');
+  assert.equal(doubaoSwitchDialog({ requestCount: 30, estimatedBillableCharacters: 1200 }).title, '最多约扣 1200 字额度');
+  assert.equal(doubaoSwitchDialog({ requestCount: 3 }).title, '会按字扣豆包额度');
+  assert.equal(doubaoSwitchDialog({ requestCount: 0, characters: 10 }), null);
+  assert.ok(!JSON.stringify(doubaoSwitchDialog({ requestCount: 19, characters: 390 })).includes('缓存'));
 });

@@ -84,3 +84,17 @@ export function llmErrorText({ code = '', message = '', status = null } = {}) {
   if (code === 'LLM_UNREACHABLE' || (!code && /abort|timed? ?out|超时|fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ECONNRESET|EHOSTUNREACH|getaddrinfo|socket hang up|连不上/i.test(message))) return '连不上这个地址';
   return message || '测试失败';
 }
+
+// fe-0010（item 6）：文本模型地址在前端默认是空的，不预填火山方舟。
+// 服务端 server/config-store.js 的出厂默认 llmEndpoint 还是方舟地址（前端不改 server/，已报给 Back-end）；
+// 在「从没配过」的状态（地址是这个出厂默认、没填模型名、没存 Key）下，设置页把它当成空白显示。
+// 只影响设置页的显示和草稿，不改服务端已保存的值，也不会去连这个地址。
+export const LLM_SERVER_FACTORY_ENDPOINT = 'https://ark.cn-beijing.volces.com/api/v3/chat/completions';
+export function llmUnconfiguredDefault(config = {}) {
+  if (!config || !config.llmEndpoint) return false;
+  return sameLlmEndpoint(config.llmEndpoint, LLM_SERVER_FACTORY_ENDPOINT) && !String(config.llmModel || '').trim() && !config.hasLlmApiKey;
+}
+export function llmConfigForView(config) {
+  if (!llmUnconfiguredDefault(config)) return config;
+  return { ...config, llmEndpoint: '', llmApiKeyRequired: false };
+}

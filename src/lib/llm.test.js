@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { llmBaseHint, llmErrorText, llmTestOutcome, llmUrlChanged, llmFieldErrors, llmFingerprint, llmKeyPlaceholder, llmReady, llmSuccessText, normalizeLlmBase, readLlmVerified, writeLlmVerified } from './llm.js';
+import { LLM_SERVER_FACTORY_ENDPOINT, llmConfigForView, llmUnconfiguredDefault, llmBaseHint, llmErrorText, llmTestOutcome, llmUrlChanged, llmFieldErrors, llmFingerprint, llmKeyPlaceholder, llmReady, llmSuccessText, normalizeLlmBase, readLlmVerified, writeLlmVerified } from './llm.js';
 
 const memory = () => { const map = new Map(); return { getItem: (k) => map.get(k) ?? null, setItem: (k, v) => map.set(k, v), removeItem: (k) => map.delete(k) }; };
 
@@ -54,4 +54,19 @@ test('连通状态绑在设置上：地址 / 模型 / Key 变了要重新测', (
   assert.equal(llmReady({ ...saved, llmEndpoint: 'https://x/v1/chat/completions' }, readLlmVerified(store)), true);
   assert.equal(llmReady({ ...saved, llmVerified: false }, readLlmVerified(store)), false);
   assert.notEqual(llmFingerprint({ ...saved, llmApiKey: 'sk-new' }), llmFingerprint(saved));
+});
+
+test('llmConfigForView：服务端出厂默认的方舟地址（没配过）在设置页显示成空白', () => {
+  const factory = { llmEndpoint: LLM_SERVER_FACTORY_ENDPOINT, llmModel: '', hasLlmApiKey: false, llmApiKeyRequired: true, provider: 'breeze' };
+  assert.equal(llmUnconfiguredDefault(factory), true);
+  assert.deepEqual(llmConfigForView(factory), { ...factory, llmEndpoint: '', llmApiKeyRequired: false });
+  assert.equal(llmUnconfiguredDefault({ ...factory, llmEndpoint: 'https://ark.cn-beijing.volces.com/api/v3' }), true);
+});
+
+test('llmConfigForView：用户自己配过（有模型名或存了 Key、或别的地址）原样显示', () => {
+  const factory = { llmEndpoint: LLM_SERVER_FACTORY_ENDPOINT, llmModel: '', hasLlmApiKey: false };
+  for (const config of [{ ...factory, llmModel: 'doubao-seed-1.6' }, { ...factory, hasLlmApiKey: true }, { ...factory, llmEndpoint: 'http://127.0.0.1:4198/v1' }, { ...factory, llmEndpoint: '' }]) {
+    assert.equal(llmConfigForView(config), config);
+  }
+  assert.equal(llmConfigForView(null), null);
 });

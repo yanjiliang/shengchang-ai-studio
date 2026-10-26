@@ -47,7 +47,8 @@ export function estimateCacheText(estimate) {
   if (!estimate) return '';
   const unknown = Number(estimate.cacheHitsUnknownCount) || 0;
   const hits = count(estimate.cacheHits);
-  if (hits === null) return '预计缓存命中：未知（部分角色还没分配音色，无法预估缓存）';
+  // fe-0010（Design）：一句都还没绑音色 = 没有数据，这一行整行不显示（以前是「预计缓存命中：未知（…）」）。
+  if (hits === null) return '';
   if (unknown > 0) return `预计缓存命中：至少 ${hits} 句，另有 ${unknown} 句未知（部分角色还没分配音色，无法预估缓存）`;
   return hits ? `预计缓存命中 ${hits} 句` : '';
 }

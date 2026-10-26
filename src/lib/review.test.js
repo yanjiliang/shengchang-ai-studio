@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { driftBanner, exportNotes, exportPrecheck, exportSummary, filterLines, indexAt, jobText, lineBadges, mixTimeline, pruneTakes, regenHint, rowWindow, staleMixLineIds, stepLine, takeTags } from './review.js';
+import { driftBanner, exportNotes, exportPrecheck, exportSummary, filterLines, indexAt, jobText, lineBadges, mixTimeline, pruneTakes, readingLinesText, regenHint, rowWindow, staleMixLineIds, stepLine, takeTags } from './review.js';
 
 const drift = { audioUrl: '/a', audioHash: 'h', voiceDrift: { score: 5.2, flagged: true, reasons: ['drift'] } };
 const lines = [{ id: 'a', audioUrl: '/a', speaker: '旁白', text: '一' }, { id: 'b', ...drift, speaker: '孙悟空', text: '二' }, { id: 'c', audioUrl: '/c', mark: { reasons: ['情绪不对'], resolved: false } }];
@@ -126,4 +126,11 @@ test('0043：换一条 queued → failed（没有 started）不留转圈、不�
   assert.equal(text.title, '这一条没有生成出来');
   assert.equal(text.detail, '原因：Breeze 连不上，这一句没生成，没有花额度');
   assert.doesNotMatch(JSON.stringify(text), /命中缓存/);
+});
+
+test('readingLinesText：知道句数就写句数，不知道不写数字', () => {
+  assert.equal(readingLinesText(307), '正在读取 307 句台词');
+  assert.equal(readingLinesText(0), '正在读取台词');
+  assert.equal(readingLinesText(undefined), '正在读取台词');
+  assert.equal(readingLinesText('12'), '正在读取 12 句台词');
 });

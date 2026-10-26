@@ -32,8 +32,8 @@ test('billingSummary：0005 之前的旧任务从 results[].cached 推算，推�
   assert.equal(billingText(null), '');
 });
 
-test('estimateCacheText：还没选角（cacheHits=null）显示“未知”而不是 0', () => {
-  assert.equal(estimateCacheText({ cacheHits: null, cacheHitsUnknownCount: 19 }), '预计缓存命中：未知（部分角色还没分配音色，无法预估缓存）');
+test('estimateCacheText：还没选角（cacheHits=null）没有数据，整行不显示（不写“未知”，也不写 0）', () => {
+  assert.equal(estimateCacheText({ cacheHits: null, cacheHitsUnknownCount: 19 }), '');
 });
 
 test('estimateCacheText：部分未分配音色时给下限 + 未知句数', () => {

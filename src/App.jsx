@@ -5,6 +5,7 @@ import { BrandSignature } from './components/BrandSignature';
 import { Dialog } from './components/Dialog';
 import { PlayerBar } from './components/PlayerBar';
 import { Toast } from './components/Toast';
+import { ExportFailure } from './components/ExportFailure';
 import { TopBar } from './components/TopBar';
 import { Inspector } from './components/studio/Inspector';
 import { SceneCanvas } from './components/studio/SceneCanvas';
@@ -21,13 +22,14 @@ import { buildGenerationRequest } from '../shared/generation-requests.mjs';
 import { labVariantRequest, normalizeLinePatch } from './lib/direction-lab.js';
 import { billingSummary, billingText, estimateCacheText, estimateCostText } from './lib/billing';
 import { breezeEstimateText, isBreeze } from './lib/engine.js';
-import { EXPORT_ONLY_DIALOGUE, exportOnlyDialogue, goFixText, missingDetail, missingText, missingVoiceRoles } from './lib/one-click.js';
+import { EXPORT_ONLY_DIALOGUE, exportOnlyDialogue, goFixText, missingDetail, missingText, missingVoiceRoles, oneClickNothingPending } from './lib/one-click.js';
 import { chainApi } from './lib/chain-api.js';
 import { referenceFromVoice } from './lib/voice-design.js';
 import { useBreezeStatus } from './lib/useBreezeStatus.js';
 import { useExportLock } from './lib/useExportLock.js';
-import { EXPORT_LOCK_TEXT, exportErrorText } from './lib/export-lock.js';
-import { breezeOutage, doubaoSwitchConfirm } from './lib/breeze-outage.js';
+import { EXPORT_LOCK_TEXT } from './lib/export-lock.js';
+import { exportFailureView } from './lib/export-failure.js';
+import { breezeOutage, doubaoSwitchConfirm, doubaoSwitchDialog } from './lib/breeze-outage.js';
 import { BreezeOutageBanner } from './components/BreezeOutageBanner.jsx';
 import { singleAudio } from './lib/single-audio.js';
 import { useVoiceDrafts } from './components/voice/useVoiceDrafts.js';
@@ -53,6 +55,8 @@ function App() {
   const [requestedLineId, setRequestedLineId] = useState(null);
   const [reviewToken, setReviewToken] = useState(0);
   const [toast, setToast] = useState('');
+  // fe-0010：导出失败不再用会自己消失的 toast，留一个带「重试」「详情」的提示，直到用户关掉或重试。
+  const [exportFailure, setExportFailure] = useState(null);
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
   const [generation, setGeneration] = useState(null);
@@ -156,6 +160,7 @@ function App() {
     // tab, nothing else.
     api.builtinAssets().then((payload) => setBuiltinAssets(payload.assets)).catch(() => setBuiltinAssets([]));
   }, []);
+  useEffect(() => setExportFailure(null), [project?.id]);
   useEffect(() => {
     if (!toast) return undefined;
     const timer = window.setTimeout(() => setToast(''), 3800);
@@ -461,13 +466,21 @@ function App() {
     if (exportLock.locked) { setToast(EXPORT_LOCK_TEXT); return; }
     if (!scene?.lines.some((line) => line.type === 'dialogue' && line.audioUrl)) { setToast('当前场景没有已生成的对白'); return; }
     setExporting(true);
+    setExportFailure(null);
     try { await commitPendingSave(); const result = await api.exportScene(project.id, scene.id); downloadMedia(result.url, result.name); setToast(`本场已渲染：${formatDuration(result.durationMs)} · ${result.trackCount} 条轨道`); }
-    catch (error) { setToast(exportErrorText(error)); } finally { setExporting(false); }
+    catch (error) { showExportFailure(error, () => exportSceneById(sceneId)); } finally { setExporting(false); }
+  };
+  // 409（一键成片在跑）照旧一句「正在配音，配完再导出」；其余失败给固定文案 + 重试 + 详情（服务端原文）。
+  const showExportFailure = (error, retry) => {
+    const view = exportFailureView(error);
+    if (view.locked) { setToast(view.text); return; }
+    setExportFailure({ ...view, retry });
   };
   const exportEpisode = async () => {
     if (exportLock.locked) { setToast(EXPORT_LOCK_TEXT); return; }
     if (!scenes.some((scene) => scene.lines.some((line) => line.type === 'dialogue' && line.audioUrl))) { setToast('整部作品还没有可导出的对白音频'); return; }
     setExporting(true);
+    setExportFailure(null);
     try {
       await commitPendingSave();
       const task = await api.exportEpisode(project.id);
@@ -478,7 +491,7 @@ function App() {
       downloadMedia(completed.result.url, completed.result.name);
       if (completed.result.attributionUrl) downloadMedia(completed.result.attributionUrl, decodeURIComponent(completed.result.attributionUrl.split('/').pop()));
       setToast(`整集已导出：${completed.result.sceneCount} 场 · ${formatDuration(completed.result.durationMs)}${exportOnlyDialogue(scenes) ? ` · ${EXPORT_ONLY_DIALOGUE}` : ''}`);
-    } catch (error) { setToast(exportErrorText(error)); }
+    } catch (error) { showExportFailure(error, exportEpisode); }
     finally { setExporting(false); setTaskRefreshToken(Date.now()); }
   };
 
@@ -548,7 +561,13 @@ function App() {
       const llmNote = estimate.needsLlm ? '\n项目还没有场景，将先用文本模型拆解原文。' : '';
       // 用户自己在设置里从 Breeze 换到了豆包：第一次生成前先说清楚要扣多少字、声音会不一样。
       const doubaoFirst = !isBreeze(config) && readDoubaoSwitched() && Boolean(doubaoSwitchConfirm(estimate));
-      if (doubaoFirst && !(await openDialog({ type: 'confirm', message: doubaoSwitchConfirm(estimate), detail: `${parts.join(' · ')} · ${cost.main}`, confirmLabel: '用豆包开始' }))) return;
+      // 标题只写上限「最多约扣 X 字额度」；「预计缓存命中：未知」这种没数据的行不再出现（estimateCacheText 返回空）。
+      if (doubaoFirst) { const copy = doubaoSwitchDialog(estimate); if (!(await openDialog({ type: 'confirm', message: copy.title, detail: `${copy.detail}\n${parts.join(' · ')} · ${cost.main}`, confirmLabel: '用豆包开始' }))) return; }
+      // 0 句要配（全部已有音频）：主按钮直接是「导出整集」，走整集导出，不再「开始」一遍空的一键成片。
+      if (!doubaoFirst && oneClickNothingPending(estimate)) {
+        if (await openDialog({ type: 'confirm', message: '一键成片', detail: `${parts.join(' · ')} · ${cost.main}`, footer: '台词都已配好，不用再生成，可以直接导出整集。', confirmLabel: '导出整集' })) await exportEpisode();
+        return;
+      }
       if (doubaoFirst) clearDoubaoSwitched();
       else if (!(await openDialog({ type: 'confirm', message: '一键成片', detail: `${parts.join(' · ')} · ${cost.main}${llmNote}`, note: cost.note, footer: isBreeze(config) ? '开始后自动执行：拆解 → 用已锁定的参考音色生成 → 体检 → 导出整集。' : '开始后自动执行：拆解 → 配音色 → 生成 → 体检 → 导出整集。', confirmLabel: '开始' }))) return;
       await commitPendingSave();
@@ -595,7 +614,7 @@ function App() {
   else if (view === 'quality') content = <QualityView report={qualityReport} stages={stages} onToast={setToast} onExport={() => exportSceneById(currentScene?.id)} onOpenProduction={() => setView('production')} onOpenView={setView} onLocateLine={locateLine} onOpenVoices={() => setView('voices')} onOpenSounds={() => setView('sounds')} onGenerateMissing={() => generateMissingDialogue([currentScene?.id])} onRegenerateStale={() => regenerateStaleDialogue([currentScene?.id])} generating={Boolean(generation)} exporting={exporting} exportLocked={exportLock.locked} />;
   else content = <SettingsView config={config} onSave={saveConfig} onTestLlm={api.testLlm} onToast={setToast} onReload={reloadConfig} />;
 
-  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{outage ? <BreezeOutageBanner outage={outage} checking={breeze.checking} onRetry={retryAfterOutage} onResume={retryAfterOutage} onSettings={() => { setOutage(null); setView('settings'); }} onDismiss={() => setOutage(null)} /> : null}{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} exportLocked={exportLock.locked} /> : null}{pickerLine ? <SoundPicker line={pickerLine} projectId={project.id} config={config} builtinAssets={builtinAssets} onBind={bindAsset} onUpload={uploadAndBind} onGenerate={generateSound} onClose={() => setPickerLine(null)} onToast={setToast} /> : null}{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}<Toast message={toast} /></div>;
+  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{outage ? <BreezeOutageBanner outage={outage} checking={breeze.checking} onRetry={retryAfterOutage} onResume={retryAfterOutage} onSettings={() => { setOutage(null); setView('settings'); }} onDismiss={() => setOutage(null)} /> : null}{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} exportLocked={exportLock.locked} /> : null}{pickerLine ? <SoundPicker line={pickerLine} projectId={project.id} config={config} builtinAssets={builtinAssets} onBind={bindAsset} onUpload={uploadAndBind} onGenerate={generateSound} onClose={() => setPickerLine(null)} onToast={setToast} /> : null}{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}<Toast message={toast} />{exportFailure ? <ExportFailure className="export-failure-notice" text={exportFailure.text} detail={exportFailure.detail} retryDisabled={exporting || exportLock.locked} onRetry={() => { const { retry } = exportFailure; setExportFailure(null); retry?.(); }} onClose={() => setExportFailure(null)} /> : null}</div>;
 }
 
 // --- Local composition helpers (props-only, no state of their own) --------

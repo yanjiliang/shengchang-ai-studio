@@ -26,7 +26,8 @@ function TakeDetails({ take }) {
 }
 
 function driftCheck(take, nameOf) {
-  if (!take?.drift || !Number.isFinite(take.drift.dOwn)) return { text: '这一条还没算', tone: 'muted' };
+  // fe-0010：还没算出相似度 = 没有数据，这一行不显示（以前写「这一条还没算」）。
+  if (!take?.drift || !Number.isFinite(take.drift.dOwn)) return null;
   if (take.drift.flagged) return { text: take.drift.nearest ? `可能换人，像${nameOf(take.drift.nearest)}` : '可能换人', tone: 'drift' };
   return { text: '和本角色一致', tone: 'ok' };
 }
@@ -48,7 +49,7 @@ function CompareCard({ line, prevLine, prevIndex, original, fresh, nameOf, tailS
         <p className="compare-title"><strong>{title}</strong><span className="take-tag">{tag}</span></p>
         <Waveform peaks={take.peaks} label={`${title}波形`} />
         <p className="compare-meta">{engineName(take.engine)} · {seconds(take.durationSec)}</p>
-        <p className={`compare-check is-${check.tone}`}>音色复检：{check.text}</p>
+        {check ? <p className={`compare-check is-${check.tone}`}>音色复检：{check.text}</p> : null}
         <button type="button" className="button secondary-button" aria-pressed={playing} onClick={() => play(take, which)}>{playing ? <Pause size={13} /> : <Play size={13} />}{playing ? '停止' : `听${title}`}</button>
         <TakeDetails take={take} />
       </div>

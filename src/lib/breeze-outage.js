@@ -58,3 +58,16 @@ export function doubaoSwitchConfirm(estimate = {}) {
   const chars = num(estimate.estimatedBillableCharacters) ?? num(estimate.characters);
   return chars === null ? `接下来 ${lines} 句会用豆包生成，会按字扣额度，声音也会和 Breeze 不一样` : `接下来 ${lines} 句会用豆包生成，约扣 ${chars} 字额度，声音也会和 Breeze 不一样`;
 }
+
+// fe-0010（Design）：换豆包后第一次生成的确认框。标题只说上限「最多约扣 X 字额度」，
+// X = 全部待生成句的字数 characters（没扣缓存，所以是「最多」）；没有就退回 estimatedBillableCharacters。
+// 0 句要生成时返回 null（不需要这条确认）。
+export function doubaoSwitchDialog(estimate = {}) {
+  const lines = num(estimate.requestCount) ?? num(estimate.dialogueCount) ?? 0;
+  if (!lines) return null;
+  const chars = num(estimate.characters) ?? num(estimate.estimatedBillableCharacters);
+  return {
+    title: chars === null ? '会按字扣豆包额度' : `最多约扣 ${chars} 字额度`,
+    detail: `接下来 ${lines} 句会用豆包生成，声音也会和 Breeze 不一样`,
+  };
+}

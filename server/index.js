@@ -17,7 +17,7 @@ import { redactLlmSecret, resolveLlmApiKey, resolveSavedSecret, testLlm, validat
 import { sameEndpoint, sameLlmEndpoint } from '../shared/endpoint.mjs';
 import { registerBreezeRoutes, sendError } from './breeze-routes.js';
 import { oneClickMissingVoiceRoles, voiceNotReadyError } from './one-click.js';
-import { annotateStaleness, generationVoiceMap, staleLineCount } from './voice-references.js';
+import { annotateStaleness, generationVoiceMap, needsGenerationPredicate, staleLineCount } from './voice-references.js';
 import { registerProductionRoutes } from './production-routes.js';
 
 const PORT = Number(process.env.SHENGCHANG_API_PORT || 4174);
@@ -247,7 +247,7 @@ app.post('/api/projects/:projectId/one-click-estimate', async (request, response
     // today are still billable lines (except genuinely unmappable ones, which
     // the pipeline skips - hence the separate unmappedVoiceCount).
     // Breeze 只认锁定的参考音（与生成阶段 generationVoiceMap 一致）。
-    const requests = buildGenerationRequests({ ...project.state, voiceMap: generationVoiceMap(config, project.state) });
+    const requests = buildGenerationRequests({ ...project.state, voiceMap: generationVoiceMap(config, project.state) }, { needGeneration: needsGenerationPredicate(config, project.state) });
     const mappable = requests.filter((item) => item.voiceId);
     const missingVoiceRoles = oneClickMissingVoiceRoles(config, project.state);
     response.json({

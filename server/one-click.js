@@ -22,7 +22,7 @@ import { getPersistentTask, getProject, updatePersistentTask, updateProject } fr
 import { exportProjectTimeline, inspectProjectMedia } from './media-store.js';
 import { analyzeNovel } from './story-analyzer.js';
 import { applyResultsToProject, runGenerationRequests, summarizeBilling } from './task-manager.js';
-import { effectiveVoiceMap, generationVoiceMap, staleLineCount, voiceReadiness } from './voice-references.js';
+import { effectiveVoiceMap, generationVoiceMap, needsGenerationPredicate, staleLineCount, voiceReadiness } from './voice-references.js';
 
 // Preset roster (design OQ1: hardcoded known-good voices, simple > clever).
 // Demo accepts any voice id (pitch derives from the string). 豆包预设按
@@ -300,7 +300,7 @@ export async function runOneClickPipeline(task, config, deps = {}) {
     const project = getProject(task.projectId);
     const state = project.state;
     // Breeze 下锁了参考音的角色算作已绑定（voiceId 在生成时解析成注册的 Breeze voice）。
-    const allRequests = buildGenerationRequests({ ...state, voiceMap: generationVoiceMap(config, state) });
+    const allRequests = buildGenerationRequests({ ...state, voiceMap: generationVoiceMap(config, state) }, { needGeneration: needsGenerationPredicate(config, state) });
     const requests = allRequests.filter((request) => request.voiceId);
     const unmapped = allRequests.length - requests.length;
     const results = [];

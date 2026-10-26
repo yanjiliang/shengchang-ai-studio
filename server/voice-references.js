@@ -13,6 +13,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { buildGenerationRequest } from '../shared/generation-requests.mjs';
 import { audioContentHash, getProject, updateProject } from './database.js';
@@ -275,6 +276,18 @@ export function annotateStaleness(config, project) {
     // audioStale（前端“待重生成”徽标用）跟着推导结果走：只在台词改动导致过期时为 true。
     return { ...line, ...staleness, ...(line.audioUrl ? { audioStale: staleness.staleReason === 'text' } : {}) };
   }) })) } };
+}
+
+// N1（e2e6）：一键成片的预估和执行要配哪些句子，和导出预检的 pendingLineCount 用同一个判断：
+// 没有音频、文件丢了、过期（lineStaleness：台词改过，或改锁 / 改情绪 / 改语速后参数哈希对不上；改回去就不算）。
+// 原来只看 !audioUrl || audioStale，改锁之类的过期句子预估写 0 句、跑一键成片也不会重配。
+export function needsGenerationPredicate(config, state) {
+  const voiceMap = effectiveVoiceMap(config, state);
+  return (line) => {
+    if (!line.audioUrl) return true;
+    if (!existsSync(path.join(runtimePaths.MEDIA_DIR, path.basename(line.audioUrl)))) return true;
+    return lineStaleness(config, state, line, voiceMap).stale;
+  };
 }
 
 // 过期句数（导出结果 / 时间轴用）：有音频但 stale 的对白，可限定场景。

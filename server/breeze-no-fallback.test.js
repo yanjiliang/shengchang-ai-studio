@@ -30,7 +30,7 @@ globalThis.fetch = async (input, init) => {
 
 const { BreezeError } = await import('./breeze.js');
 const { readConfig, writeConfig } = await import('./config-store.js');
-const { createProject, createPersistentTask, getProject, getPersistentTask } = await import('./database.js');
+const { createProject, createPersistentTask, getProject, getPersistentTask, listPersistentTasks, updatePersistentTask } = await import('./database.js');
 const { ensureRuntime, runtimePaths } = await import('./media-store.js');
 const { forgetRegisteredVoices } = await import('./voice-references.js');
 const { runGenerationRequests, enqueueGeneration, enqueueLineTake, enqueueOneClick, enqueueVoiceDesign, retryTask, waitForTaskToSettle } = await import('./task-manager.js');
@@ -224,7 +224,12 @@ describe('3 续跑 = 重新提交：Breeze 第 N 句后挂掉再恢复，重跑�
       scenes: [{ id: 's1', title: '一', lines: lines.slice(0, 3) }, { id: 's2', title: '二', lines: lines.slice(3) }],
     } }).id;
   });
-  after(async () => { await mock.close(); });
+  // 这里直接调 runOneClickPipeline（不走队列），失败的那条任务会一直停在 queued；收尾时把本组任务了结，
+  // 免得后面的测试 enqueue 时队列把它捡起来重跑（N1 之后，换了 Breeze 地址的句子会被当作过期而重配）。
+  after(async () => {
+    for (const item of listPersistentTasks(projectId, 100)) if (item.status === 'queued' || item.status === 'running') updatePersistentTask(item.id, { status: 'failed' });
+    await mock.close();
+  });
 
   const run = async () => {
     const task = createPersistentTask({ kind: 'one-click', projectId, payload: { completedStages: ['拆解', '音色'] } });

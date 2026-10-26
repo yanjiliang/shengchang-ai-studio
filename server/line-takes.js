@@ -1,5 +1,5 @@
 // 单句重生成（take）：POST /api/lines/:lineId/takes 为一句对白生成一段新试听，
-// 可指定 seed（不传则服务端随机一个，立即在响应里返回）。seed 进缓存键，所以
+// 可指定 seed（不传 =“换一条”：服务端随机一个这句没用过的，立即在响应里返回）。seed 进缓存键，所以
 // 换 seed 重试一定是真的新生成，不会拿回缓存里的旧音频；同 seed 同参数则命中缓存。
 //
 // 试听不直接覆盖台词音频：保存在 state.lineTakes[lineId].takes（服务端拥有，
@@ -58,6 +58,30 @@ export function locateLine(lineId, projectId) {
   return matches[0];
 }
 
+// Breeze 没收到 seed 时用的默认种子（X-Seed 会回 42）。普通批量生成不传 seed，
+// 所以 0028 之前生成、没记 renderSeed 的音频实际就是 seed 42。
+export const BREEZE_DEFAULT_SEED = 42;
+
+// 这句已经“用过”的种子：已有试听的 seed / requestedSeed、台词当前音频的 audioSeed 与
+// renderSeed、同句排队/进行中试听任务的 seed，再加 Breeze 默认 42。
+export function usedLineSeeds(state, line, activeTasks = []) {
+  const used = new Set([BREEZE_DEFAULT_SEED]);
+  for (const take of state?.lineTakes?.[line.id]?.takes || []) for (const value of [take.seed, take.requestedSeed]) if (Number.isSafeInteger(value)) used.add(value);
+  for (const value of [line.audioSeed, line.renderSeed]) if (Number.isSafeInteger(value)) used.add(value);
+  for (const task of activeTasks) if (Number.isSafeInteger(task?.payload?.seed)) used.add(task.payload.seed);
+  return used;
+}
+
+// “换一条”（不传 seed）：随机一个这句没用过的种子，保证是真的新生成，不会因为撞上
+// 已有种子而命中缓存、拿回一模一样的音频。
+export function pickFreshSeed(used, random = () => randomInt(1, SEED_MAX)) {
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
+    const seed = random();
+    if (!used.has(seed)) return seed;
+  }
+  throw new Error('无法挑出新的随机种子');
+}
+
 export function createLineTakeJob(config, { lineId, projectId, seed: rawSeed } = {}) {
   const requestedSeed = normalizeSeed(rawSeed);
   const { project, scene, line } = locateLine(lineId, projectId);
@@ -65,13 +89,14 @@ export function createLineTakeJob(config, { lineId, projectId, seed: rawSeed } =
   if (!String(line.text || '').trim()) throw new LineTakeError('台词文本为空', { status: 409, code: 'LINE_TEXT_EMPTY' });
   const request = { ...buildGenerationRequest(line, generationVoiceMap(config, project.state)), sceneId: scene.id };
   if (!request.voiceId) throw new LineTakeError(config.provider === 'breeze' ? '该角色还没有锁定参考音（Breeze）' : '该角色还没有绑定音色', { status: 409, code: 'LINE_VOICE_UNBOUND' });
+  const active = listPersistentTasks(project.id, 100).map((item) => getPersistentTask(item.id))
+    .filter((task) => task?.kind === 'line-take' && ['queued', 'running'].includes(task.status) && task.payload.lineId === line.id);
   // 显式 seed + 同一句已有同 seed 的进行中任务 → 复用（重复点击 / 网络重试幂等）。
   if (requestedSeed !== null) {
-    const existing = listPersistentTasks(project.id, 100).map((item) => getPersistentTask(item.id))
-      .find((task) => task?.kind === 'line-take' && ['queued', 'running'].includes(task.status) && task.payload.lineId === line.id && task.payload.seed === requestedSeed && task.payload.seedSource === 'request');
+    const existing = active.find((task) => task.payload.seed === requestedSeed && task.payload.seedSource === 'request');
     if (existing) return { task: existing, deduplicated: true };
   }
-  const seed = requestedSeed ?? randomInt(1, SEED_MAX);
+  const seed = requestedSeed ?? pickFreshSeed(usedLineSeeds(project.state, line, active));
   const task = createPersistentTask({ kind: 'line-take', projectId: project.id, sceneId: scene.id, payload: { lineId: line.id, sceneId: scene.id, seed, seedSource: requestedSeed === null ? 'random' : 'request', request: { ...request, seed } } });
   appendEvent(task.id, { type: 'queued', seed, queuePosition: null }, { result: { lineId: line.id, seed } });
   return { task: getPersistentTask(task.id), deduplicated: false };

@@ -15,7 +15,7 @@ const { queuePositionOf } = await import('./breeze-lane.js');
 const { createProject, getProject, updateProject, getPersistentTask, createPersistentTask } = await import('./database.js');
 const { runtimePaths, ensureRuntime } = await import('./media-store.js');
 const { registerProductionRoutes } = await import('./production-routes.js');
-const { LINE_TAKES_MAX } = await import('./line-takes.js');
+const { LINE_TAKES_MAX, BREEZE_DEFAULT_SEED, pickFreshSeed, usedLineSeeds } = await import('./line-takes.js');
 const { annotateStaleness, voiceReadiness, generationVoiceMap } = await import('./voice-references.js');
 const { oneClickMissingVoiceRoles, presetVoicesFor, runOneClickPipeline } = await import('./one-click.js');
 const express = (await import('express')).default;
@@ -138,6 +138,29 @@ describe('单句试听（seed）', () => {
     assert.equal(first.task.result.take.reused, false);
     const events = again.task.result.events.map((event) => event.type);
     assert.deepEqual(events.slice(-2), ['take', 'completed']);
+  });
+
+  test('换一条（不传 seed）：随机种子避开这句用过的，不会命中缓存拿回同一段', async () => {
+    const line = { id: 'x1', audioSeed: 11, renderSeed: 12 };
+    const state = { lineTakes: { x1: { takes: [{ seed: 13, requestedSeed: 14 }, { seed: 15 }] } } };
+    const used = usedLineSeeds(state, line, [{ payload: { seed: 16 } }]);
+    assert.deepEqual([...used].sort((a, b) => a - b), [11, 12, 13, 14, 15, 16, BREEZE_DEFAULT_SEED]);
+    const scripted = [42, 11, 13, 16, 99];
+    assert.equal(pickFreshSeed(used, () => scripted.shift()), 99, '撞上的种子都跳过');
+    assert.throws(() => pickFreshSeed(new Set([1]), () => 1), /无法挑出/);
+    // 端到端：每次换一条都真请求 Breeze、seed 各不相同、新增一段而不是 reused。
+    const seen = new Set((await api(`/api/lines/pl1/takes?projectId=${projectId}`)).body.takes.map((take) => take.seed));
+    for (let index = 0; index < 2; index += 1) {
+      const n = ttsRequests().length;
+      const { created, task } = await makeTake();
+      assert.equal(created.seedSource, 'random');
+      assert.ok(!seen.has(created.seed));
+      assert.notEqual(created.seed, BREEZE_DEFAULT_SEED);
+      assert.equal(ttsRequests().length, n + 1, '换一条必须真的请求 Breeze');
+      assert.equal(task.result.take.cached, false);
+      assert.notEqual(task.result.take.reused, true);
+      seen.add(created.seed);
+    }
   });
 
   test('显式 seed 去重：同句同 seed 进行中的任务被复用', async () => {

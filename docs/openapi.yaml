@@ -265,7 +265,7 @@ paths:
               type: object
               properties:
                 projectId: { type: string, description: '台词 id 在多个项目里重复时必填（否则 409 LINE_AMBIGUOUS）' }
-                seed: { type: [integer, 'null'], minimum: 0, maximum: 2147483647, description: '省略 / null = 服务端随机；必须是 JSON number', example: 42 }
+                seed: { type: [integer, 'null'], minimum: 0, maximum: 2147483647, description: '省略 / null =“换一条”：服务端随机一个这句没用过的 seed（避开已有试听、台词的 audioSeed / renderSeed、进行中试听和 Breeze 默认 42），保证真的新生成；必须是 JSON number', example: 42 }
       responses:
         '202':
           description: 已入队

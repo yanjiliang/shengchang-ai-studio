@@ -8,7 +8,9 @@ import { after, describe, test } from 'node:test';
 const scratch = mkdtempSync(path.join(tmpdir(), 'shengchang-oneclick-test-'));
 process.env.SHENGCHANG_RUNTIME_DIR = scratch;
 const { createProject, createPersistentTask, getPersistentTask, getProject, updateProject } = await import('./database.js');
-const { mapCharactersToPresets, runOneClickPipeline } = await import('./one-click.js');
+const { buildSampleState } = await import('./sample-project.js');
+const { characterGender, directionDemand, flagUndirectableVoices, mapCharactersToPresets, planCasting, presetVoicesFor, runOneClickPipeline } = await import('./one-click.js');
+const { voiceGeneration } = await import('./model-adapters.js');
 const { buildGenerationRequests } = await import('../shared/generation-requests.mjs');
 
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -31,6 +33,161 @@ describe('mapCharactersToPresets', () => {
     assert.equal(Object.keys(assignments).length, 8);
     assert.notEqual(assignments.c0, assignments.c1, '不同角色默认不同预设');
     assert.equal(assignments.c6, assignments.c0, '第 7 个角色循环回第一个预设');
+  });
+});
+
+describe('豆包预设按 resourceId 分组', () => {
+  test('seed-tts-2.0 预设全部是 2.0 音色', () => {
+    const presets = presetVoicesFor('volcengine-api-key', 'seed-tts-2.0');
+    for (const { voiceId } of [presets.narrator, ...presets.cast]) assert.equal(voiceGeneration(voiceId), '2.0', voiceId);
+  });
+
+  test('预设音色的性别与 voice id 前缀一致', () => {
+    const presets = presetVoicesFor('volcengine-api-key', 'seed-tts-2.0');
+    for (const voice of [presets.narrator, ...presets.cast]) assert.equal(voice.gender, voice.voiceId.startsWith('zh_female_') ? 'female' : 'male', voice.voiceId);
+  });
+
+  test('seed-tts-2.0 自动映射使用 2.0 音色（无性别信息时保持旧行为）', () => {
+    const assignments = mapCharactersToPresets([{ id: 'narrator', name: '旁白' }, { id: 'wukong', name: '悟空' }], {}, 'volcengine-api-key', 'seed-tts-2.0');
+    assert.equal(assignments.narrator, 'zh_female_cancan_uranus_bigtts');
+    assert.equal(assignments.wukong, 'zh_female_vv_uranus_bigtts', '实测可导演的音色优先分给第一个角色');
+  });
+
+  test('标记未确认可导演的 2.0 音色，demo/克隆音色不标记', () => {
+    const flagged = flagUndirectableVoices({ a: 'zh_female_vv_uranus_bigtts', b: 'zh_male_sunwukong_uranus_bigtts', c: 'zh_male_qingcang_uranus_bigtts', d: 'demo_male_1', e: 'S_abc' });
+    assert.deepEqual(flagged.map((item) => [item.characterId, item.directable]), [['b', false], ['c', null]]);
+  });
+
+  test('seed-icl-2.0（克隆音色）没有通用预设，不自动映射', () => {
+    assert.deepEqual(mapCharactersToPresets([{ id: 'c1', name: '甲' }], {}, 'volcengine-api-key', 'seed-icl-2.0'), {});
+  });
+});
+
+describe('按性别/年龄与戏份选角', () => {
+  const tts2 = ['volcengine-api-key', 'seed-tts-2.0'];
+  const voiceGender = (voiceId) => (voiceId.startsWith('zh_female_') ? 'female' : 'male');
+  const scenes = [{ id: 's1', lines: [
+    { id: 'a1', type: 'dialogue', speakerId: 'tangseng', text: '悟空', emotion: '平静' },
+    { id: 'a2', type: 'dialogue', speakerId: 'tangseng', text: '去吧', emotion: '平静' },
+    { id: 'a3', type: 'dialogue', speakerId: 'tangseng', text: '去吧', emotion: '平静' },
+    { id: 'b1', type: 'dialogue', speakerId: 'baigujing', text: '长老', emotion: '妩媚' },
+    { id: 'b2', type: 'dialogue', speakerId: 'baigujing', text: '救命', emotion: '惊恐', subtext: '装可怜' },
+    { id: 'c1', type: 'dialogue', speakerId: 'cunfu', text: '我的儿', emotion: '悲伤' },
+  ] }];
+
+  test('拆解结果的性别字段中英文都认，认不出为 null', () => {
+    assert.equal(characterGender({ gender: '男' }), 'male');
+    assert.equal(characterGender({ gender: 'Female' }), 'female');
+    assert.equal(characterGender({ gender: '未知' }), null);
+    assert.equal(characterGender({ description: '一个温和的男人' }), null, '不从描述里猜');
+  });
+
+  test('复现：唐僧（男）是第一个角色也不会拿到女声 vv', () => {
+    const { assignments } = planCasting([
+      { id: 'narrator', name: '旁白', role: '叙事者' },
+      { id: 'tangseng', name: '唐僧', gender: '男' },
+      { id: 'baigujing', name: '白骨精', gender: '女' },
+    ], {}, ...tts2, { scenes });
+    assert.equal(voiceGender(assignments.tangseng), 'male');
+    assert.notEqual(assignments.tangseng, 'zh_female_vv_uranus_bigtts');
+    assert.equal(assignments.baigujing, 'zh_female_vv_uranus_bigtts');
+  });
+
+  test('性别已知时绝不跨性别分配，即使角色多于同性别音色', () => {
+    const characters = Array.from({ length: 7 }, (_unused, index) => ({ id: `m${index}`, name: `男${index}`, gender: 'male' }));
+    const { assignments } = planCasting(characters, {}, ...tts2, { scenes: [] });
+    assert.equal(Object.keys(assignments).length, 7);
+    for (const voiceId of Object.values(assignments)) assert.equal(voiceGender(voiceId), 'male', voiceId);
+  });
+
+  test('同性别内，可导演音色给带表演指示台词最多的角色', () => {
+    const { assignments } = planCasting([
+      { id: 'cunfu', name: '村妇', gender: 'female' },
+      { id: 'baigujing', name: '白骨精', gender: 'female' },
+    ], {}, ...tts2, { scenes });
+    assert.equal(assignments.baigujing, 'zh_female_vv_uranus_bigtts', '白骨精有 2 句带指示，村妇 1 句');
+    assert.notEqual(assignments.cunfu, 'zh_female_vv_uranus_bigtts');
+  });
+
+  test('表演指示持平时按台词总数', () => {
+    const demand = directionDemand(scenes);
+    assert.deepEqual(demand.tangseng, { directed: 0, lines: 3 });
+    assert.deepEqual(demand.baigujing, { directed: 2, lines: 2 });
+    const tie = [{ id: 's', lines: [
+      { id: '1', type: 'dialogue', speakerId: 'x', text: '.', emotion: '愤怒' },
+      { id: '2', type: 'dialogue', speakerId: 'y', text: '.', emotion: '愤怒' },
+      { id: '3', type: 'dialogue', speakerId: 'y', text: '.' },
+    ] }];
+    const { assignments } = planCasting([{ id: 'x', gender: '女' }, { id: 'y', gender: '女' }], {}, ...tts2, { scenes: tie });
+    assert.equal(assignments.y, 'zh_female_vv_uranus_bigtts');
+  });
+
+  test('年龄已知时排除年龄明确不符的音色', () => {
+    const { assignments } = planCasting([
+      { id: 'laofuren', name: '老夫人', gender: '女', age: '老年' },
+      { id: 'xiaojie', name: '小姐', gender: '女', age: '青年' },
+    ], {}, ...tts2, { scenes: [] });
+    assert.equal(assignments.laofuren, 'zh_female_popo_uranus_bigtts');
+    assert.notEqual(assignments.xiaojie, 'zh_female_popo_uranus_bigtts');
+  });
+
+  test('年龄明确不符的音色不分给该角色（儿童不配大叔音）', () => {
+    const { assignments, notes } = planCasting([{ id: 'wa', name: '娃娃', gender: '男', age: '儿童' }], {}, ...tts2, { scenes: [] });
+    assert.equal(voiceGender(assignments.wa), 'male');
+    assert.notEqual(assignments.wa, 'zh_male_qingcang_uranus_bigtts');
+    assert.deepEqual(notes, [], '还有年龄未知的同性别音色可用，不需要退回');
+  });
+
+  test('少年优先少年音色，退到青年/未知，绝不用中年/老年', () => {
+    const teens = Array.from({ length: 6 }, (_unused, index) => ({ id: `t${index}`, name: `少年${index}`, gender: '男', age: '少年' }));
+    const { assignments } = planCasting(teens, {}, ...tts2, { scenes: [] });
+    const presets = presetVoicesFor(...tts2);
+    const ageOf = Object.fromEntries(presets.cast.map((voice) => [voice.voiceId, voice.age]));
+    assert.equal(assignments.t0, 'zh_male_shaonianzixin_uranus_bigtts');
+    for (const voiceId of Object.values(assignments)) assert.ok(!['middle', 'elder', 'child'].includes(ageOf[voiceId]), voiceId);
+    assert.equal(ageOf[assignments.t1], 'young', '少年音色用完后先退到青年');
+  });
+
+  test('西游记示例：男角色各拿不同音色，八戒拿中年音色', () => {
+    const state = buildSampleState();
+    const { assignments, notes } = planCasting(state.characters, {}, ...tts2, { scenes: state.scenes });
+    const male = ['tangseng', 'sunwukong', 'zhubajie', 'laoweng'];
+    for (const id of male) assert.equal(voiceGender(assignments[id]), 'male', id);
+    for (const id of ['shaonv', 'laoyu']) assert.equal(voiceGender(assignments[id]), 'female', id);
+    assert.equal(new Set(male.map((id) => assignments[id])).size, 4, JSON.stringify(assignments));
+    assert.equal(assignments.zhubajie, 'zh_male_qingcang_uranus_bigtts');
+    assert.equal(assignments.laoyu, 'zh_female_popo_uranus_bigtts');
+    assert.deepEqual(notes, []);
+  });
+
+  test('用户已绑定的音色不改，但性别冲突进注意事项', () => {
+    const { assignments, notes } = planCasting([
+      { id: 'tangseng', name: '唐僧', gender: '男' },
+      { id: 'laoyu', name: '老妪', gender: '女' },
+      { id: 'clone', name: '克隆', gender: '男' },
+    ], { tangseng: 'zh_female_vv_uranus_bigtts', laoyu: 'zh_female_popo_uranus_bigtts', clone: 'S_abc123' }, ...tts2, { scenes: [] });
+    assert.deepEqual(assignments, {});
+    assert.equal(notes.length, 1);
+    assert.match(notes[0], /1 个角色已绑定的音色与角色性别不符.*唐僧（男）→ zh_female_vv_uranus_bigtts/);
+  });
+
+  test('完全没有性别信息：保持旧的轮换行为，并在注意事项说明', () => {
+    const { assignments, notes } = planCasting([{ id: 'narrator', name: '旁白' }, { id: 'tangseng', name: '唐僧' }], {}, ...tts2, { scenes });
+    assert.equal(assignments.tangseng, 'zh_female_vv_uranus_bigtts');
+    assert.match(notes.join(), /缺少性别\/年龄信息.*唐僧/);
+  });
+
+  test('部分角色缺性别：已知的先分，缺的标记出来', () => {
+    const { assignments, notes } = planCasting([{ id: 'x', name: '路人' }, { id: 'baigujing', name: '白骨精', gender: '女' }], {}, ...tts2, { scenes });
+    assert.equal(assignments.baigujing, 'zh_female_vv_uranus_bigtts');
+    assert.match(notes.join(), /缺少性别信息.*路人/);
+  });
+
+  test('用户已绑定的角色不参与；demo 不产生选角注意事项', () => {
+    const { assignments, notes } = planCasting([{ id: 'a', name: '甲', gender: '男' }, { id: 'b', name: '乙' }], { a: 'mine' }, 'demo', undefined, { scenes: [] });
+    assert.equal(assignments.a, undefined);
+    assert.ok(assignments.b);
+    assert.deepEqual(notes, []);
   });
 });
 
@@ -80,12 +237,57 @@ describe('runOneClickPipeline 阶段断点', () => {
     });
     assert.equal(calls.analyze, 0, '拆解已完成，不应重跑');
     assert.equal(calls.generate, 0, '生成已完成，不应重新付费');
+    assert.equal(getPersistentTask(task.id).result.staleLineCount, 0, '一键成片结果带 staleLineCount');
     assert.ok(calls.inspect >= 1, '体检仍应执行');
     assert.equal(calls.export, 1);
     const finished = getPersistentTask(task.id);
     assert.equal(finished.status, 'completed');
     assert.equal(finished.result.sceneCount, 1);
     assert.ok(finished.result.attention.length, '角色有台词但未生成音频应进入注意事项');
+  });
+
+  test('选角注意事项写入 payload 并进入最终“需注意”', async () => {
+    const project = createProject({ name: '选角提示', state: { characters: [{ id: 'narrator', name: '旁白' }, { id: 'tangseng', name: '唐僧' }], scenes: [], voiceMap: {} } });
+    const task = createPersistentTask({ kind: 'one-click', projectId: project.id, payload: { completedStages: ['拆解', '生成'] } });
+    await runOneClickPipeline(task, { provider: 'volcengine-api-key', resourceId: 'seed-tts-2.0' }, {
+      inspectMedia: async () => ({ scenes: [], projectDurationMs: 0 }),
+      exportTimeline: async () => ({ url: '/media/exports/x.mp3', name: 'x.mp3', sceneCount: 0, durationMs: 0 }),
+    });
+    const finished = getPersistentTask(task.id);
+    assert.match(finished.payload.castingNotes.join(), /唐僧/);
+    assert.ok(finished.result.attention.some((item) => /缺少性别\/年龄信息/.test(item)), JSON.stringify(finished.result.attention));
+  });
+
+  test('0036：Breeze 连不上 → 一键成片整体失败一次（BREEZE_UNREACHABLE），后面的场景不再尝试', async () => {
+    const state = {
+      scenes: ['s1', 's2'].map((id) => ({ id, title: id, status: 'pending', lines: [{ id: `${id}-l1`, type: 'dialogue', speaker: '林夏', speakerId: 'linxia', text: '你好。' }, { id: `${id}-l2`, type: 'dialogue', speaker: '林夏', speakerId: 'linxia', text: '再见。' }] })),
+      assets: [], characters: [{ id: 'linxia', name: '林夏', role: '角色', description: '' }], voiceMap: { linxia: 'preset-x' },
+    };
+    const project = createProject({ name: 'Breeze 挂了', state });
+    const task = createPersistentTask({ kind: 'one-click', projectId: project.id, payload: { completedStages: ['拆解', '音色'] } });
+    let generateCalls = 0;
+    await assert.rejects(runOneClickPipeline(task, { provider: 'demo' }, {
+      runGeneration: async (_config, requests) => {
+        generateCalls += 1;
+        return { status: 'unreachable', code: 'BREEZE_UNREACHABLE', causeCode: 'BREEZE_UNREACHABLE', error: 'Breeze 服务连不上', results: [], failures: [], skippedCount: requests.length, skippedLineIds: requests.map((item) => item.lineId) };
+      },
+      inspectMedia: async () => ({ scenes: [], projectDurationMs: 0 }),
+      exportTimeline: async () => { throw new Error('不应导出'); },
+    }), (error) => error.code === 'BREEZE_UNREACHABLE' && error.details.skippedCount === 4);
+    assert.equal(generateCalls, 1);
+    assert.ok(!getPersistentTask(task.id).payload.completedStages.includes('生成'));
+  });
+
+  test('一键成片重新拆解时保留用户设的性别/年龄（id 变了按名字匹配）', async () => {
+    const project = createProject({ name: '重拆', sourceText: '“走吧。”唐僧说。', state: { characters: [{ id: 'old-ts', name: '唐僧', gender: '男', genderSource: 'user', age: '青年' }], scenes: [], voiceMap: {} } });
+    const task = createPersistentTask({ kind: 'one-click', projectId: project.id, payload: { completedStages: ['音色', '生成'] } });
+    await runOneClickPipeline(task, { provider: 'demo' }, {
+      analyze: async () => ({ name: '重拆', genre: '', breakdown: 'heuristic', characters: [{ id: 'narrator', name: '旁白', role: '叙事者', gender: '未知', age: '未知' }, { id: '唐僧', name: '唐僧', role: '角色', gender: '女', age: '未知' }], scenes: [{ id: 's1', lines: [{ id: 'l1', type: 'dialogue', speaker: '唐僧', speakerId: '唐僧', text: '走吧。' }] }] }),
+      inspectMedia: async () => ({ scenes: [], projectDurationMs: 0 }),
+      exportTimeline: async () => ({ url: '/media/exports/x.mp3', name: 'x.mp3', sceneCount: 1, durationMs: 0 }),
+    });
+    const tangseng = getProject(project.id).state.characters.find((item) => item.name === '唐僧');
+    assert.deepEqual([tangseng.id, tangseng.gender, tangseng.genderSource, tangseng.age], ['唐僧', '男', 'user', '青年']);
   });
 
   test('生成阶段失败时保留断点，成功句写入项目', async () => {
@@ -117,5 +319,28 @@ describe('runOneClickPipeline 阶段断点', () => {
     const voiceMap = getProject(project.id).state.voiceMap;
     assert.equal(voiceMap.linxia, 'demo_female_1');
     assert.ok(getPersistentTask(task.id).payload.completedStages.includes('音色'));
+  });
+  test('计费诚实：缓存命中与缺 usage 的句数进入结果，缺 usage 进入“需注意”', async () => {
+    const project = createProject({ name: '计费诚实', state: sceneState });
+    const task = createPersistentTask({ kind: 'one-click', projectId: project.id, payload: { completedStages: ['拆解', '音色'] } });
+    const base = { sceneId: 's1', url: '/media/fake.wav', mime: 'audio/wav', text: '你好。', synthesizedText: '你好。', contentHash: 'h', createdAt: 1 };
+    await runOneClickPipeline(task, { provider: 'volcengine-api-key', resourceId: 'seed-tts-2.0' }, {
+      runGeneration: async () => ({ status: 'done', failures: [], results: [
+        { ...base, lineId: 'l1', voiceId: 'zh_female_vv_uranus_bigtts', cached: false, usageExpected: true, usage: { billedCharacters: 3 } },
+        { ...base, lineId: 'l2', voiceId: 'zh_male_m191_uranus_bigtts', cached: false, usageExpected: true, usage: null },
+        { ...base, lineId: 'l3', voiceId: 'zh_female_cancan_uranus_bigtts', cached: true },
+      ] }),
+      inspectMedia: async () => ({ scenes: [], projectDurationMs: 0 }),
+      exportTimeline: async () => ({ url: '/media/exports/b.mp3', name: 'b.mp3', sceneCount: 1, durationMs: 1 }),
+    });
+    const finished = getPersistentTask(task.id);
+    assert.deepEqual([finished.result.billedCharacters, finished.result.freshCount, finished.result.cacheHits, finished.result.missingUsageCount], [3, 2, 1, 1]);
+    assert.ok(finished.result.attention.some((item) => /1 句新生成的语音没有返回计费字数.*已知部分/.test(item)), JSON.stringify(finished.result.attention));
+    assert.match(finished.message, /1 句复用缓存/);
+    assert.deepEqual(finished.result.results.map((item) => [item.lineId, item.voiceId, item.cached, item.billedCharacters]), [
+      ['l1', 'zh_female_vv_uranus_bigtts', false, 3],
+      ['l2', 'zh_male_m191_uranus_bigtts', false, null],
+      ['l3', 'zh_female_cancan_uranus_bigtts', true, null],
+    ]);
   });
 });

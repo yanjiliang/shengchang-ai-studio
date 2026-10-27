@@ -1,4 +1,5 @@
 import { Download, Pause, Play, RotateCcw, RotateCw, SlidersHorizontal, Volume2 } from 'lucide-react';
+import { EXPORT_LOCK_TEXT } from '../lib/export-lock.js';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 function formatTime(seconds) {
@@ -7,7 +8,7 @@ function formatTime(seconds) {
   return `${String(minutes).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 }
 
-export function PlayerBar({ scene, requestedLineId, reviewToken, onOpenMix, onExport, exporting }) {
+export function PlayerBar({ scene, requestedLineId, reviewToken, onOpenMix, onExport, exporting, exportLocked = false }) {
   const audioRef = useRef(null);
   const clips = useMemo(() => scene.lines.filter((line) => line.audioUrl), [scene.lines]);
   const [clipIndex, setClipIndex] = useState(0);
@@ -65,7 +66,7 @@ export function PlayerBar({ scene, requestedLineId, reviewToken, onOpenMix, onEx
         <button className="progress-track" type="button" aria-label="播放进度" disabled={!activeClip} onClick={(event) => { const audio = audioRef.current; if (!audio || !Number.isFinite(audio.duration) || audio.duration <= 0) return; const rect = event.currentTarget.getBoundingClientRect(); const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)); audio.currentTime = ratio * audio.duration; }}><span style={{ width: `${duration ? (currentTime / duration) * 100 : 0}%` }} /></button>
         <span className="player-time">{formatTime(duration)}</span>
       </div>
-      <div className="player-tools"><span className="volume-group"><Volume2 size={16} aria-hidden="true" /><input className="volume-range" type="range" min="0" max="1" step="0.05" value={volume} aria-label="音量" title="音量" onChange={(event) => setVolume(Number(event.target.value))} /></span><button type="button" aria-label="混音设置" title="混音设置" onClick={onOpenMix}><SlidersHorizontal size={17} /></button><button type="button" aria-label="导出本场" title="导出本场" disabled={!clips.length || exporting} onClick={onExport}><Download size={17} /></button></div>
+      <div className="player-tools"><span className="volume-group"><Volume2 size={16} aria-hidden="true" /><input className="volume-range" type="range" min="0" max="1" step="0.05" value={volume} aria-label="音量" title="音量" onChange={(event) => setVolume(Number(event.target.value))} /></span><button type="button" aria-label="混音设置" title="混音设置" onClick={onOpenMix}><SlidersHorizontal size={17} /></button><button type="button" aria-label="导出本场" title={exportLocked ? EXPORT_LOCK_TEXT : '导出本场'} aria-describedby={exportLocked ? 'player-export-lock' : undefined} disabled={!clips.length || exporting || exportLocked} onClick={onExport}><Download size={17} /></button>{exportLocked ? <span id="player-export-lock" className="export-lock-note" role="status">{EXPORT_LOCK_TEXT}</span> : null}</div>
     </footer>
   );
 }

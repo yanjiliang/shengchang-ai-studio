@@ -50,6 +50,26 @@ describe('项目状态写入', () => {
     assert.equal(line.audioStale, true, '文本变化后音频应标记为过期');
   });
 
+  test('改台词再改回原文：过期标记清掉（对照音频原文 audioText，不是上一次保存的文本）', () => {
+    const item = project([dialogue('l1', '原始台词')]);
+    updateProject(item.id, { trustedAudio: true, state: sceneState([{ ...dialogue('l1', '原始台词'), audioUrl: '/media/a.wav', audioText: '原始台词' }]) });
+    updateProject(item.id, { state: sceneState([dialogue('l1', '换过的台词')]) });
+    assert.equal(getProject(item.id).state.scenes[0].lines[0].audioStale, true);
+    updateProject(item.id, { state: sceneState([dialogue('l1', '又换了一次')]) });
+    assert.equal(getProject(item.id).state.scenes[0].lines[0].audioStale, true);
+    updateProject(item.id, { state: sceneState([dialogue('l1', '原始台词')]) });
+    const line = getProject(item.id).state.scenes[0].lines[0];
+    assert.equal(line.audioStale, false);
+    assert.equal(line.audioText, '原始台词', 'audioText 是服务端字段，浏览器回存不能改它');
+  });
+
+  test('旧数据没有 audioText：未过期的以当前文本为原文，改回也能清掉', () => {
+    const item = project([dialogue('l1', '原始台词')]);
+    updateProject(item.id, { trustedAudio: true, state: sceneState([{ ...dialogue('l1', '原始台词'), audioUrl: '/media/a.wav' }]) });
+    updateProject(item.id, { state: sceneState([dialogue('l1', '原始台词')]) });
+    assert.equal(getProject(item.id).state.scenes[0].lines[0].audioStale, false);
+  });
+
   test('台词未变时音频不被标记过期', () => {
     const item = project([dialogue('l1', '原始台词')]);
     updateProject(item.id, { trustedAudio: true, state: sceneState([{ ...dialogue('l1', '原始台词'), audioUrl: '/media/a.wav' }]) });

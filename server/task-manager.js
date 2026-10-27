@@ -1,16 +1,26 @@
 import { access, stat, unlink, writeFile } from 'node:fs/promises';
+import { mergeAnalyzedCharacters } from './character-meta.js';
 import path from 'node:path';
 import { readConfig } from './config-store.js';
-import { audioContentHash, cacheAudio, createPersistentTask, deleteAudioCache, findCachedAudio, getPersistentTask, getProject, listAudioCache, listProjects, nextQueuedTask, requestTaskCancellation, soundContentHash, updatePersistentTask, updateProject } from './database.js';
+import { audioContentHash, cacheAudio, createPersistentTask, deleteAudioCache, findCachedAudio, getPersistentTask, getProject, listAudioCache, listProjects, touchCachedAudio, nextQueuedTask, requestTaskCancellation, soundContentHash, updatePersistentTask, updateProject } from './database.js';
 import { exportProjectTimeline, runtimePaths, saveMedia } from './media-store.js';
 import { synthesize, synthesizeSound } from './model-adapters.js';
 import { analyzeNovel } from './story-analyzer.js';
 import { runOneClickPipeline } from './one-click.js';
 import { buildAttribution } from './attribution.js';
 import { ensureBuiltinAssets } from './builtin-assets.js';
+import { ensureReferenceRegistered, healReferenceRegistration, isBreezeRejection, resolveReferenceRequest, applyPronunciation, staleLineCount } from './voice-references.js';
+import { cancelJobEverywhere, laneFor, PRIORITY, queuePositionOf } from './breeze-lane.js';
+import { BreezeError, breezeHealth, isBreezeConnectionError } from './breeze.js';
+import { createVoiceDesignJob, runVoiceDesignTask } from './voice-design.js';
+import { createLineTakeJob, runLineTakeTask } from './line-takes.js';
 
 const MAX_CONCURRENCY = 2;
+const INTERACTIVE_SLOTS = 1;
+// 用户在等着听的任务：单句生成 / 单句重来、方向对比、音色设计。
+export const INTERACTIVE_KINDS = new Set(['line', 'direction-lab', 'voice-design', 'line-take']);
 let activeWorkers = 0;
+let activeInteractive = 0;
 
 function extensionForMime(mime, configuredFormat) {
   if (mime.includes('wav')) return 'wav';
@@ -52,6 +62,8 @@ async function evictAudioCacheIfNeeded(limitGb) {
         if (line.assetUrl) referenced.add(path.basename(line.assetUrl));
       }
     }
+    // 单句试听（A/B 历史）引用的缓存文件也保留，否则“采用旧试听”会 410。
+    for (const record of Object.values(project?.state?.lineTakes || {})) for (const take of record?.takes || []) if (take.audioUrl) referenced.add(path.basename(take.audioUrl));
   }
   let total = 0;
   const entries = [];
@@ -91,7 +103,18 @@ export function applyResultsToProject(projectId, sceneId, results) {
         audioMime: result.mime,
         audioHash: result.contentHash,
         generatedAt: result.createdAt,
+        ...(result.engine ? { audioEngine: result.engine } : {}),
+        // 进缓存键的显式 seed（采用单句试听时）；普通生成清空。stale 判断要用它复算缓存键。
+        audioSeed: Number.isSafeInteger(result.requestSeed) ? result.requestSeed : null,
+        // 实际出这段音频的 seed（Breeze 响应头 X-Seed）。普通生成也记，以后想“锁定这一版”
+        // 就用它。缓存命中拿不到 X-Seed：同一段音频（hash 相同）沿用原值，否则为 null。
+        // 只是记录，不进缓存键、不影响 stale（那是 audioSeed 的事）。
+        renderSeed: Number.isSafeInteger(result.seed) ? result.seed
+          : (line.audioHash === result.contentHash && Number.isSafeInteger(line.renderSeed) ? line.renderSeed : null),
         synthesizedText: result.synthesizedText,
+        // 这段音频对应的原文（发音词典替换前）。stale 的 text 判断和存盘合并都对照它，
+        // 而不是“上一次保存的文本”——否则改了再改回去永远清不掉。
+        audioText: result.text,
         // The request captured the text at enqueue time. If the line has been
         // edited since, this fresh clip is already stale for the current text;
         // otherwise the regeneration must clear the badge.
@@ -106,54 +129,154 @@ export function applyResultsToProject(projectId, sceneId, results) {
   updateProject(projectId, { state, trustedAudio: true });
 }
 
-function applyPronunciation(text, dictionary = []) {
-  return dictionary.reduce((value, entry) => {
-    const term = String(entry.term || '').trim();
-    const replacement = String(entry.replacement || '').trim();
-    return term && replacement ? value.split(term).join(replacement) : value;
-  }, text);
-}
+// 发音词典替换移到 voice-references.js（stale 判断要复用同一实现），这里保留导出名。
+export { applyPronunciation };
 
 // B3: the single pipeline every generation flow - manual scene/line, batch
 // fill/stale, and the future one-click orchestrator - runs requests through.
 // Per-line failures are collected and the run continues (TODO-2): one bad
 // line must not hide the state of the lines after it. synthesize is
 // injectable so tests can fail specific lines on demand.
-export async function runGenerationRequests(config, requests, { projectId, sceneId, onProgress, shouldCancel, synthesize: synthesizeLine = synthesize } = {}) {
+// jobId / priority：合成请求经过该引擎的生成通道（breeze-lane.js），同一引擎的
+// 并发受 engineConcurrency 限制，交互任务插到批量任务前面；取消任务时通道里的
+// 排队项被移除、在飞项结果被丢弃（TASK_CANCELLED → 本函数返回 cancelled）。
+//
+// Breeze 连接类失败（0036）：
+// - 预检：第一句真的要发给 Breeze 之前（缓存命中的句子不需要 Breeze）做一次健康检查；
+//   连不上 / 超时 → 整个任务一次性返回 status 'unreachable'（code BREEZE_UNREACHABLE），
+//   不再给每一句都记一条 ECONNREFUSED。
+// - 运行中：参考音核对 / 合成遇到连接错误（ECONNREFUSED / ECONNRESET / 超时）按 retryDelaysMs
+//   退避重试（默认 2 次）；仍失败 → 停掉本任务剩下的句子，同样返回 'unreachable'。
+// - 退避等待期间取消立即生效（TASK_CANCELLED → cancelled）。
+// 'unreachable' 结果：{ status, code, causeCode, error, results, failures, skippedCount, skippedLineIds }。
+export const BREEZE_RETRY_DELAYS_MS = [2_000, 5_000];
+
+function cancelledError() { return Object.assign(new Error('任务已取消'), { code: 'TASK_CANCELLED' }); }
+
+async function waitUnlessCancelled(ms, shouldCancel) {
+  const until = Date.now() + ms;
+  for (;;) {
+    if (shouldCancel?.()) throw cancelledError();
+    const left = until - Date.now();
+    if (left <= 0) return;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(left, 100)));
+  }
+}
+
+export async function runGenerationRequests(config, requests, { projectId, sceneId, onProgress, onLaneStart, shouldCancel, jobId = '', priority = PRIORITY.batch, synthesize: synthesizeLine = synthesize, retryDelaysMs = BREEZE_RETRY_DELAYS_MS, preflight = breezeHealth } = {}) {
   const results = [];
   const failures = [];
-  const projectDictionary = getProject(projectId)?.state?.pronunciationDictionary || [];
+  const projectState = getProject(projectId)?.state || {};
+  const projectDictionary = projectState.pronunciationDictionary || [];
+  let preflightPending = config.provider === 'breeze';
+  const stopUnreachable = (index, error) => ({
+    status: 'unreachable', code: 'BREEZE_UNREACHABLE', causeCode: error.code || '',
+    error: `Breeze 服务连不上，任务已停止，剩余 ${requests.length - index} 句未生成：${error.message}`,
+    results, failures, skippedCount: requests.length - index, skippedLineIds: requests.slice(index).map((item) => item.lineId),
+    // 0037：completedLineCount = 本次已拿到音频的句数（含缓存命中）；remainingLineCount = 还需要生成的句数
+    // （总数 − 已完成，含停下之前逐句失败的）。预检就失败且前面没有缓存命中时是 0 / 总数。
+    completedLineCount: results.length, remainingLineCount: requests.length - results.length,
+  });
+  const withConnectionRetry = async (fn) => {
+    for (let attempt = 0; ; attempt += 1) {
+      try { return await fn(); } catch (error) {
+        if (!isBreezeConnectionError(error) || attempt >= retryDelaysMs.length) throw error;
+        // 重试之前先强制探一次 GET /voices（lane: null = 不看忙信号，HEALTH_TIMEOUT_MS 10 秒）；
+        // 探不通就别重试，按原错误往上抛 → 停掉任务（BREEZE_UNREACHABLE，causeCode = 原错误码）。
+        // - 超时：直接重试可能再等满 breezeTimeoutMs（默认 180 秒）两次。
+        // - 连不上 / 被重置（0042）：服务挂了时 2 s + 5 s 的退避只是白等（e2e4 Bug 1，约 7 秒、3 次 /tts）；
+        //   探测对连不上是毫秒级的。探得通（偶发的重置）才按退避重试。
+        if (config.provider === 'breeze') {
+          const health = await preflight(config, { lane: null });
+          if (shouldCancel?.()) throw cancelledError();
+          if (!health.reachable) throw error;
+        }
+        await waitUnlessCancelled(retryDelaysMs[attempt], shouldCancel);
+      }
+    }
+  };
   for (let index = 0; index < requests.length; index += 1) {
     if (shouldCancel?.()) return { status: 'cancelled', results, failures };
     const request = requests[index];
     onProgress?.({ index, total: requests.length, message: `正在处理 ${index + 1} / ${requests.length} 句` });
     try {
-      const resolved = { ...request, text: applyPronunciation(request.text, projectDictionary) };
+      // Breeze 下有参考音的角色：voiceId 换成注册的 Breeze voice，参考指纹进缓存键。
+      const resolved = resolveReferenceRequest(config, projectState, { ...request, text: applyPronunciation(request.text, projectDictionary) });
       const contentHash = audioContentHash(config, resolved);
       const cached = findCachedAudio(contentHash);
       if (await validCache(cached)) {
-        // Re-insert to bump created_at: eviction removes the least recently
-        // *used* entries, not the least recently generated ones.
-        cacheAudio({ contentHash, url: cached.url, mime: cached.mime, provider: cached.provider, model: cached.model, voiceId: cached.voice_id });
-        results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: cached.url, mime: cached.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: true, createdAt: Date.now() });
+        // Hit: record last_used_at only (eviction is LRU). created_at must keep
+        // meaning "when this audio was generated" — re-inserting it made every
+        // cache hit look like a fresh render (0005).
+        touchCachedAudio(contentHash);
+        results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: cached.url, mime: cached.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', engine: config.provider || '', cached: true, createdAt: Date.now() });
       } else {
         const recovered = await recoverCachedAudioFromDisk(contentHash);
         if (recovered) {
           cacheAudio({ contentHash, url: recovered.url, mime: recovered.mime, provider: config.provider || '', model: config.model || '', voiceId: resolved.voiceId || '' });
-          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: recovered.url, mime: recovered.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: true, createdAt: Date.now() });
+          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: recovered.url, mime: recovered.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', engine: config.provider || '', cached: true, createdAt: Date.now() });
         } else {
-          const audio = await synthesizeLine(config, resolved);
+          if (preflightPending) {
+            preflightPending = false;
+            const health = await preflight(config, { lane: laneFor('breeze', config) });
+            if (shouldCancel?.()) return { status: 'cancelled', results, failures };
+            if (!health.reachable && ['unreachable', 'timeout'].includes(health.status)) {
+              return stopUnreachable(index, new BreezeError(health.error || 'Breeze 服务连不上', { code: health.status === 'timeout' ? 'BREEZE_TIMEOUT' : 'BREEZE_UNREACHABLE' }));
+            }
+          }
+          const reference = resolved.referenceHash ? projectState.voiceReferences[request.speakerId] : null;
+          if (reference) await withConnectionRetry(() => ensureReferenceRegistered(config, reference));
+          // 取消可能发生在上面的 await 期间（此时还不在通道里，cancelJobEverywhere 摸不到）：
+          // 进通道前同步再查一次；轮到它时再查一次，已取消的绝不发给引擎。
+          if (shouldCancel?.()) return { status: 'cancelled', results, failures };
+          const synthesizeOnce = () => laneFor(config.provider, config).run({ jobId, priority, fn: () => {
+            if (shouldCancel?.()) throw Object.assign(new Error('任务已取消'), { code: 'TASK_CANCELLED' });
+            // 轮到它、真的要发给引擎了（单句试听据此从 queued 变 running）。
+            onLaneStart?.({ lineId: request.lineId });
+            return synthesizeLine(config, resolved);
+          } });
+          let audio;
+          try { audio = await withConnectionRetry(synthesizeOnce); } catch (error) {
+            // 自愈：Breeze 重启后注册表是空的，/tts 拒收这个 voiceId。重新核对 GET /voices，
+            // 确实不在就用本地参考音补注册，然后重试一次（只一次）；voice 在则原样报错。
+            if (!reference || !isBreezeRejection(error) || !(await withConnectionRetry(() => healReferenceRegistration(config, reference)))) throw error;
+            if (shouldCancel?.()) return { status: 'cancelled', results, failures };
+            audio = await withConnectionRetry(synthesizeOnce);
+          }
           const extension = extensionForMime(audio.mime, config.audioFormat);
           const saved = await saveMedia(contentHash, extension, audio.buffer);
           cacheAudio({ contentHash, url: saved.url, mime: audio.mime, provider: config.provider || '', model: config.model || '', voiceId: resolved.voiceId || '' });
-          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: saved.url, mime: audio.mime, text: request.text, synthesizedText: resolved.text, contentHash, cached: false, createdAt: Date.now() });
+          results.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, url: saved.url, mime: audio.mime, text: request.text, synthesizedText: resolved.text, contentHash, voiceId: resolved.voiceId || '', engine: config.provider || '', cached: false, ...(Number.isSafeInteger(audio.seed) ? { seed: audio.seed } : {}), usage: audio.usage || null, usageExpected: config.provider === 'volcengine-api-key', createdAt: Date.now() });
         }
       }
     } catch (error) {
-      failures.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, text: request.text, error: error.name === 'AbortError' ? '模型请求超时' : error.message });
+      if (error.code === 'TASK_CANCELLED') return { status: 'cancelled', results, failures };
+      // 重试过仍连不上：Breeze 挂了，剩下的句子不再逐句失败。
+      if (config.provider === 'breeze' && isBreezeConnectionError(error)) return stopUnreachable(index, error);
+      failures.push({ lineId: request.lineId, sceneId: request.sceneId || sceneId, text: request.text, error: error.name === 'AbortError' ? '模型请求超时' : error.message, ...(error.code ? { code: error.code } : {}) });
     }
   }
   return { status: 'done', results, failures };
+}
+
+// 计费字数只统计真正调用了模型的句子（缓存命中不计费）；没有 usage 的
+// 提供方（demo / custom）返回 null，避免把“未知”显示成 0。
+export function sumBilledCharacters(results) {
+  const billed = results.map((item) => item.usage?.billedCharacters).filter((value) => Number.isFinite(value));
+  return billed.length ? billed.reduce((sum, value) => sum + value, 0) : null;
+}
+
+// 诚实的计费汇总：billedCharacters 只是“已知部分”之和；本该返回 usage
+// （豆包 API Key）却没返回的新生成句子单独计数，避免把部分和当成总数。
+// 缓存命中不调用接口、不计费，也单独计数。
+export function summarizeBilling(results) {
+  const fresh = results.filter((item) => !item.cached);
+  return {
+    billedCharacters: sumBilledCharacters(results),
+    freshCount: fresh.length,
+    cacheHits: results.length - fresh.length,
+    missingUsageCount: fresh.filter((item) => item.usageExpected && !Number.isFinite(item.usage?.billedCharacters)).length,
+  };
 }
 
 async function runGenerationTask(task, config) {
@@ -170,15 +293,29 @@ async function runGenerationTask(task, config) {
       sceneId: task.sceneId,
       onProgress: ({ index, total, message }) => updatePersistentTask(task.id, { message, progress: Math.max(3, Math.round((index / total) * 90)) }),
       shouldCancel: () => Boolean(getPersistentTask(task.id)?.cancelRequested),
+      jobId: task.id,
+      priority: INTERACTIVE_KINDS.has(task.kind) ? PRIORITY.interactive : PRIORITY.batch,
     });
     if (outcome.status === 'cancelled') {
       updatePersistentTask(task.id, { status: 'cancelled', message: '任务已取消', result: { results: outcome.results }, completedAt: Date.now() });
       return;
     }
+    if (outcome.status === 'unreachable') {
+      // 已生成的句子照常写入项目（重试时缓存命中、不再付费）；任务整体失败一次，code 在 result.code。
+      if (!isDirectionLab && outcome.results.length) applyResultsToProject(task.projectId, task.sceneId, outcome.results);
+      updatePersistentTask(task.id, {
+        status: 'failed', message: `Breeze 服务连不上，任务已停止（${outcome.results.length} 句已完成，${outcome.skippedCount} 句未生成）`, error: outcome.error,
+        result: { code: outcome.code, causeCode: outcome.causeCode, results: outcome.results, failures: outcome.failures, skippedCount: outcome.skippedCount, skippedLineIds: outcome.skippedLineIds, completedLineCount: outcome.completedLineCount, remainingLineCount: outcome.remainingLineCount, ...summarizeBilling(outcome.results) },
+        completedAt: Date.now(),
+      });
+      return;
+    }
     if (!isDirectionLab) applyResultsToProject(task.projectId, task.sceneId, outcome.results);
     await evictAudioCacheIfNeeded(config.cacheLimitGb);
     const { results, failures } = outcome;
-    const cacheHits = results.filter((item) => item.cached).length;
+    const { cacheHits, billedCharacters, freshCount, missingUsageCount } = summarizeBilling(results);
+    const billing = { cacheHits, billedCharacters, freshCount, missingUsageCount };
+    const usageNote = missingUsageCount ? `；${missingUsageCount} 句新生成的语音没有返回计费字数，计费字数只含已知部分` : '';
     if (failures.length) {
       // All-failed runs keep the failed status so one-click retry applies;
       // partial failures complete so the good audio lands in the project.
@@ -187,15 +324,15 @@ async function runGenerationTask(task, config) {
       const allFailed = !results.length;
       updatePersistentTask(task.id, {
         status: allFailed ? 'failed' : 'completed', progress: 100,
-        message: allFailed ? `生成失败：${failures.length} 句全部失败` : `生成完成：${results.length} 句成功，${failures.length} 句失败（任务历史可逐句查看）`,
+        message: allFailed ? `生成失败：${failures.length} 句全部失败` : `生成完成：${results.length} 句成功，${failures.length} 句失败（任务历史可逐句查看）${usageNote}`,
         error: allFailed ? failures[0].error : '',
-        result: { results, failures, cacheHits }, completedAt: Date.now(),
+        result: { results, failures, ...billing }, completedAt: Date.now(),
       });
       return;
     }
     updatePersistentTask(task.id, { status: 'completed', progress: 100, message: isDirectionLab
       ? `方向对比已生成（${results.length} 组，可在检查器试听）`
-      : cacheHits ? `生成完成，复用了 ${cacheHits} 条缓存` : '语音已生成并写入项目', result: { results, cacheHits }, completedAt: Date.now() });
+      : `${cacheHits ? `生成完成，复用了 ${cacheHits} 条缓存` : '语音已生成并写入项目'}${usageNote}`, result: { results, ...billing }, completedAt: Date.now() });
   } catch (error) {
     updatePersistentTask(task.id, { status: 'failed', message: '生成失败', error: error.name === 'AbortError' ? '模型请求超时' : error.message, completedAt: Date.now() });
   }
@@ -203,6 +340,8 @@ async function runGenerationTask(task, config) {
 
 async function runTask(task) {
   const config = await readConfig();
+  if (task.kind === 'voice-design') return runVoiceDesignTask(task, config);
+  if (task.kind === 'line-take') return runLineTakeTask(task, config, { runGeneration: runGenerationRequests });
   if (task.kind === 'one-click') {
     // The pipeline owns its progress/message/status writes; this wrapper only
     // maps its outcomes onto task status.
@@ -211,7 +350,7 @@ async function runTask(task) {
       await runOneClickPipeline(task, config);
     } catch (error) {
       if (error.code === 'TASK_CANCELLED') updatePersistentTask(task.id, { status: 'cancelled', message: '一键成片已取消', error: '', completedAt: Date.now() });
-      else updatePersistentTask(task.id, { status: 'failed', message: '一键成片失败', error: error.message, completedAt: Date.now() });
+      else updatePersistentTask(task.id, { status: 'failed', message: error.code === 'VOICE_NOT_READY' ? '一键成片暂停：有角色缺少参考音' : error.code === 'BREEZE_UNREACHABLE' ? '一键成片已停止：Breeze 服务连不上' : '一键成片失败', error: error.message, completedAt: Date.now(), ...(error.details ? { result: { code: error.code, ...error.details } } : {}) });
     }
     return;
   }
@@ -225,6 +364,7 @@ async function runTask(task) {
         shouldCancel: () => Boolean(getPersistentTask(task.id)?.cancelRequested),
         onProgress: ({ progress, message }) => updatePersistentTask(task.id, { progress, message }),
       });
+      result.staleLineCount = staleLineCount(config, project);
       // The attribution sheet rides along with the episode: the creator sees
       // exactly which sound assets went into it and what each source permits.
       try {
@@ -253,7 +393,7 @@ async function runTask(task) {
       let mime;
       let durationMs = Number(sound.durationMs) || 0;
       if (await validCache(cached)) {
-        cacheAudio({ contentHash, url: cached.url, mime: cached.mime, provider: config.sfxProvider || 'demo', model: config.sfxModel || '', voiceId: '' });
+        touchCachedAudio(contentHash);
         url = cached.url; mime = cached.mime;
       } else {
         const recovered = await recoverCachedAudioFromDisk(contentHash);
@@ -293,7 +433,7 @@ async function runTask(task) {
       });
       const project = getProject(task.projectId);
       if (!project) throw new Error('分析目标项目不存在');
-      updateProject(task.projectId, { name: analyzed.name, genre: analyzed.genre, sourceFilename: task.payload.filename, sourceText: task.payload.text, trustedAudio: true, state: { ...project.state, characters: analyzed.characters, scenes: analyzed.scenes, assets: project.state.assets || [], breakdown: analyzed.breakdown } });
+      updateProject(task.projectId, { name: analyzed.name, genre: analyzed.genre, sourceFilename: task.payload.filename, sourceText: task.payload.text, trustedAudio: true, state: { ...project.state, characters: mergeAnalyzedCharacters(project.state.characters, analyzed.characters), scenes: analyzed.scenes, assets: project.state.assets || [], breakdown: analyzed.breakdown } });
       updatePersistentTask(task.id, { status: 'completed', progress: 100, message: `拆解完成${analyzed.breakdown === 'heuristic' ? '（未配置文本模型，规则拆解结果建议人工校对）' : ''}，共 ${analyzed.scenes.length} 个场景`, result: { sceneCount: analyzed.scenes.length, characterCount: analyzed.characters.length, breakdown: analyzed.breakdown }, completedAt: Date.now() });
     } catch (error) {
       if (error.code === 'TASK_CANCELLED') updatePersistentTask(task.id, { status: 'cancelled', message: '小说拆解已取消', error: '', completedAt: Date.now() });
@@ -304,13 +444,28 @@ async function runTask(task) {
   await runGenerationTask(task, config);
 }
 
+// 两个通用槽（任意任务，先来先领）+ 一个交互槽（只领试听 / 单句 / 音色设计）：
+// 两个整场批量任务占满通用槽时，用户点的单句试听不必等它们跑完才被领取；
+// 真正发往引擎的顺序再由生成通道按优先级排（交互先于批量）。
+function claim(task, slot) {
+  if (slot === 'interactive') activeInteractive += 1; else activeWorkers += 1;
+  updatePersistentTask(task.id, { status: 'running', message: '本地工作进程已领取任务', startedAt: Date.now() });
+  runTask(task).finally(() => {
+    if (slot === 'interactive') activeInteractive -= 1; else activeWorkers -= 1;
+    queueMicrotask(pumpQueue);
+  });
+}
+
 function pumpQueue() {
+  while (activeInteractive < INTERACTIVE_SLOTS) {
+    const task = nextQueuedTask({ kinds: [...INTERACTIVE_KINDS] });
+    if (!task) break;
+    claim(task, 'interactive');
+  }
   while (activeWorkers < MAX_CONCURRENCY) {
     const task = nextQueuedTask();
     if (!task) break;
-    activeWorkers += 1;
-    updatePersistentTask(task.id, { status: 'running', message: '本地工作进程已领取任务', startedAt: Date.now() });
-    runTask(task).finally(() => { activeWorkers -= 1; queueMicrotask(pumpQueue); });
+    claim(task, 'general');
   }
 }
 
@@ -352,13 +507,48 @@ export function enqueueOneClick({ projectId }) {
 // Cache-hit prediction for the estimate endpoint (§8 follow-up): runs the
 // exact hash path generation would take, minus the synthesis.
 export async function estimateGeneration(config, requests, { projectId } = {}) {
-  const projectDictionary = getProject(projectId)?.state?.pronunciationDictionary || [];
+  const projectState = getProject(projectId)?.state || {};
+  const projectDictionary = projectState.pronunciationDictionary || [];
   let cacheHits = 0;
   for (const request of requests) {
-    const resolved = { ...request, text: applyPronunciation(request.text, projectDictionary) };
+    const resolved = resolveReferenceRequest(config, projectState, { ...request, text: applyPronunciation(request.text, projectDictionary) });
     if (await validCache(findCachedAudio(audioContentHash(config, resolved)))) cacheHits += 1;
   }
   return cacheHits;
+}
+
+// 一键成片预估：characters 仍是全量上限；这里给出“净计费”拆分。
+// - estimatedBillableCharacters：已绑定音色、且不是已知缓存命中的句子字数
+//   （没有任何句子绑定音色时为 null——选角前无法判断）。
+// - unknownCharacters：尚未绑定音色的句子字数（要等选角后才知道是否命中）。
+export async function estimateBillableCharacters(config, requests, { projectId } = {}) {
+  const projectState = getProject(projectId)?.state || {};
+  const projectDictionary = projectState.pronunciationDictionary || [];
+  let billable = 0;
+  let unknown = 0;
+  let mapped = 0;
+  for (const request of requests) {
+    const length = String(request.text || '').length;
+    const resolved = resolveReferenceRequest(config, projectState, { ...request, text: applyPronunciation(request.text, projectDictionary) });
+    if (!resolved.voiceId) { unknown += length; continue; }
+    mapped += 1;
+    if (!(await validCache(findCachedAudio(audioContentHash(config, resolved))))) billable += length;
+  }
+  return { estimatedBillableCharacters: (mapped || requests.length === 0) ? billable : null, unknownCharacters: unknown };
+}
+
+// 音色设计试听：创建（或复用相同参数的进行中任务）并交给任务泵。
+export function enqueueVoiceDesign(config, input) {
+  const created = createVoiceDesignJob(config, input);
+  queueMicrotask(pumpQueue);
+  return created;
+}
+
+// 单句试听：创建（或复用同 seed 的进行中任务）并交给任务泵。
+export function enqueueLineTake(config, input) {
+  const created = createLineTakeJob(config, input);
+  queueMicrotask(pumpQueue);
+  return created;
 }
 
 export function retryTask(taskId) {
@@ -370,6 +560,43 @@ export function retryTask(taskId) {
   return retried;
 }
 
-export { getPersistentTask as getTask, requestTaskCancellation as cancelTask };
+export { getPersistentTask as getTask };
+
+// 取消：排队中的任务直接变成已取消；运行中的任务置 cancelRequested，同时把它在
+// 引擎通道里的排队项移除、在飞项结果丢弃（runGenerationRequests / 音色设计随即
+// 以 cancelled 收尾）。已结束的任务原样返回（幂等）。
+export function cancelTask(taskId) {
+  const task = getPersistentTask(taskId);
+  if (!task) throw Object.assign(new Error('任务不存在'), { status: 404, code: 'JOB_NOT_FOUND' });
+  if (['completed', 'failed', 'cancelled'].includes(task.status)) return { ...task, lane: { removed: 0, discardedInFlight: 0 } };
+  const wasQueued = task.status === 'queued';
+  const updated = requestTaskCancellation(taskId);
+  const lane = cancelJobEverywhere(taskId);
+  if (wasQueued && (task.kind === 'voice-design' || task.kind === 'line-take')) {
+    const events = [...(task.result?.events || []), { type: 'cancelled', at: Date.now() }];
+    updatePersistentTask(taskId, { result: { ...(task.result || {}), events } });
+  }
+  return { ...(getPersistentTask(taskId) || updated), lane };
+}
+
+// 等任务离开 running（取消后通常几毫秒内收尾），最多等 timeoutMs。
+export async function waitForTaskToSettle(taskId, timeoutMs = 2_000) {
+  const started = Date.now();
+  for (;;) {
+    const task = getPersistentTask(taskId);
+    if (!task || !['queued', 'running'].includes(task.status) || Date.now() - started >= timeoutMs) return task;
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+}
+
+// 轮询接口附带实时排队位置：0 = 正在生成，n = 前面还有 n 个生成，null = 不在引擎通道里。
+// 单句试听在真正轮到它之前（还没有 started 事件：在引擎通道里排队，或在做缓存 / 参考音
+// 检查）对外报 status = queued、progress = 0、startedAt = null；进度看 queuePosition。
+// 库里仍是 running（任务泵领取时写的），这样不会被重复领取。
+export function taskWithQueuePosition(task) {
+  if (!task) return task;
+  const waiting = task.kind === 'line-take' && task.status === 'running' && !(task.result?.events || []).some((event) => event.type === 'started');
+  return { ...task, ...(waiting ? { status: 'queued', progress: 0, startedAt: null } : {}), queuePosition: queuePositionOf(task.id) };
+}
 
 queueMicrotask(pumpQueue);

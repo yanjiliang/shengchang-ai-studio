@@ -2,6 +2,34 @@
 // server-side one-click orchestrator (OV-7): one copy of the math means the
 // manual flows and the orchestrated flow can never drift apart.
 
+// 数值缺省：只有“没填”（undefined / null / '' / 非数字）才用缺省值；0 是合法值
+// （情绪强度的 emotionScale 例外：数字 0 仍按 40，见 emotionScaleFor）。
+export function numberOr(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+// 情绪强度 → emotionScale。豆包 / 自定义引擎的指令和缓存键都靠它，必须与 0036 之前（d6e0ad8）一致：
+// 数字 0 → 0.4（d6e0ad8 的 `intensity || 40`），这样 0036 之前渲染的强度 0 台词缓存仍然有效、不重渲。
+// 其余照 0036：没填（undefined / null / '' / 非数字）按 40，除以 100 夹到 [0.1, 1]；字符串 '0' → 0.1
+// （d6e0ad8 里 '0' 是真值，也是 0.1）。Breeze 不看这个值：强度 0 走 emotionOff（请求体、缓存键都不带它）。
+export function emotionScaleFor(intensity) {
+  if (intensity === 0) return 0.4;
+  return Math.min(1, Math.max(0.1, numberOr(intensity, 40) / 100));
+}
+
+// 强度恰好 0（数字 0 或 '0'）= “不要情绪”：只有 Breeze 用（breezeInstruction 只留语速那句；请求体不发
+// emotion / subtext / emotionScale；缓存键只在 Breeze 下带上它）。豆包 / 自定义引擎完全忽略这个标记。
+export const isEmotionOff = (intensity) => numberOr(intensity, 40) === 0;
+
+// 浏览器提交的生成请求（整场 / 单句 / 方向实验）里的 emotionOff：只认布尔 true，其余（false / 'true' / 1）
+// 一律去掉。方向实验的变体是在台词请求上展开的，前端给强度非 0 的变体发 emotionOff: false 就能清掉。
+export function normalizeEmotionOff(item) {
+  const { emotionOff, ...rest } = item || {};
+  return emotionOff === true ? { ...rest, emotionOff: true } : rest;
+}
+
 export function buildGenerationRequest(line, voiceMap) {
   return {
     lineId: line.id,
@@ -10,8 +38,10 @@ export function buildGenerationRequest(line, voiceMap) {
     text: line.text,
     subtext: line.subtext || '',
     emotion: line.emotion,
-    emotionScale: Math.max(0.1, (line.intensity || 40) / 100),
-    speed: (line.pace || 90) / 100,
+    emotionScale: emotionScaleFor(line.intensity),
+    ...(isEmotionOff(line.intensity) ? { emotionOff: true } : {}),
+    // 语速 0 不是合法值（界面 70–120%），0 / 缺省都按 90%。
+    speed: (numberOr(line.pace, 90) || 90) / 100,
     distance: line.distance || '',
   };
 }

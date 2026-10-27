@@ -2,6 +2,7 @@
 // JSX so node:test can cover it directly — it is a display-only twin of the
 // server's resolveSceneTimeline (media-store.js), which stays the render
 // source of truth.
+import { resolveGapAfterMs } from '../../shared/mix-defaults.mjs';
 
 function numberValue(value, fallback) {
   const number = Number(value);
@@ -18,7 +19,7 @@ export function defaultMix(line) {
     fadeInMs: line.mix?.fadeInMs ?? (line.type === 'dialogue' ? 0 : 400),
     fadeOutMs: line.mix?.fadeOutMs ?? (line.type === 'dialogue' ? 0 : 700),
     pan: line.mix?.pan ?? 0,
-    gapAfterMs: line.mix?.gapAfterMs ?? 320,
+    gapAfterMs: resolveGapAfterMs(line),
     loop: line.mix?.loop ?? (line.type === 'ambient' || line.type === 'music'),
   };
 }

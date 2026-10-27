@@ -3,16 +3,22 @@ import path from 'node:path';
 import { unlink } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { buildGenerationRequests } from '../shared/generation-requests.mjs';
+import { buildGenerationRequests, normalizeEmotionOff } from '../shared/generation-requests.mjs';
 import { publicConfig, readConfig, writeConfig } from './config-store.js';
+import { TTS_SLOT_FIELDS, applyTtsUpdate } from './tts-providers.js';
 import { archiveProject, createProject, getProject, listPersistentTasks, listProjects, updateProject } from './database.js';
 import { designVoice, validateProviderConfig, validateSoundConfig } from './model-adapters.js';
-import { ensureRuntime, exportSceneTimeline, extractPeaks, inspectProjectMedia, probeDuration, probeFfmpeg, renderScenePreview, runtimePaths, saveUploadedAsset } from './media-store.js';
-import { cancelTask, enqueueGeneration, enqueueNovelAnalysis, enqueueOneClick, enqueueProjectExport, enqueueSoundGeneration, estimateGeneration, getTask, retryTask } from './task-manager.js';
+import { assertDialogueFilesPresent, ensureRuntime, exportSceneTimeline, extractPeaks, inspectProjectMedia, probeDuration, probeFfmpeg, renderScenePreview, runtimePaths, saveUploadedAsset } from './media-store.js';
+import { taskWithQueuePosition, cancelTask, enqueueGeneration, enqueueNovelAnalysis, enqueueOneClick, enqueueProjectExport, enqueueSoundGeneration, estimateBillableCharacters, estimateGeneration, getTask, retryTask } from './task-manager.js';
 import { seedSampleProject } from './sample-project.js';
 import { ensureBuiltinAssets, listBuiltinAssets } from './builtin-assets.js';
 import { recommendForEvent } from './asset-recommend.js';
-import { testLlm, validateLlmConfig } from './story-analyzer.js';
+import { redactLlmSecret, resolveLlmApiKey, resolveSavedSecret, testLlm, validateLlmConfig } from './story-analyzer.js';
+import { sameEndpoint, sameLlmEndpoint } from '../shared/endpoint.mjs';
+import { registerBreezeRoutes, sendError } from './breeze-routes.js';
+import { oneClickMissingVoiceRoles, voiceNotReadyError } from './one-click.js';
+import { annotateStaleness, generationVoiceMap, needsGenerationPredicate, staleLineCount } from './voice-references.js';
+import { registerProductionRoutes } from './production-routes.js';
 
 const PORT = Number(process.env.SHENGCHANG_API_PORT || 4174);
 // Default binds loopback only. Docker sets SHENGCHANG_BIND_HOST=0.0.0.0 because
@@ -63,49 +69,77 @@ app.use('/media', express.static(runtimePaths.MEDIA_DIR, { fallthrough: false })
 
 app.get('/api/health', async (_request, response) => {
   const config = await readConfig();
-  response.json({ ok: true, provider: config.provider, configured: config.provider === 'demo' || Boolean(config.accessKey), ffmpeg: await probeFfmpeg() });
+  let configured = true;
+  try { validateProviderConfig(config); } catch { configured = false; }
+  response.json({ ok: true, provider: config.provider, configured, ffmpeg: await probeFfmpeg() });
 });
 app.get('/api/config', async (_request, response) => response.json(publicConfig(await readConfig())));
 // Redacted secret headers round-trip as __SAVED_SECRET__. Merge per key so
 // editing a non-secret header no longer discards the edit (the old behavior
 // restored the entire saved JSON whenever any secret was present).
-function mergeRedactedHeaders(incoming, saved) {
+// keepSaved=false（接口地址换了）→ 占位符落成空串，已保存的头部密钥不带到新地址。
+function mergeRedactedHeaders(incoming, saved, keepSaved = true) {
   try {
     const merged = JSON.parse(incoming);
     const previous = JSON.parse(saved || '{}');
-    for (const key of Object.keys(merged)) if (merged[key] === '__SAVED_SECRET__') merged[key] = previous[key] ?? '';
+    for (const key of Object.keys(merged)) if (merged[key] === '__SAVED_SECRET__') merged[key] = keepSaved ? previous[key] ?? '' : '';
     return JSON.stringify(merged);
   } catch { return incoming; }
 }
 
+// 已保存的密钥：没填新值时，只有对应接口地址（规范化后）没变才沿用；地址换了就清空，
+// 不能把旧 Key 带到另一家服务。preserveSecret:false = 明确要求按请求体原样保存。
+// 语音（TTS）的 accessKey / customHeaders 不在这里：按引擎分槽，由 applyTtsUpdate 在本槽内套同一规则。
+const SAVED_SECRETS = [
+  { secretField: 'llmApiKey', endpointField: 'llmEndpoint', same: sameLlmEndpoint },
+  { secretField: 'sfxAccessKey', endpointField: 'sfxEndpoint' },
+];
+const SECRET_HEADERS = [
+  { headersField: 'sfxCustomHeaders', endpointField: 'sfxEndpoint' },
+];
+
 app.put('/api/config', async (request, response, next) => {
   try {
     const current = await readConfig();
-    const nextConfig = { ...current, ...request.body };
-    if (!request.body.accessKey && current.accessKey && request.body.preserveSecret !== false) nextConfig.accessKey = current.accessKey;
-    if (!request.body.llmApiKey && current.llmApiKey && request.body.preserveSecret !== false) nextConfig.llmApiKey = current.llmApiKey;
-    if (request.body.customHeaders?.includes('__SAVED_SECRET__')) nextConfig.customHeaders = mergeRedactedHeaders(request.body.customHeaders, current.customHeaders);
+    // 平铺的 TTS 字段写进目标引擎那一槽（请求里切引擎就是新引擎）；ttsProviders 是只读摘要，忽略请求体里的。
+    const { ttsProviders: _readOnlySummary, ...body } = request.body || {};
+    for (const field of TTS_SLOT_FIELDS) delete body[field];
+    const nextConfig = { ...current, ...body, ...applyTtsUpdate(current, request.body || {}, { currentPublic: publicConfig(current), preserveSecret: request.body?.preserveSecret !== false }) };
+    if (request.body.preserveSecret !== false) {
+      for (const rule of SAVED_SECRETS) nextConfig[rule.secretField] = resolveSavedSecret(request.body, current, rule);
+    }
+    for (const { headersField, endpointField } of SECRET_HEADERS) {
+      if (!String(request.body[headersField] ?? '').includes('__SAVED_SECRET__')) continue;
+      const endpoint = request.body[endpointField] === undefined ? current[endpointField] : request.body[endpointField];
+      nextConfig[headersField] = mergeRedactedHeaders(request.body[headersField], current[headersField], sameEndpoint(endpoint, current[endpointField]));
+    }
     response.json(publicConfig(await writeConfig(nextConfig)));
   } catch (error) { next(error); }
 });
-app.post('/api/config/test-llm', async (request, response, next) => {
+// 永远回 JSON {ok, latencyMs, code, message, status?}。本地校验没过 → 400 LLM_CONFIG_INVALID；
+// 上游失败（401/404/超时/其他）→ 200 + ok:false，测试本身成功地报告了结果。
+app.post('/api/config/test-llm', async (request, response) => {
+  let config;
   try {
     const current = await readConfig();
-    const config = { ...current, ...request.body };
-    if (!request.body.llmApiKey && current.llmApiKey) config.llmApiKey = current.llmApiKey;
+    config = { ...current, ...request.body, llmApiKey: resolveLlmApiKey(request.body, current) };
     validateLlmConfig(config);
-    response.json(await testLlm(config));
-  } catch (error) { next(error); }
+  } catch (error) {
+    return response.status(400).json({ ok: false, latencyMs: null, code: 'LLM_CONFIG_INVALID', message: error.message, ...(error.field ? { field: error.field } : {}), error: error.message });
+  }
+  try { response.json(await testLlm(config)); }
+  catch (error) { response.status(500).json({ ok: false, latencyMs: null, code: 'LLM_UPSTREAM', message: redactLlmSecret(error.message, config.llmApiKey).slice(0, 300), error: '测试连接失败' }); }
 });
 app.get('/api/projects', (_request, response) => response.json({ projects: listProjects() }));
 app.post('/api/projects', (request, response, next) => {
   try { response.status(201).json(createProject({ name: request.body.name, genre: request.body.genre })); } catch (error) { next(error); }
 });
-app.get('/api/projects/:projectId', (request, response) => {
+// 每句台词附带 stale / staleReason（按当前参数复算缓存键，见 voice-references.js）。
+app.get('/api/projects/:projectId', async (request, response) => {
   const project = getProject(request.params.projectId);
-  return project ? response.json(project) : response.status(404).json({ error: '项目不存在' });
+  return project ? response.json(annotateStaleness(await readConfig(), project)) : response.status(404).json({ error: '项目不存在' });
 });
-app.put('/api/projects/:projectId', (request, response, next) => {
+app.put('/api/projects/:projectId', async (request, response, next) => {
   try {
     // OV-4 stale-autosave guard: the browser holds a whole-project snapshot,
     // so an autosave landing mid-orchestration would silently revert the
@@ -114,7 +148,8 @@ app.put('/api/projects/:projectId', (request, response, next) => {
     if (active) return response.status(409).json({ error: '一键成片运行中，完成后可继续编辑' });
     // Whitelist: trustedAudio is a server-internal flag and must never be
     // settable by the browser, or the stale-snapshot guard is bypassable.
-    response.json(updateProject(request.params.projectId, { name: request.body.name, genre: request.body.genre, sourceFilename: request.body.sourceFilename, sourceText: request.body.sourceText, state: request.body.state }));
+    const saved = updateProject(request.params.projectId, { name: request.body.name, genre: request.body.genre, sourceFilename: request.body.sourceFilename, sourceText: request.body.sourceText, state: request.body.state });
+    response.json(annotateStaleness(await readConfig(), saved));
   } catch (error) { next(error); }
 });
 app.delete('/api/projects/:projectId', (request, response, next) => {
@@ -148,11 +183,14 @@ app.post('/api/projects/:projectId/export-scene', async (request, response, next
     if (!project) throw new Error('项目不存在');
     const scene = project.state.scenes?.find((item) => item.id === request.body.sceneId);
     if (!scene) throw new Error('场景不存在');
+    assertDialogueFilesPresent([scene]);
     const media = await inspectProjectMedia(project);
     const report = media.scenes.find((item) => item.sceneId === scene.id);
     if (report?.invalidFileCount) throw new Error(`场景含 ${report.invalidFileCount} 个无法解码的音频文件，请重新生成或重新绑定后再导出`);
     const config = await readConfig();
-    response.json(await exportSceneTimeline({ projectId: project.id, scene, targetLufs: config.targetLufs }));
+    const exported = await exportSceneTimeline({ projectId: project.id, scene, targetLufs: config.targetLufs });
+    // staleLineCount：本场里音频已过期（进入导出的是旧音频）的对白句数。
+    response.json({ ...exported, staleLineCount: staleLineCount(config, project, { sceneIds: [scene.id] }) });
   } catch (error) { next(error); }
 });
 app.post('/api/projects/:projectId/preview-scene', async (request, response, next) => {
@@ -161,6 +199,7 @@ app.post('/api/projects/:projectId/preview-scene', async (request, response, nex
     if (!project) throw new Error('项目不存在');
     const scene = project.state.scenes?.find((item) => item.id === request.body.sceneId);
     if (!scene) throw new Error('场景不存在');
+    assertDialogueFilesPresent([scene]);
     const media = await inspectProjectMedia(project);
     const report = media.scenes.find((item) => item.sceneId === scene.id);
     if (report?.invalidFileCount) throw new Error(`场景含 ${report.invalidFileCount} 个无法解码的音频文件，无法预混试听`);
@@ -187,6 +226,11 @@ app.post('/api/projects/:projectId/one-click', async (request, response, next) =
     if (!project.state.scenes?.length && !project.sourceText?.trim()) throw new Error('请先导入小说文本或手动创建场景');
     const config = await readConfig();
     validateProviderConfig(config);
+    // Breeze：有角色没锁参考音就不开跑（自动音色设计本轮不做），409 + missingVoiceRoles。
+    if (config.provider === 'breeze' && project.state.scenes?.length) {
+      const missingVoiceRoles = oneClickMissingVoiceRoles(config, project.state);
+      if (missingVoiceRoles.length) return sendError(response, voiceNotReadyError(missingVoiceRoles), next);
+    }
     response.status(202).json(enqueueOneClick({ projectId: project.id }));
   } catch (error) { next(error); }
 });
@@ -202,16 +246,25 @@ app.post('/api/projects/:projectId/one-click-estimate', async (request, response
     // auto-maps unmapped characters first, so requests without a voiceId
     // today are still billable lines (except genuinely unmappable ones, which
     // the pipeline skips - hence the separate unmappedVoiceCount).
-    const requests = buildGenerationRequests(project.state);
+    // Breeze 只认锁定的参考音（与生成阶段 generationVoiceMap 一致）。
+    const requests = buildGenerationRequests({ ...project.state, voiceMap: generationVoiceMap(config, project.state) }, { needGeneration: needsGenerationPredicate(config, project.state) });
     const mappable = requests.filter((item) => item.voiceId);
+    const missingVoiceRoles = oneClickMissingVoiceRoles(config, project.state);
     response.json({
+      // 与 GET voice-readiness 的 missingRoles 同形；Breeze 下非空时 POST one-click 会 409。
+      missingVoiceRoles,
+      voiceReady: missingVoiceRoles.length === 0,
       provider: config.provider,
       sceneCount: project.state.scenes?.length || 0,
       dialogueCount: dialogue.length,
       requestCount: requests.length,
       unmappedVoiceCount: requests.length - mappable.length,
       characters: requests.reduce((sum, item) => sum + String(item.text || '').length, 0),
-      cacheHits: await estimateGeneration(config, mappable, { projectId: project.id }),
+      // 未绑定音色的句子要等 音色 阶段选角后才知道缓存键：它们的命中数是
+      // “未知”，不是 0。全部未绑定（还没选角）时 cacheHits 为 null。
+      cacheHits: mappable.length ? await estimateGeneration(config, mappable, { projectId: project.id }) : (requests.length ? null : 0),
+      cacheHitsUnknownCount: requests.length - mappable.length,
+      ...(await estimateBillableCharacters(config, requests, { projectId: project.id })),
       needsLlm: !project.state.scenes?.length && !['demo'].includes(config.provider),
     });
   } catch (error) { next(error); }
@@ -241,7 +294,7 @@ app.post('/api/generate', async (request, response, next) => {
       const line = scene?.lines?.find((candidate) => candidate.id === item.lineId);
       if (!scene || !line || line.type !== 'dialogue') throw new Error('生成任务中存在无效的对白位置');
       if (!String(item.text || '').trim()) throw new Error('生成任务中存在空白台词');
-      return { ...item, sceneId };
+      return { ...normalizeEmotionOff(item), sceneId };
     });
     response.status(202).json(enqueueGeneration({ ...request.body, requests }));
   } catch (error) { next(error); }
@@ -323,7 +376,7 @@ app.delete('/api/assets', async (request, response, next) => {
 });
 app.get('/api/tasks/:taskId', (request, response) => {
   const task = getTask(request.params.taskId);
-  return task ? response.json(task) : response.status(404).json({ error: '任务不存在或本地服务已重启' });
+  return task ? response.json(taskWithQueuePosition(task)) : response.status(404).json({ error: '任务不存在或本地服务已重启' });
 });
 app.post('/api/tasks/:taskId/cancel', (request, response, next) => {
   try { response.json(cancelTask(request.params.taskId)); } catch (error) { next(error); }
@@ -331,6 +384,8 @@ app.post('/api/tasks/:taskId/cancel', (request, response, next) => {
 app.post('/api/tasks/:taskId/retry', (request, response, next) => {
   try { response.status(202).json(retryTask(request.params.taskId)); } catch (error) { next(error); }
 });
+registerBreezeRoutes(app);
+registerProductionRoutes(app);
 // Unknown API routes must not fall through to the SPA fallback: apiRequest
 // would parse the HTML shell as `{}` and treat the call as a success.
 app.use('/api', (_request, response) => response.status(404).json({ error: '接口不存在' }));
@@ -344,6 +399,6 @@ app.use((error, _request, response, _next) => {
   if (status >= 500) console.error(error);
   else console.warn(`请求失败（${status}）：${error.message}`);
   if (status === 413) return response.status(413).json({ error: '请求体过大，请按卷拆分后再导入' });
-  response.status(status).json({ error: error.message || '本地服务处理失败' });
+  response.status(status).json({ error: error.message || '本地服务处理失败', ...(Number.isInteger(error.status) && typeof error.code === 'string' ? { code: error.code } : {}), ...(error.code === 'AUDIO_FILE_MISSING' ? { details: error.details } : {}) });
 });
 app.listen(PORT, BIND_HOST, () => console.log(`声场本地服务：http://127.0.0.1:${PORT}（监听 ${BIND_HOST}）`));

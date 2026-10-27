@@ -24,12 +24,12 @@ const dialogue = (id, speaker, speakerId, text, direction) => ({
 
 const CHARACTERS = [
   { id: 'narrator', name: '旁白', role: '叙事者', description: '冷静克制，保留说书人的节奏感，不抢戏。' },
-  { id: 'tangseng', name: '唐僧', role: '主角', description: '慈悲而执拗。动怒时也带着文气，字字有礼却句句见责。' },
-  { id: 'sunwukong', name: '孙悟空', role: '主角', description: '火气与忠心都写在嗓门里，急躁但死心塌地护主。' },
-  { id: 'zhubajie', name: '猪八戒', role: '主角', description: '憨直嘴碎，情绪永远比脑子快半拍。' },
-  { id: 'shaonv', name: '青衣少女', role: '角色（白骨精一化）', description: '甜糯殷勤，妖气全部藏进笑意里。' },
-  { id: 'laoyu', name: '老妪', role: '角色（白骨精二化）', description: '苍老悲切，哭腔里带着钩子。' },
-  { id: 'laoweng', name: '老翁', role: '角色（白骨精三化）', description: '苍凉迟缓，每个问句都是试探。' },
+  { id: 'tangseng', name: '唐僧', gender: '男', age: '青年', role: '主角', description: '慈悲而执拗。动怒时也带着文气，字字有礼却句句见责。' },
+  { id: 'sunwukong', name: '孙悟空', gender: '男', age: '青年', role: '主角', description: '火气与忠心都写在嗓门里，急躁但死心塌地护主。' },
+  { id: 'zhubajie', name: '猪八戒', gender: '男', age: '中年', role: '主角', description: '憨直嘴碎，情绪永远比脑子快半拍。' },
+  { id: 'shaonv', name: '青衣少女', gender: '女', age: '青年', role: '角色（白骨精一化）', description: '甜糯殷勤，妖气全部藏进笑意里。' },
+  { id: 'laoyu', name: '老妪', gender: '女', age: '老年', role: '角色（白骨精二化）', description: '苍老悲切，哭腔里带着钩子。' },
+  { id: 'laoweng', name: '老翁', gender: '男', age: '老年', role: '角色（白骨精三化）', description: '苍凉迟缓，每个问句都是试探。' },
 ];
 
 const SCENES = [

@@ -1,8 +1,10 @@
+import { BREEZE_INSTRUCTION_VERSION, TTS_INSTRUCTION_VERSION } from './model-adapters.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { runtimePaths } from './media-store.js';
+import { sanitizeCharacters } from './character-meta.js';
 
 const DATABASE_PATH = path.join(path.dirname(runtimePaths.MEDIA_DIR), 'shengchang.sqlite');
 mkdirSync(path.dirname(DATABASE_PATH), { recursive: true });
@@ -50,6 +52,10 @@ database.exec(`
     created_at INTEGER NOT NULL
   );
 `);
+// 0005：created_at 只表示“这条缓存何时生成”；命中时只更新 last_used_at（LRU 用）。
+if (!database.prepare('PRAGMA table_info(audio_cache)').all().some((column) => column.name === 'last_used_at')) {
+  database.exec('ALTER TABLE audio_cache ADD COLUMN last_used_at INTEGER');
+}
 
 function parseJson(value, fallback) {
   try { return JSON.parse(value); } catch { return fallback; }
@@ -69,6 +75,8 @@ function projectRow(row) {
   state.assets ||= [];
   state.voiceMap ||= {};
   state.pronunciationDictionary ||= [];
+  state.voiceReferences ||= {};
+  state.lineTakes ||= {};
   return { id: row.id, name: row.name, genre: row.genre, sourceFilename: row.source_filename, sourceText: row.source_text, state, createdAt: row.created_at, updatedAt: row.updated_at };
 }
 
@@ -93,7 +101,7 @@ export function createProject({ name = '未命名作品', genre = '', state = { 
   const id = randomUUID();
   const now = Date.now();
   database.prepare('INSERT INTO projects(id,name,genre,source_filename,source_text,state_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
-    .run(id, name.trim() || '未命名作品', genre, sourceFilename, sourceText, JSON.stringify(state), now, now);
+    .run(id, name.trim() || '未命名作品', genre, sourceFilename, sourceText, JSON.stringify(Array.isArray(state?.characters) ? { ...state, characters: sanitizeCharacters(state.characters, [], { trusted: true }) } : state), now, now);
   return getProject(id);
 }
 
@@ -102,7 +110,7 @@ export function createProject({ name = '未命名作品', genre = '', state = { 
 // between load and save would otherwise be erased by a stale snapshot. Keep
 // whatever the server already has, and mark a clip stale (instead of deleting
 // it) when the text it was synthesized from has changed.
-const AUDIO_FIELDS = ['audioUrl', 'audioMime', 'audioHash', 'generatedAt', 'synthesizedText'];
+const AUDIO_FIELDS = ['audioUrl', 'audioMime', 'audioHash', 'generatedAt', 'synthesizedText', 'audioEngine', 'audioSeed', 'audioText', 'renderSeed'];
 
 function mergeServerOwnedAudio(incomingState, currentState) {
   const currentLines = new Map();
@@ -113,10 +121,15 @@ function mergeServerOwnedAudio(incomingState, currentState) {
       ...scene,
       lines: (scene.lines || []).map((line) => {
         const current = currentLines.get(line.id);
-        if (!current?.audioUrl) return line;
-        const merged = { ...line };
+        // stale / staleReason 是响应里算出来的，不落盘。
+        const { stale: _stale, staleReason: _staleReason, ...clean } = line;
+        if (!current?.audioUrl) return clean;
+        const merged = { ...clean };
         for (const field of AUDIO_FIELDS) if (current[field] !== undefined) merged[field] = current[field];
-        merged.audioStale = String(line.text ?? '') !== String(current.text ?? '');
+        // 对照音频生成时的原文（audioText）：改回原文就不再过期。旧数据没有 audioText 时，
+        // 未过期的音频以当前文本为原文；已过期的不知道原文，保持过期直到重新生成。
+        const sourceText = current.audioText ?? (current.audioStale ? null : current.text);
+        merged.audioStale = sourceText === null ? true : String(line.text ?? '') !== String(sourceText ?? '');
         return merged;
       }),
     })),
@@ -129,6 +142,11 @@ export function updateProject(id, patch) {
   const currentState = parseJson(current.state_json, {});
   let state = patch.state ?? currentState;
   if (patch.state && !patch.trustedAudio) state = mergeServerOwnedAudio(patch.state, currentState);
+  // 角色参考音（voiceReferences）只由服务端锁定接口写入；浏览器保存的旧快照不能覆盖。
+  // 单句试听（lineTakes）同理，只由服务端生成/采用接口写入。
+  if (patch.state && !patch.trustedAudio) state = { ...state, voiceReferences: currentState.voiceReferences || {}, lineTakes: currentState.lineTakes || {} };
+  // 角色性别/年龄：校验枚举；浏览器保存时来源由服务端推断（见 character-meta.js）。
+  if (patch.state && Array.isArray(state.characters)) state = { ...state, characters: sanitizeCharacters(state.characters, currentState.characters, { trusted: Boolean(patch.trustedAudio) }) };
   database.prepare('UPDATE projects SET name=?,genre=?,source_filename=?,source_text=?,state_json=?,updated_at=? WHERE id=?').run(
     patch.name ?? current.name,
     patch.genre ?? current.genre,
@@ -148,7 +166,7 @@ export function archiveProject(id) {
 export function createPersistentTask({ kind, projectId, sceneId = '', payload }) {
   const id = randomUUID();
   database.prepare('INSERT INTO tasks(id,kind,project_id,scene_id,status,progress,message,payload_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
-    .run(id, kind, projectId || null, sceneId, 'queued', 1, '任务已进入本地队列', JSON.stringify(payload), Date.now());
+    .run(id, kind, projectId || null, sceneId, 'queued', 0, '任务已进入本地队列', JSON.stringify(payload), Date.now());
   return getPersistentTask(id);
 }
 
@@ -181,8 +199,12 @@ export function updatePersistentTask(id, patch) {
   return getPersistentTask(id);
 }
 
-export function nextQueuedTask() {
-  const row = database.prepare("SELECT id FROM tasks WHERE status='queued' ORDER BY created_at ASC LIMIT 1").get();
+// kinds：只在这些 kind 里挑（交互槽用）；不传 = 任意 kind。同一条件下按创建时间先来先领。
+export function nextQueuedTask({ kinds } = {}) {
+  const list = Array.isArray(kinds) && kinds.length ? kinds : null;
+  const row = list
+    ? database.prepare(`SELECT id FROM tasks WHERE status='queued' AND kind IN (${list.map(() => '?').join(',')}) ORDER BY created_at ASC LIMIT 1`).get(...list)
+    : database.prepare("SELECT id FROM tasks WHERE status='queued' ORDER BY created_at ASC LIMIT 1").get();
   return row ? getPersistentTask(row.id) : null;
 }
 
@@ -206,8 +228,13 @@ export function cacheAudio({ contentHash, url, mime, provider, model, voiceId })
     .run(contentHash, url, mime, provider, model, voiceId, Date.now());
 }
 
+// 命中缓存：只记录使用时间，不改 created_at（否则看起来像这次新生成的）。
+export function touchCachedAudio(contentHash) {
+  database.prepare('UPDATE audio_cache SET last_used_at=? WHERE content_hash=?').run(Date.now(), contentHash);
+}
+
 export function listAudioCache() {
-  return database.prepare('SELECT * FROM audio_cache ORDER BY created_at ASC').all();
+  return database.prepare('SELECT * FROM audio_cache ORDER BY COALESCE(last_used_at, created_at) ASC').all();
 }
 
 export function deleteAudioCache(contentHash) {
@@ -216,8 +243,30 @@ export function deleteAudioCache(contentHash) {
 
 // Every field that can change the synthesized audio must participate here;
 // missing fields cause stale cache hits, extra fields cause paid re-synthesis.
+// 生成逻辑进缓存键：豆包 seed-tts-2.0 的实际指令由 TTS_INSTRUCTION_VERSION 版本的
+// 拼装规则 + 稳定说话人开关决定，任一变化都必须重新合成，不能复用旧音频。
+// 其他提供方不发指令，键保持原样（它们的缓存不受影响）。
+function ttsGeneratorKey(config) {
+  // Breeze /tts 的指令由 breezeInstruction 生成（声场为准），它的版本进键：措辞一改旧缓存
+  // 要失效。instructionVersion 固定写 2（当年的豆包版本号）只为不挪动现有 Breeze 缓存键；
+  // 以后豆包升 TTS_INSTRUCTION_VERSION（例如清理停顿措辞）不再连带让 Breeze 缓存失效。
+  if (config.provider === 'breeze') return { instructionVersion: 2, breezeInstructionVersion: BREEZE_INSTRUCTION_VERSION };
+  if (config.provider !== 'volcengine-api-key' || config.resourceId !== 'seed-tts-2.0') return {};
+  return { instructionVersion: TTS_INSTRUCTION_VERSION, stableSpeaker: config.ttsStableSpeaker !== false };
+}
+
 export function audioContentHash(config, request) {
-  return createHash('sha256').update(JSON.stringify({ provider: config.provider, endpoint: config.endpoint, model: config.model, resourceId: config.resourceId, voiceId: request.voiceId, text: request.text, subtext: request.subtext, emotion: request.emotion, emotionScale: request.emotionScale, speed: request.speed, distance: request.distance, format: config.audioFormat, sampleRate: config.sampleRate })).digest('hex');
+  // Breeze + 强度 0（emotionOff）：请求体里不发 emotion / subtext / emotionScale，指令只剩语速，
+  // 所以这三项不进键（值为 undefined，JSON 里整项消失）；其他情况键与之前逐字相同。
+  const breezeEmotionOff = config.provider === 'breeze' && request.emotionOff === true;
+  return createHash('sha256').update(JSON.stringify({ ...ttsGeneratorKey(config), provider: config.provider, endpoint: config.provider === 'breeze' ? config.breezeEndpoint : config.endpoint, model: config.model, resourceId: config.resourceId, voiceId: request.voiceId, text: request.text,
+    subtext: breezeEmotionOff ? undefined : request.subtext, emotion: breezeEmotionOff ? undefined : request.emotion, emotionScale: breezeEmotionOff ? undefined : request.emotionScale, speed: request.speed, distance: request.distance, format: config.audioFormat, sampleRate: config.sampleRate,
+    // 只在出现时才加入：既有台词（无参考音、无显式 seed）的缓存键保持不变。
+    // referenceHash = 角色参考音指纹（Breeze 参考音角色）；seed = 显式指定的生成种子。
+    ...(request.referenceHash ? { referenceHash: request.referenceHash } : {}),
+    ...(Number.isSafeInteger(request.seed) ? { seed: request.seed } : {}),
+    // 强度恰好 0 = 不要情绪：只改 Breeze 指令，所以只进 Breeze 的键；豆包 / 自定义的键与 0036 逐字相同。
+    ...(breezeEmotionOff ? { emotionOff: true } : {}) })).digest('hex');
 }
 
 // Generated sound effects / beds: same content-addressed cache, different key

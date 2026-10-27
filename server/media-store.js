@@ -1,7 +1,9 @@
+import { existsSync } from 'node:fs';
 import { mkdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveGapAfterMs } from '../shared/mix-defaults.mjs';
 
 const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
 // Overridable so tests can point the database and media tree at a scratch
@@ -26,38 +28,97 @@ export async function saveUploadedAsset(id, extension, buffer) {
   return saveMedia(`asset-${id}`, safeExtension, buffer);
 }
 
+// ffmpeg/ffprobe failures: drop the version/build banner and keep the last few
+// stderr lines, which is where the real error is (e.g. "No such file", "Invalid
+// argument"). Exported for tests.
+const BANNER_LINE = /^(ffmpeg|ffprobe) version |^\s+(built with|configuration:|lib(avutil|avcodec|avformat|avdevice|avfilter|swscale|swresample|postproc)\s)/;
+export function ffmpegFailureMessage(command, stderr, maxLines = 5) {
+  const lines = String(stderr || '').split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line.trim() && !BANNER_LINE.test(line));
+  const tail = lines.slice(-maxLines).join('\n').slice(-1200);
+  return tail || `${command}执行失败`;
+}
+
+function withHideBanner(command, args) {
+  return command === 'ffmpeg' && !args.includes('-hide_banner') ? ['-hide_banner', ...args] : args;
+}
+
 function run(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawn(command, withHideBanner(command, args), { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
     child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(stderr.slice(-1200) || `${command}执行失败`))));
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(ffmpegFailureMessage(command, stderr)))));
   });
 }
 
 function runWithOutput(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, withHideBanner(command, args), { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = '';
     child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
     child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve(stdout) : reject(new Error(stderr.slice(-1200) || `${command}执行失败`))));
+    child.on('close', (code) => (code === 0 ? resolve(stdout) : reject(new Error(ffmpegFailureMessage(command, stderr)))));
   });
 }
 
 // Binary stdout variant, for piping raw PCM out of ffmpeg.
 function runBinary(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, withHideBanner(command, args), { stdio: ['ignore', 'pipe', 'pipe'] });
     const chunks = [];
     let stderr = '';
     child.stdout.on('data', (chunk) => chunks.push(chunk));
     child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(stderr.slice(-1200) || `${command}执行失败`))));
+    child.on('close', (code) => (code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(ffmpegFailureMessage(command, stderr)))));
   });
+}
+
+// stderr-capturing variant: ffmpeg prints filter summaries (ebur128) there.
+function runStderr(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, withHideBanner(command, args), { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', reject);
+    child.on('close', (code) => (code === 0 ? resolve(stderr) : reject(new Error(ffmpegFailureMessage(command, stderr)))));
+  });
+}
+
+/**
+ * Integrated loudness (EBU R128, LUFS) of a rendered file. Never throws:
+ * returns { lufs: null, lufsReason } when ffmpeg is missing or the
+ * measurement can't be parsed, so an export never fails on the meter.
+ */
+export async function measureLoudness(source) {
+  try {
+    const stderr = await runStderr('ffmpeg', ['-hide_banner', '-nostats', '-i', source, '-af', 'ebur128=framelog=quiet', '-f', 'null', '-']);
+    const summary = stderr.slice(stderr.lastIndexOf('Summary:'));
+    const match = summary.match(/Integrated loudness:\s*\n\s*I:\s*(-?[\d.]+|-inf)\s*LUFS/);
+    if (!match) return { lufs: null, lufsReason: 'LOUDNESS_UNPARSEABLE' };
+    if (match[1] === '-inf') return { lufs: null, lufsReason: 'SILENT' };
+    return { lufs: Math.round(Number(match[1]) * 10) / 10, lufsReason: null };
+  } catch (error) {
+    return { lufs: null, lufsReason: error.code === 'ENOENT' ? 'FFMPEG_UNAVAILABLE' : 'LOUDNESS_MEASURE_FAILED' };
+  }
+}
+
+/**
+ * Where each line sits in the mix: [{ lineId, sceneId, type, startMs, endMs }]
+ * from the resolved timeline (dialogue start = previous line's end + its
+ * gapAfterMs, unless mix.startMs pins it). offsetMs shifts a scene into
+ * episode time. Sorted by start, dialogue first on ties.
+ */
+export function timelineSegments(resolved, { sceneId = null, offsetMs = 0 } = {}) {
+  return (resolved?.tracks || [])
+    .map((track) => ({
+      lineId: track.lineId, sceneId, type: track.type,
+      startMs: Math.round(offsetMs + track.start * 1000),
+      endMs: Math.round(offsetMs + (track.start + track.duration) * 1000),
+    }))
+    .sort((a, b) => a.startMs - b.startMs || (a.type === 'dialogue' ? -1 : 0) - (b.type === 'dialogue' ? -1 : 0));
 }
 
 function clamp(value, min, max, fallback) {
@@ -131,11 +192,26 @@ export async function extractPeaks(url, buckets = 48) {
   return normalized;
 }
 
+// 时长缓存：按 路径 + 大小 + mtime 记，文件被替换就自然失效。304 句的时间线原来每句串行跑一次
+// ffprobe（约 15 秒），命中缓存后只剩 stat。失败不缓存。
+const durationCache = new Map();
+const DURATION_CACHE_MAX = 20_000;
 export async function probeDuration(source) {
+  let key = '';
+  try { const info = await stat(source); key = `${source}|${info.size}|${info.mtimeMs}`; } catch { /* 交给 ffprobe 报真实错误 */ }
+  if (key && durationCache.has(key)) return durationCache.get(key);
   const output = await runWithOutput('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', source]);
   const seconds = Number(output.trim());
   if (!Number.isFinite(seconds) || seconds <= 0) throw new Error(`无法读取音频时长：${path.basename(source)}`);
+  if (key) { if (durationCache.size >= DURATION_CACHE_MAX) durationCache.clear(); durationCache.set(key, seconds); }
   return seconds;
+}
+
+// 冷缓存时并发预取（最多 8 个 ffprobe 同时跑），失败忽略：之后串行那遍会按原逻辑报错。
+async function prefetchDurations(sources, concurrency = 8) {
+  const queue = [...new Set(sources)];
+  const worker = async () => { while (queue.length) { const source = queue.shift(); await probeDuration(source).catch(() => {}); } };
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
 }
 
 async function probeMedia(source) {
@@ -189,10 +265,12 @@ export async function inspectProjectMedia(project) {
   };
 }
 
-async function resolveSceneTimeline(scene) {
+// Exported for tests (句后停顿等时间轴规则)。
+export async function resolveSceneTimeline(scene) {
   const tracks = [];
   const missing = [];
   let dialogueCursor = 0;
+  await prefetchDurations((scene.lines || []).map((line) => (line.type === 'dialogue' ? line.audioUrl : line.assetUrl)).filter(Boolean).map(mediaPath));
   for (const line of scene.lines || []) {
     const url = line.type === 'dialogue' ? line.audioUrl : line.assetUrl;
     if (!url) { if (line.type === 'dialogue') missing.push(line.id); continue; }
@@ -213,7 +291,7 @@ async function resolveSceneTimeline(scene) {
     const requestedDuration = mix.durationMs !== '' && mix.durationMs !== null && mix.durationMs !== undefined ? clamp(Number(mix.durationMs) / 1000, 0.05, 21_600, 0) : 0;
     const loop = !isDialogue && (mix.loop ?? defaultLoop);
     const duration = requestedDuration || trimmedSourceDuration;
-    const gapAfter = isDialogue ? clamp(Number(mix.gapAfterMs) / 1000, 0, 10, 0.32) : 0;
+    const gapAfter = isDialogue ? clamp(Number(resolveGapAfterMs({ ...line, mix })) / 1000, 0, 10, 0.32) : 0;
     tracks.push({ lineId: line.id, type: line.type, source, sourceDuration, trimmedSourceDuration, trimStart, trimEnd: trimEndSetting, start, duration, loop, gainDb: clamp(mix.gainDb, -60, 12, isDialogue ? 0 : line.type === 'music' ? -18 : line.type === 'ambient' ? -14 : -6), fadeIn: clamp(Number(mix.fadeInMs) / 1000, 0, 30, isDialogue ? 0 : 0.4), fadeOut: clamp(Number(mix.fadeOutMs) / 1000, 0, 30, isDialogue ? 0 : 0.7), pan: clamp(mix.pan, -1, 1, 0) });
     if (isDialogue) dialogueCursor = Math.max(dialogueCursor, start + duration + gapAfter);
   }
@@ -282,11 +360,13 @@ async function renderTimeline(scene, output, { targetLufs = -16, normalize = tru
 }
 
 export async function exportSceneTimeline({ projectId, scene, targetLufs = -16 }) {
+  assertDialogueFilesPresent([scene]);
   await ensureRuntime();
   const safeTitle = String(scene.title || '未命名场景').replace(/[\\/:*?"<>|]/g, '-');
   const output = path.join(EXPORT_DIR, `${safeId(projectId)}-${safeId(scene.id)}-${safeTitle}.mp3`);
   const rendered = await renderTimeline(scene, output, { targetLufs, normalize: true, tailPadMs: 350 });
-  return { url: `/media/exports/${path.basename(output)}`, name: path.basename(output), durationMs: rendered.durationMs, trackCount: rendered.tracks.length, missingLineIds: rendered.missing };
+  const loudness = await measureLoudness(output);
+  return { url: `/media/exports/${path.basename(output)}`, name: path.basename(output), durationMs: rendered.durationMs, trackCount: rendered.tracks.length, missingLineIds: rendered.missing, segments: timelineSegments(rendered, { sceneId: scene.id }), targetLufs, ...loudness };
 }
 
 export async function renderScenePreview({ projectId, scene }) {
@@ -299,11 +379,34 @@ export async function renderScenePreview({ projectId, scene }) {
   return { url: `/media/exports/${path.basename(output)}`, name: path.basename(output), durationMs: rendered.durationMs, trackCount: rendered.tracks.length, missingLineIds: rendered.missing };
 }
 
+// B4（e2e6）：台词有 audioUrl 但文件已不在磁盘上时，导出不能悄悄少一句。没有 audioUrl 的句子
+// 照旧跳过（导出预检的 missingAudioLineCount 会提前提示）；文件丢失的直接拒绝导出并列出是哪几句。
+export function missingDialogueFiles(scenes) {
+  const missing = [];
+  for (const scene of scenes || []) for (const line of scene.lines || []) {
+    if (line.type !== 'dialogue' || !line.audioUrl) continue;
+    if (!existsSync(mediaPath(line.audioUrl))) missing.push({ sceneId: scene.id, lineId: line.id, speaker: line.speaker || '', text: String(line.text || '').slice(0, 20) });
+  }
+  return missing;
+}
+
+export function assertDialogueFilesPresent(scenes) {
+  const missing = missingDialogueFiles(scenes);
+  if (!missing.length) return;
+  const sample = missing.slice(0, 3).map((item) => `${item.speaker ? `${item.speaker}：` : ''}「${item.text}」`).join('、');
+  const error = new Error(`有 ${missing.length} 句台词的音频文件不见了（${sample}${missing.length > 3 ? ' 等' : ''}），请先重新生成这几句再导出`);
+  error.code = 'AUDIO_FILE_MISSING';
+  error.status = 409;
+  error.details = { missingFileLines: missing };
+  throw error;
+}
+
 export async function exportProjectTimeline({ project, targetLufs = -16, onProgress, shouldCancel }) {
   await ensureRuntime();
   const renderedScenes = [];
   const eligible = (project.state.scenes || []).filter((scene) => scene.lines?.some((line) => line.type === 'dialogue' && line.audioUrl));
   if (!eligible.length) throw new Error('整部作品没有可导出的对白音频');
+  assertDialogueFilesPresent(eligible);
   const manifest = path.join(EXPORT_DIR, `${safeId(project.id)}-episode-concat.txt`);
   try {
     for (let index = 0; index < eligible.length; index += 1) {
@@ -311,7 +414,7 @@ export async function exportProjectTimeline({ project, targetLufs = -16, onProgr
       const scene = eligible[index];
       onProgress?.({ current: index + 1, total: eligible.length, progress: 8 + Math.round(index / eligible.length * 72), message: `正在混音场景 ${index + 1} / ${eligible.length}` });
       const output = path.join(EXPORT_DIR, `${safeId(project.id)}-${safeId(scene.id)}-episode.wav`);
-      const rendered = await renderTimeline(scene, output, { normalize: false, tailPadMs: 900 });
+      const rendered = await renderTimeline(scene, output, { normalize: false, tailPadMs: EPISODE_TAIL_PAD_MS });
       renderedScenes.push({ scene, output, rendered });
     }
     await writeFile(manifest, renderedScenes.map(({ output }) => `file '${output.replaceAll("'", "'\\''")}'`).join('\n'));
@@ -320,13 +423,54 @@ export async function exportProjectTimeline({ project, targetLufs = -16, onProgr
     const output = path.join(EXPORT_DIR, `${safeId(project.id)}-${safeName}-整集.mp3`);
     await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', manifest, '-af', `loudnorm=I=${targetLufs}:TP=-1:LRA=11,alimiter=limit=0.95`, '-ar', '48000', '-ac', '2', '-codec:a', 'libmp3lame', '-b:a', '192k', output]);
     const durationMs = renderedScenes.reduce((sum, item) => sum + item.rendered.durationMs, 0);
-    return { url: `/media/exports/${path.basename(output)}`, name: path.basename(output), durationMs, sceneCount: renderedScenes.length, trackCount: renderedScenes.reduce((sum, item) => sum + item.rendered.tracks.length, 0) };
+    const { scenes, segments } = episodeLayout(renderedScenes.map(({ scene, rendered }) => ({ scene, rendered })));
+    const loudness = await measureLoudness(output);
+    return { url: `/media/exports/${path.basename(output)}`, name: path.basename(output), durationMs, sceneCount: renderedScenes.length, trackCount: renderedScenes.reduce((sum, item) => sum + item.rendered.tracks.length, 0), scenes, segments, missingLineIds: renderedScenes.flatMap((item) => item.rendered.missing), targetLufs, ...loudness };
   } finally {
     // Per-scene intermediate WAVs and the concat manifest are only inputs to
     // the final encode; never leave them behind.
     await unlink(manifest).catch(() => {});
     await Promise.all(renderedScenes.map(({ output }) => unlink(output).catch(() => {})));
   }
+}
+
+const EPISODE_TAIL_PAD_MS = 900;
+
+// Scenes are concatenated back to back; each rendered scene already carries
+// its tail pad in durationMs, so scene N starts at the sum of 0..N-1.
+function episodeLayout(items) {
+  let cursor = 0;
+  const scenes = [];
+  const segments = [];
+  for (const { scene, rendered } of items) {
+    const sceneSegments = timelineSegments(rendered, { sceneId: scene.id, offsetMs: cursor });
+    scenes.push({ sceneId: scene.id, title: scene.title || '', startMs: cursor, endMs: cursor + rendered.durationMs, durationMs: rendered.durationMs });
+    segments.push(...sceneSegments);
+    cursor += rendered.durationMs;
+  }
+  return { scenes, segments, durationMs: cursor };
+}
+
+/**
+ * The episode timeline without rendering: same layout as exportProjectTimeline
+ * (ffprobe for durations only). Scenes with no usable dialogue are skipped,
+ * as the export skips them; a scene whose timeline can't be resolved is
+ * reported in skippedScenes with the reason.
+ */
+export async function resolveProjectTimeline(project) {
+  const items = [];
+  const missingLineIds = [];
+  const skippedScenes = [];
+  for (const scene of project.state?.scenes || []) {
+    if (!scene.lines?.some((line) => line.type === 'dialogue' && line.audioUrl)) { skippedScenes.push({ sceneId: scene.id, reason: 'NO_DIALOGUE_AUDIO' }); continue; }
+    try {
+      const resolved = await resolveSceneTimeline(scene);
+      items.push({ scene, rendered: { ...resolved, durationMs: Math.round(resolved.totalDuration * 1000 + EPISODE_TAIL_PAD_MS) } });
+      missingLineIds.push(...resolved.missing);
+    } catch (error) { skippedScenes.push({ sceneId: scene.id, reason: 'TIMELINE_INVALID', message: error.message }); }
+  }
+  const layout = episodeLayout(items);
+  return { ...layout, missingLineIds, skippedScenes };
 }
 
 export const runtimePaths = { MEDIA_DIR, EXPORT_DIR };

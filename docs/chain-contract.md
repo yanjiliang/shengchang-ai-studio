@@ -28,8 +28,10 @@ stale 计数（预检 / 一键 / 时间线 / lastExport）一律**照原样显�
 
 ## 2. 只在前端的功能
 
-- 文本模型「已连通」标记存在 localStorage（服务端没有 `llmVerified`）。没连通时导入被拦下：
-  「文本模型还没连通，先去设置里测试一下」+「去设置」。建议后端提供 `llmVerified`（见 §9）。
+- 小说文件解析只在前端：TXT / EPUB / DOCX / Markdown / HTML 提取成纯文本后仍走 `POST /api/projects/:p/analyze`。TXT 依次按 BOM、严格 UTF-8、GB18030 解码；EPUB 按 OPF spine 顺序读 XHTML，优先用 nav/NCX 目录补章节标题。服务端只收 text，不收原文件。文本模型是唯一的拆解路径：没配置或测试不通过时导入会被拦下，不再有规则拆解兜底。
+- 整本导入：前端按章节标题拆章后，先 `POST /api/projects/:p/book-imports` 保存整本章节（服务端按章节文本哈希去重），再对选中的章节调用 `POST /api/book-imports/:id/chapters/:index/import`。服务端从 `book_chapters` 读取正文并逐章拆解；第一章按选择用 `appendScenes: false`（替换）或 `true`（追加），后续章节一律追加。追加模式按 id/姓名复用已有角色（场景 speakerId 跟着改）、保留未在本章出现的旧角色，并把 sourceText 累积起来。任务成功后写回 `imported_at`；已导入章节再次导入返回 409 `BOOK_CHAPTER_ALREADY_IMPORTED`，有已导入章节的书只能追加（`BOOK_IMPORT_APPEND_ONLY`）。
+- 导入记录：`GET /api/projects/:p/book-imports` 列出进度，`GET/DELETE /api/book-imports/:id` 读取/删除。点「导入小说」时列出保存过的书和进度，可直接继续，不用重新选文件；已完成的记录可删除（不删除已生成的场景）。
+- 文本模型「已连通」标记存在 localStorage（服务端没有 `llmVerified`）。没连通时导入被拦下：「文本模型还没连通，先去设置里测试一下」+「去设置」；不再有规则拆解兜底。建议后端提供 `llmVerified`（见 §9）。
 - 「已切到豆包，需要确认一次」的标记在 localStorage，只作用于一键生成。
 - 排队文案：progress 为 0 显示「排队中」，有 `queuePosition` 时「排队中，前面还有 N 句」。
 

@@ -632,7 +632,8 @@ components:
         engineTimeoutMs: { type: object, additionalProperties: { type: integer } }
         llmEndpoint: { type: string, description: 'base URL（…/v1）或完整 …/chat/completions', example: 'http://127.0.0.1:11434/v1' }
         llmModel: { type: string }
-        llmTimeoutMs: { type: integer, minimum: 10000, maximum: 1800000, default: 180000 }
+        llmTimeoutMs: { type: integer, minimum: 10000, maximum: 1800000, default: 600000 }
+        llmChunkChars: { type: integer, minimum: 2000, maximum: 24000, default: 6000 }
         llmApiKeyRequired: { type: boolean, description: '只有火山方舟（*.volces.com）为 true' }
         accessKey: { type: string, const: '', description: '密钥永不回传（llmApiKey、sfxAccessKey 同样恒为空串）' }
         hasAccessKey: { type: boolean }

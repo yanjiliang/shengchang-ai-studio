@@ -15,7 +15,7 @@
 
 ShengChang turns a novel chapter into a finished radio-drama episode: scene/line breakdown → per-character voice mapping → directed TTS (emotion / subtext / intensity / distance folded into one voice instruction) → FFmpeg mix desk with sidechain ducking → loudness-normalized MP3.
 
-**Zero-key first run.** A fresh install ships with a sample project — a condensed, direction-rich excerpt from *Journey to the West* (Chapter 27, public domain) — and defaults to the offline demo engine. Clone, install, run, and the full pipeline (一键成片 one-click episode) works end-to-end with placeholder tones: no API key, no signup, no cost. The plumbing is real; only the voice is a placeholder. Real voices come from a Breeze TTS service running on your own machine (default `http://127.0.0.1:4180`; you download the weights yourself, and their license is non-commercial only); pasting your own novel works without any key via the rule-based breakdown (tagged for manual review), or with a text model you configure yourself (any OpenAI-compatible endpoint; there is no default provider) for full understanding. Doubao (Volcengine) TTS is supported as an optional cloud engine.
+**Zero-key first run.** A fresh install ships with a sample project — a condensed, direction-rich excerpt from *Journey to the West* (Chapter 27, public domain) — and defaults to the offline demo engine. Clone, install, run, and the full pipeline (一键成片 one-click episode) works end-to-end with placeholder tones: no API key, no signup, no cost. The plumbing is real; only the voice is a placeholder. Real voices come from a Breeze TTS service running on your own machine (default `http://127.0.0.1:4180`; you download the weights yourself, and their license is non-commercial only). Importing your own novel (TXT / EPUB / DOCX / Markdown / HTML) **requires a text model** you configure yourself (any OpenAI-compatible endpoint; there is no default provider): the sample project works zero-key, but text-model analysis does not fall back to a rule-based breakdown. Doubao (Volcengine) TTS is supported as an optional cloud engine.
 
 ```bash
 # Requirements: Node.js 22.5+, FFmpeg + ffprobe on PATH
@@ -208,11 +208,11 @@ npm run test:e2e  # 沙箱端到端：真实起服务、走完生成/一键成�
 | 能力 | 无任何密钥（演示引擎） | 配置文本模型 | 接上本机 Breeze |
 |------|-----------|-------------|-------------|
 | 示例项目一键成片 | ✅（占位音） | — | ✅ 真实语音 |
-| 导入自己的小说 | ✅ 规则拆解（建议人工校对角色归属） | ✅ 语义拆解 | — |
+| 导入自己的小说 | ❌（必须先配置文本模型） | ✅ 语义拆解 | ❌（Breeze 只管配音） |
 | 生成真实语音 | ❌ | ❌ | ✅ |
 | 方向实验室对比 | ✅（占位音） | — | ✅ |
 
-离线演示引擎的定位：链路是真的，声音是假的。设置页会在演示引擎激活时提示。真实语音的主力是本机 Breeze（不需要云端 Key）；豆包语音和自定义 HTTP 是可选的另外两种引擎。
+离线演示引擎的定位：链路是真的，声音是假的。设置页会在演示引擎激活时提示。真实语音的主力是本机 Breeze（不需要云端 Key）；豆包语音和自定义 HTTP 是可选的另外两种引擎。小说拆解和配音是两条独立的配置：**导入自己的小说必须先配好文本模型；Breeze / 豆包只负责配音**。
 
 ## 模型配置
 
@@ -223,13 +223,19 @@ npm run test:e2e  # 沙箱端到端：真实起服务、走完生成/一键成�
 - 自定义 HTTP：使用 JSON 请求头和请求体模板连接其他服务。请求体模板支持 `{{text}}`、`{{voiceId}}`、`{{emotion}}`、`{{emotionScale}}`、`{{speed}}`、`{{model}}`、`{{subtext}}`、`{{distance}}` 等变量。
 - 开发测试引擎（demo）：只用于离线验证生成、回放和导出链路，不用于正式制作。
 
-小说拆解使用 OpenAI Chat Completions 兼容接口（出厂不预填任何服务商，Base URL、Key 和模型名都由你在设置页填写；可以接 DeepSeek / OpenAI 等云端服务，或本机的 Ollama、LM Studio、vLLM、llama.cpp server——地址可以只填 base URL，如 `http://127.0.0.1:11434/v1`，本地服务的 API Key 可留空；不支持 `response_format: json_object` 的服务会自动降级重试）。拆解结果里每个角色可带一句可选的 `voiceDescription`（给 Breeze 音色设计用的声音描述）。在设置页填写 Base URL、API Key（如需要）和模型名称后，可用“测试连接”发起一次很短的真实请求验证（20 秒超时，结果区分 Key 错误 / 地址或模型名错误 / 连不上 / 其他上游错误，见 `docs/openapi.yaml` 的 `TestLlmResult`）。API Key 只保存在本机，不会回传给浏览器（界面只显示末 3 位，如 `···abc`）；更换地址后需要重新填写 Key，已保存的 Key 不会发给新地址——语音合成和音效生成的凭证、以及自定义请求头里的密钥也按各自的接口地址遵循同一规则。语音引擎（Demo / 豆包 / Breeze / 自定义）的地址、Key 和参数按引擎分别保存（配置文件里的 `ttsProviders`），切换引擎不会清空其他引擎的设置，切回去即可继续用；上面的“换地址清 Key”规则只在同一个引擎内生效。旧版本的配置第一次读取时会自动迁移，不丢数据。长篇原文按段落分块处理（兼容单换行分段的网文格式），并携带已经确认的角色表来保持人物 ID 连续。拆解的输出是体量很大的 JSON（每句台词都带完整导演参数），请求会显式要求 8192 token 输出——请选择输出上限不低于它的模型；若任务报“输出被截断”，请换用输出上限更大的模型，或分章导入减少单段篇幅。
+小说拆解使用 OpenAI Chat Completions 兼容接口（出厂不预填任何服务商，Base URL、Key 和模型名都由你在设置页填写；可以接 DeepSeek / OpenAI 等云端服务，或本机的 Ollama、LM Studio、vLLM、llama.cpp server——地址可以只填 base URL，如 `http://127.0.0.1:11434/v1`，本地服务的 API Key 可留空；不支持 `response_format: json_object` 的服务会自动降级重试）。拆解结果里每个角色可带一句可选的 `voiceDescription`（给 Breeze 音色设计用的声音描述）；打开角色音色设计时，这句描述会预填到描述框，可以直接改。在设置页填写 Base URL、API Key（如需要）和模型名称后，可用“测试连接”发起一次很短的真实请求验证（20 秒超时，结果区分 Key 错误 / 地址或模型名错误 / 连不上 / 其他上游错误，见 `docs/openapi.yaml` 的 `TestLlmResult`）。API Key 只保存在本机，不会回传给浏览器（界面只显示末 3 位，如 `···abc`）；更换地址后需要重新填写 Key，已保存的 Key 不会发给新地址——语音合成和音效生成的凭证、以及自定义请求头里的密钥也按各自的接口地址遵循同一规则。语音引擎（Demo / 豆包 / Breeze / 自定义）的地址、Key 和参数按引擎分别保存（配置文件里的 `ttsProviders`），切换引擎不会清空其他引擎的设置，切回去即可继续用；上面的“换地址清 Key”规则只在同一个引擎内生效。旧版本的配置第一次读取时会自动迁移，不丢数据。长篇原文按段落分块处理（兼容单换行分段的网文格式），并携带已经确认的角色表来保持人物 ID 连续。拆解的输出是体量很大的 JSON（每句台词都带完整导演参数），请求会显式要求 8192 token 输出——请选择输出上限不低于它的模型；若任务报“输出被截断”，请换用输出上限更大的模型，或分章导入减少单段篇幅。
 
-未配置文本模型时，导入小说会自动退回到规则拆解：按章节标题（或固定段落数）切分场景，用引号与说话人动词（“X说：「…」”，含英文直引号）推断对白归属，代词跟随最近说话人，无法归属的文本一律归为旁白。规则拆解的结果会在场景侧栏标记“规则拆解 · 建议人工校对”，角色归属与场景切分可在工作台内手动修正。
+未配置文本模型时不能导入小说：点「导入小说」会提示先去设置里填写并测试连接，不再退回规则拆解。长篇原文按段落分块处理（兼容单换行分段的网文格式），默认每 6000 字分一块（`llmChunkChars`，可调 2000–24000），并携带已经确认的角色表来保持人物 ID 连续。拆解输出是体量很大的 JSON（每句台词都带完整导演参数），请求会显式要求 16k token 输出——请选择输出上限不低于它的模型；若任务报“输出被截断”，请调小 `llmChunkChars`、换用输出上限更大的模型，或分章导入减少单段篇幅。单次文本模型请求默认超时 10 分钟（`llmTimeoutMs`，可在配置文件里调到 10 秒–30 分钟）；超时不会自动重试。
+
+**导入格式**：TXT（UTF-8 / GBK / GB18030 / 带 BOM 的 UTF-16）、EPUB（按 spine 顺序读正文，优先用目录补章节标题）、DOCX（`word/document.xml` 段落）、Markdown、HTML。文件在前端解析成纯文本后再交给服务端；原文件不上传、不落库。PDF、MOBI/AZW3 暂不支持。原始文件上限 100MB。
+
+**整本导入**：导入前会按章节标题（EPUB 按 spine + 目录）拆章，弹窗里可以全选、按章勾选，并选择「追加到现有场景」或「替换现有场景」。每章单独提交、单独拆解，已完成的章节会保留；单章上限 200 万字符，整本可以超过这个数，不需要先用外部工具拆文件。
+
+**导入记录会保存**：章节文本和每章进度存在本地数据库里。下次点「导入小说」会列出已保存的书和进度，可以直接「继续」，不用重新选文件；已导入的章节不会重复拆解。已全部导入的书显示「已完成」，记录可以删除，删除记录不会删除已经生成的场景。
 
 角色音色的配置方式：
 
-1. 本机 Breeze：为角色上传一段 5–30 秒的参考录音做声音克隆（5–10 秒可用但会提示效果可能不稳定，推荐 10–30 秒）；或用 Breeze 音色设计按声音描述生成试听，选中后锁定。
+1. 本机 Breeze：为角色上传一段 5–30 秒的参考录音做声音克隆（5–10 秒可用但会提示效果可能不稳定，推荐 10–30 秒）；或用 Breeze 音色设计按声音描述生成试听，选中后锁定。描述会先用拆解结果里的 `voiceDescription` 预填，可以直接改。
 2. 在角色音色页直接为角色填写已有的 `voice_id` / `speaker_id`（豆包语音、自定义 HTTP）。
 3. 可选：豆包音色设计接口——填写基础 `speaker_id` 和声音描述，创建并锁定新的 `speaker_id`（仅新版豆包语音 API Key 连接支持）。
 
@@ -255,7 +261,7 @@ npm run test:e2e  # 沙箱端到端：真实起服务、走完生成/一键成�
 ## 制作流程
 
 0. （可选）在制作中心点「一键成片」：自动拆解 -> 预设音色映射 -> 批量生成 -> 音频体检 -> 整集导出，一次跑完。启动前会显示预估（句数、字数、缓存命中）；阶段进度与注意事项在任务历史查看，失败可从断点重试。
-1. 导入 TXT 小说自动拆解，或手动新建场景。
+1. 导入 TXT / EPUB / DOCX / Markdown / HTML 小说：整本会先拆章，选择章节后逐章拆解；也可以手动新建场景。
 2. 在角色音色页创建或映射每个角色的 `voice_id`。
 3. 调整场景、台词、潜台词、情绪、语速和空间参数（台词改动后已有音频会标记“待重生成”，不会被静默删除）。选中对白后可在「方向实验室」用同一句台词试听三种演法，应用后再生成会直接命中缓存。
 4. 生成单句、整个场景或仅重新生成过期台词，音频自动写回台词事件。

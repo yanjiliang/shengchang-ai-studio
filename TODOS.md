@@ -7,15 +7,13 @@ direction A/B lab, GitHub Actions, Docker, server estimate endpoint with cache-h
 prediction, attention-list deep links, stage-checklist progress panel, asset-file
 deletion policy, media-store/story-analyzer golden-file tests.
 
-## TODO-1: Offline rule-based 拆解 fallback — SHIPPED 2026-08-18
+## TODO-1: Offline rule-based 拆解 fallback — REMOVED 2026-11-03
 
-Implemented in `server/story-analyzer.js` (`heuristicAnalysis`): chapter-heading
-splitting with fixed-paragraph regrouping fallback, quote + speech-verb
-attribution (lazy name capture, pronoun -> last speaker, filler stripping),
-unattributed speech -> narrator, synthesis-length narration chunking. Engages
-only when `validateLlmConfig` fails; results carry `breakdown: 'heuristic'`,
-persisted to project state, shown as a sidebar badge and labeled in the task
-message. Covered by `server/story-analyzer.test.js` and e2e check #11.
+The rule-based fallback was removed by product decision: text-model analysis is
+the only breakdown path. `heuristicAnalysis`, its golden fixture, the
+`forceHeuristic` switch, and the chapter-picker option are gone. Importing a
+novel without a configured text model now fails with `LLM_CONFIG_INVALID`.
+Chapter splitting (TXT/EPUB/DOCX/Markdown/HTML) remains.
 
 ## TODO-2: Per-line continue-past-errors - SHIPPED 2026-08-18
 

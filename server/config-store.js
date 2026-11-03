@@ -73,8 +73,10 @@ export function sanitizeConfig(input = {}) {
     llmEndpoint: String(config.llmEndpoint ?? DEFAULT_CONFIG.llmEndpoint).trim(),
     llmApiKey: String(config.llmApiKey || ''),
     llmModel: String(config.llmModel || ''),
-    // 本地大模型拆一段 24k 字可能很慢：10 秒–30 分钟，默认 180 秒。
-    llmTimeoutMs: Number.isInteger(Number(config.llmTimeoutMs)) && Number(config.llmTimeoutMs) >= 10_000 && Number(config.llmTimeoutMs) <= 1_800_000 ? Number(config.llmTimeoutMs) : 180_000,
+    // 本地大模型拆一段 24k 字可能很慢：10 秒–30 分钟，默认 10 分钟。
+    llmTimeoutMs: Number.isInteger(Number(config.llmTimeoutMs)) && Number(config.llmTimeoutMs) >= 10_000 && Number(config.llmTimeoutMs) <= 1_800_000 ? Number(config.llmTimeoutMs) : 600_000,
+    // 每块原文默认 6000 字：即使模型输出上限只有 8k token，也能完整返回 JSON。
+    llmChunkChars: Number.isInteger(Number(config.llmChunkChars)) && Number(config.llmChunkChars) >= 2_000 && Number(config.llmChunkChars) <= 24_000 ? Number(config.llmChunkChars) : 6_000,
     llmSystemPrompt: String(config.llmSystemPrompt || DEFAULT_CONFIG.llmSystemPrompt),
     sfxProvider: ['demo', 'custom'].includes(config.sfxProvider) ? config.sfxProvider : 'demo',
     sfxEndpoint: String(config.sfxEndpoint || ''),

@@ -282,7 +282,7 @@ describe('runOneClickPipeline 阶段断点', () => {
     const project = createProject({ name: '重拆', sourceText: '“走吧。”唐僧说。', state: { characters: [{ id: 'old-ts', name: '唐僧', gender: '男', genderSource: 'user', age: '青年' }], scenes: [], voiceMap: {} } });
     const task = createPersistentTask({ kind: 'one-click', projectId: project.id, payload: { completedStages: ['音色', '生成'] } });
     await runOneClickPipeline(task, { provider: 'demo' }, {
-      analyze: async () => ({ name: '重拆', genre: '', breakdown: 'heuristic', characters: [{ id: 'narrator', name: '旁白', role: '叙事者', gender: '未知', age: '未知' }, { id: '唐僧', name: '唐僧', role: '角色', gender: '女', age: '未知' }], scenes: [{ id: 's1', lines: [{ id: 'l1', type: 'dialogue', speaker: '唐僧', speakerId: '唐僧', text: '走吧。' }] }] }),
+      analyze: async () => ({ name: '重拆', genre: '', breakdown: 'llm', characters: [{ id: 'narrator', name: '旁白', role: '叙事者', gender: '未知', age: '未知' }, { id: '唐僧', name: '唐僧', role: '角色', gender: '女', age: '未知' }], scenes: [{ id: 's1', lines: [{ id: 'l1', type: 'dialogue', speaker: '唐僧', speakerId: '唐僧', text: '走吧。' }] }] }),
       inspectMedia: async () => ({ scenes: [], projectDurationMs: 0 }),
       exportTimeline: async () => ({ url: '/media/exports/x.mp3', name: 'x.mp3', sceneCount: 1, durationMs: 0 }),
     });

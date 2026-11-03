@@ -51,6 +51,31 @@ database.exec(`
     voice_id TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS book_imports (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    source_hash TEXT NOT NULL,
+    filename TEXT NOT NULL DEFAULT '',
+    format TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(project_id, source_hash),
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_book_imports_project ON book_imports(project_id, updated_at);
+  CREATE TABLE IF NOT EXISTS book_chapters (
+    book_id TEXT NOT NULL,
+    chapter_index INTEGER NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL,
+    char_count INTEGER NOT NULL,
+    imported_at INTEGER,
+    imported_scene_count INTEGER NOT NULL DEFAULT 0,
+    task_id TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(book_id, chapter_index),
+    FOREIGN KEY(book_id) REFERENCES book_imports(id) ON DELETE CASCADE
+  );
 `);
 // 0005：created_at 只表示“这条缓存何时生成”；命中时只更新 last_used_at（LRU 用）。
 if (!database.prepare('PRAGMA table_info(audio_cache)').all().some((column) => column.name === 'last_used_at')) {
@@ -239,6 +264,105 @@ export function listAudioCache() {
 
 export function deleteAudioCache(contentHash) {
   database.prepare('DELETE FROM audio_cache WHERE content_hash=?').run(contentHash);
+}
+
+// --- 书籍导入（整本小说的章节数据与导入进度）--------------------------------
+// 章节文本存在 book_chapters；状态（imported_at / 错误）也在这里。
+// 同一项目 + 同一本原文（source_hash）只建一条，重复导入直接复用已有进度。
+
+function bookRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    sourceHash: row.source_hash,
+    filename: row.filename,
+    format: row.format,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function bookChapterSummary(row) {
+  return {
+    index: row.chapter_index,
+    title: row.title,
+    charCount: row.char_count,
+    importedAt: row.imported_at ?? null,
+    importedSceneCount: row.imported_scene_count || 0,
+    taskId: row.task_id || '',
+    lastError: row.last_error || '',
+  };
+}
+
+export function getBookImport(id) {
+  const book = bookRow(database.prepare('SELECT * FROM book_imports WHERE id=?').get(id));
+  if (!book) return null;
+  const chapters = database.prepare('SELECT chapter_index,title,char_count,imported_at,imported_scene_count,task_id,last_error FROM book_chapters WHERE book_id=? ORDER BY chapter_index').all(id).map(bookChapterSummary);
+  const importedCount = chapters.filter((chapter) => chapter.importedAt).length;
+  return { ...book, chapterCount: chapters.length, importedCount, remainingCount: chapters.length - importedCount, chapters };
+}
+
+export function listBookImports(projectId) {
+  return database.prepare('SELECT * FROM book_imports WHERE project_id=? ORDER BY updated_at DESC').all(projectId).map((row) => {
+    const book = bookRow(row);
+    const stats = database.prepare('SELECT COUNT(*) AS total, SUM(CASE WHEN imported_at IS NOT NULL THEN 1 ELSE 0 END) AS imported FROM book_chapters WHERE book_id=?').get(book.id);
+    const chapterCount = Number(stats.total) || 0;
+    const importedCount = Number(stats.imported) || 0;
+    return { ...book, chapterCount, importedCount, remainingCount: chapterCount - importedCount };
+  });
+}
+
+export function findBookImport(projectId, sourceHash) {
+  const row = database.prepare('SELECT id FROM book_imports WHERE project_id=? AND source_hash=?').get(projectId, sourceHash);
+  return row ? getBookImport(row.id) : null;
+}
+
+export function createBookImport({ projectId, sourceHash, filename = '', format = '', chapters = [] }) {
+  const existing = findBookImport(projectId, sourceHash);
+  if (existing) {
+    database.prepare('UPDATE book_imports SET updated_at=? WHERE id=?').run(Date.now(), existing.id);
+    return getBookImport(existing.id);
+  }
+  const id = randomUUID();
+  const now = Date.now();
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    database.prepare('INSERT INTO book_imports(id,project_id,source_hash,filename,format,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').run(id, projectId, sourceHash, String(filename || ''), String(format || ''), now, now);
+    const insert = database.prepare('INSERT INTO book_chapters(book_id,chapter_index,title,text,char_count) VALUES(?,?,?,?,?)');
+    chapters.forEach((chapter, index) => {
+      const text = String(chapter.text || '');
+      insert.run(id, index, String(chapter.title || ''), text, text.length);
+    });
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
+  return getBookImport(id);
+}
+
+export function getBookChapter(bookId, index) {
+  const row = database.prepare('SELECT chapter_index,title,text,char_count,imported_at,imported_scene_count,task_id,last_error FROM book_chapters WHERE book_id=? AND chapter_index=?').get(bookId, index);
+  if (!row) return null;
+  return { ...bookChapterSummary(row), text: row.text };
+}
+
+export function markBookChapterImported(bookId, index, { taskId = '', sceneCount = 0 } = {}) {
+  database.prepare('UPDATE book_chapters SET imported_at=?, imported_scene_count=?, task_id=?, last_error=? WHERE book_id=? AND chapter_index=?')
+    .run(Date.now(), Number(sceneCount) || 0, String(taskId || ''), '', bookId, index);
+  database.prepare('UPDATE book_imports SET updated_at=? WHERE id=?').run(Date.now(), bookId);
+}
+
+export function markBookChapterFailed(bookId, index, error) {
+  database.prepare('UPDATE book_chapters SET last_error=?, task_id=? WHERE book_id=? AND chapter_index=?')
+    .run(String(error || '').slice(0, 500), '', bookId, index);
+  database.prepare('UPDATE book_imports SET updated_at=? WHERE id=?').run(Date.now(), bookId);
+}
+
+// 删记录不删已导入的场景；用户只是不想再看到这本书的导入进度。
+export function deleteBookImport(id) {
+  return Boolean(database.prepare('DELETE FROM book_imports WHERE id=?').run(id).changes);
 }
 
 // Every field that can change the synthesized audio must participate here;

@@ -83,8 +83,9 @@ function TakeCard({ take, draft, referenceText, picked, nameOf, onPick, onRetry,
 }
 
 function DescribeTab({ character, draft, actions, canGenerate, generating, testLines, nameOf, onLockTake, focusToken }) {
-  // 自动设计没成功时保留 AI 写的描述；用户一改，「由 AI 根据原文写的描述」的说明就去掉。
-  const aiDescription = character.voiceDraft?.aiDescription || '';
+  // 拆解时文本模型已经给每个角色写了 voiceDescription；音色设计打开时先带出来，
+  // 用户一改就按用户版本生成。自动设计失败留下的 aiDescription 优先级更高。
+  const aiDescription = (character.voiceDraft?.aiDescription || character.voiceDescription || '').slice(0, 200);
   const edited = Boolean(draft.description) || draft.edited;
   const description = draft.description || (draft.edited ? '' : aiDescription);
   const fromAi = Boolean(aiDescription) && !edited;

@@ -48,7 +48,7 @@ describe('重新拆解合并角色', () => {
     assert.deepEqual([merged[0].id, merged[0].gender, merged[0].age], ['老翁', '男', '老年']);
   });
 
-  test('规则拆解（无性别字段）不会抹掉用户值', () => {
+  test('重新拆解（无性别字段）不会抹掉用户值', () => {
     const merged = mergeAnalyzedCharacters([{ id: '唐僧', name: '唐僧', gender: '男', genderSource: 'user' }], [{ id: '唐僧', name: '唐僧', role: '角色' }]);
     assert.equal(merged[0].gender, '男');
   });

@@ -8,7 +8,7 @@ import { after, before, describe, test } from 'node:test';
 // whole module at a scratch directory before importing it.
 const scratch = mkdtempSync(path.join(tmpdir(), 'shengchang-test-'));
 process.env.SHENGCHANG_RUNTIME_DIR = scratch;
-const { archiveProject, createProject, getProject, updateProject } = await import('./database.js');
+const { archiveProject, createBookImport, createProject, deleteBookImport, getBookChapter, getBookImport, getProject, listBookImports, markBookChapterFailed, markBookChapterImported, updateProject } = await import('./database.js');
 
 const sceneState = (lines) => ({ scenes: [{ id: 'scene-1', title: '测试场景', lines }], assets: [], characters: [] });
 const dialogue = (id, text) => ({ id, type: 'dialogue', speaker: '旁白', speakerId: 'narrator', text });
@@ -88,5 +88,34 @@ describe('项目状态写入', () => {
     const lines = getProject(item.id).state.scenes[0].lines;
     assert.equal(lines.length, 1, '被删除的台词不应复活');
     assert.equal(lines[0].audioUrl, '/media/a.wav');
+  });
+
+  test('书籍导入：同一原文只建一条记录，章节进度可保存/恢复', () => {
+    const item = project([]);
+    const chapters = [{ title: '第一章', text: '第一章\n正文一' }, { title: '第二章', text: '第二章\n正文二' }];
+    const book = createBookImport({ projectId: item.id, sourceHash: 'hash-1', filename: 'book.epub', format: 'epub', chapters });
+    assert.equal(book.chapterCount, 2);
+    assert.equal(book.importedCount, 0);
+    assert.equal(book.remainingCount, 2);
+    assert.equal(getBookChapter(book.id, 1).text, '第二章\n正文二');
+
+    const again = createBookImport({ projectId: item.id, sourceHash: 'hash-1', filename: 'book.epub', format: 'epub', chapters });
+    assert.equal(again.id, book.id, '同一原文不应建第二条记录');
+
+    markBookChapterImported(book.id, 0, { taskId: 'task-1', sceneCount: 3 });
+    const afterFirst = getBookImport(book.id);
+    assert.equal(afterFirst.importedCount, 1);
+    assert.equal(afterFirst.remainingCount, 1);
+    assert.ok(afterFirst.chapters[0].importedAt > 0);
+    assert.equal(afterFirst.chapters[0].importedSceneCount, 3);
+
+    markBookChapterFailed(book.id, 1, '模型超时');
+    assert.equal(getBookImport(book.id).chapters[1].lastError, '模型超时');
+    markBookChapterImported(book.id, 1, { sceneCount: 2 });
+    assert.equal(getBookImport(book.id).chapters[1].lastError, '', '成功导入后清掉上次错误');
+    assert.equal(listBookImports(item.id)[0].remainingCount, 0);
+
+    assert.equal(deleteBookImport(book.id), true);
+    assert.equal(getBookImport(book.id), null);
   });
 });

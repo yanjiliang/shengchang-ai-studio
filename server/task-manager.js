@@ -1,8 +1,9 @@
 import { access, stat, unlink, writeFile } from 'node:fs/promises';
 import { mergeAnalyzedCharacters } from './character-meta.js';
+import { mergeAppendedAnalysis } from './append-analysis.js';
 import path from 'node:path';
 import { readConfig } from './config-store.js';
-import { audioContentHash, cacheAudio, createPersistentTask, deleteAudioCache, findCachedAudio, getPersistentTask, getProject, listAudioCache, listProjects, touchCachedAudio, nextQueuedTask, requestTaskCancellation, soundContentHash, updatePersistentTask, updateProject } from './database.js';
+import { audioContentHash, cacheAudio, createPersistentTask, deleteAudioCache, findCachedAudio, getPersistentTask, getProject, listAudioCache, listProjects, markBookChapterFailed, markBookChapterImported, nextQueuedTask, requestTaskCancellation, soundContentHash, touchCachedAudio, updatePersistentTask, updateProject } from './database.js';
 import { exportProjectTimeline, runtimePaths, saveMedia } from './media-store.js';
 import { synthesize, synthesizeSound } from './model-adapters.js';
 import { analyzeNovel } from './story-analyzer.js';
@@ -338,6 +339,26 @@ async function runGenerationTask(task, config) {
   }
 }
 
+// 逐章导入时给场景名带上章节标题：文本模型可能把一章拆成几个场景，
+// 标题只写“山门/夜雨”时，侧栏里看不出属于哪一章。章节标题可能带卷名前缀，
+// 这里只取卷名部分，避免“章节名 · 章节名”重复。
+function labelChapterScenes(scenes, chapterTitle) {
+  const prefix = String(chapterTitle || '').trim();
+  if (!prefix || prefix === '全文') return scenes;
+  // 章节标题可能是“卷名 · 章节名”；场景名只需要卷名做前缀，避免“章节名 · 章节名”重复。
+  const volume = prefix.includes(' · ') ? prefix.split(' · ')[0].trim() : '';
+  return scenes.map((scene) => {
+    const title = String(scene.title || '').trim();
+    if (!title) return { ...scene, title: prefix };
+    if (volume) {
+      if (title.includes(volume)) return scene;
+      return { ...scene, title: `${volume} · ${title}` };
+    }
+    if (title === prefix || title.startsWith(prefix) || prefix.startsWith(title)) return scene;
+    return { ...scene, title: `${prefix} · ${title}` };
+  });
+}
+
 async function runTask(task) {
   const config = await readConfig();
   if (task.kind === 'voice-design') return runVoiceDesignTask(task, config);
@@ -422,7 +443,10 @@ async function runTask(task) {
   if (task.kind === 'analyze-novel') {
     updatePersistentTask(task.id, { status: 'running', progress: 8, message: '正在理解人物、场景与剧情结构', startedAt: Date.now(), error: '' });
     try {
-      const analyzed = await analyzeNovel(config, task.payload, {
+      const before = getProject(task.projectId);
+      if (!before) throw new Error('分析目标项目不存在');
+      const append = Boolean(task.payload.appendScenes);
+      const analyzed = await analyzeNovel(config, { ...task.payload, seedCharacters: append ? before.state?.characters || [] : [] }, {
         shouldCancel: () => Boolean(getPersistentTask(task.id)?.cancelRequested),
         onProgress: ({ current, total, progress }) => updatePersistentTask(task.id, { progress, message: `正在拆解原文 ${current} / ${total} 段` }),
         // Chunk checkpoints land in the task payload; retryTask copies the
@@ -430,12 +454,34 @@ async function runTask(task) {
         // chunk instead of re-paying for every LLM call.
         resume: task.payload.resume,
         onCheckpoint: (checkpoint) => updatePersistentTask(task.id, { payload: { resume: checkpoint } }),
+        chunkChars: Number(config.llmChunkChars) || 6_000,
       });
       const project = getProject(task.projectId);
       if (!project) throw new Error('分析目标项目不存在');
-      updateProject(task.projectId, { name: analyzed.name, genre: analyzed.genre, sourceFilename: task.payload.filename, sourceText: task.payload.text, trustedAudio: true, state: { ...project.state, characters: mergeAnalyzedCharacters(project.state.characters, analyzed.characters), scenes: analyzed.scenes, assets: project.state.assets || [], breakdown: analyzed.breakdown } });
-      updatePersistentTask(task.id, { status: 'completed', progress: 100, message: `拆解完成${analyzed.breakdown === 'heuristic' ? '（未配置文本模型，规则拆解结果建议人工校对）' : ''}，共 ${analyzed.scenes.length} 个场景`, result: { sceneCount: analyzed.scenes.length, characterCount: analyzed.characters.length, breakdown: analyzed.breakdown }, completedAt: Date.now() });
+      let state;
+      let sourceText;
+      const chapterTitle = String(task.payload.chapterTitle || '').trim();
+      const renumber = (scenes) => scenes.map((scene, index) => ({ ...scene, number: String(index + 1).padStart(2, '0') }));
+      if (append) {
+        const merged = mergeAppendedAnalysis(project.state, analyzed);
+        const scenes = renumber([...(project.state.scenes || []), ...labelChapterScenes(merged.scenes, chapterTitle)]);
+        state = { ...project.state, characters: merged.characters, scenes, breakdown: analyzed.breakdown };
+        // 逐章导入时 sourceText 跟着累积，保证“查看小说原文”是完整的已导入内容。
+        sourceText = project.sourceText ? `${project.sourceText}\n\n${task.payload.text}` : task.payload.text;
+      } else {
+        state = { ...project.state, characters: mergeAnalyzedCharacters(project.state.characters, analyzed.characters), scenes: renumber(labelChapterScenes(analyzed.scenes, chapterTitle)), assets: project.state.assets || [], breakdown: analyzed.breakdown };
+        sourceText = task.payload.text;
+      }
+      updateProject(task.projectId, { name: analyzed.name, genre: analyzed.genre || project.genre, sourceFilename: task.payload.filename, sourceText, trustedAudio: true, state });
+      // 这本书的章节进度：只有项目写入成功后才标记已导入，失败可在导入记录里看到原因。
+      const bookId = String(task.payload.bookId || '');
+      const chapterIndex = Number.isInteger(task.payload.chapterIndex) ? task.payload.chapterIndex : null;
+      if (bookId && chapterIndex !== null) markBookChapterImported(bookId, chapterIndex, { taskId: task.id, sceneCount: analyzed.scenes.length });
+      updatePersistentTask(task.id, { status: 'completed', progress: 100, message: `拆解完成，共 ${analyzed.scenes.length} 个场景`, result: { sceneCount: analyzed.scenes.length, characterCount: analyzed.characters.length, breakdown: analyzed.breakdown, ...(bookId ? { bookId, chapterIndex, chapterTitle: task.payload.chapterTitle || '' } : {}) }, completedAt: Date.now() });
     } catch (error) {
+      const bookId = String(task.payload.bookId || '');
+      const chapterIndex = Number.isInteger(task.payload.chapterIndex) ? task.payload.chapterIndex : null;
+      if (bookId && chapterIndex !== null && error.code !== 'TASK_CANCELLED') markBookChapterFailed(bookId, chapterIndex, error.message);
       if (error.code === 'TASK_CANCELLED') updatePersistentTask(task.id, { status: 'cancelled', message: '小说拆解已取消', error: '', completedAt: Date.now() });
       else updatePersistentTask(task.id, { status: 'failed', message: '小说拆解失败', error: error.name === 'AbortError' ? '文本模型请求超时' : error.message, completedAt: Date.now() });
     }
@@ -479,7 +525,7 @@ export function enqueueGeneration(input) {
 }
 
 export function enqueueNovelAnalysis(input) {
-  const task = createPersistentTask({ kind: 'analyze-novel', projectId: input.projectId, payload: { text: input.text, filename: input.filename, name: input.name } });
+  const task = createPersistentTask({ kind: 'analyze-novel', projectId: input.projectId, payload: { text: input.text, filename: input.filename, name: input.name, appendScenes: Boolean(input.appendScenes), chapterTitle: String(input.chapterTitle || ''), bookId: String(input.bookId || ''), chapterIndex: Number.isInteger(input.chapterIndex) ? input.chapterIndex : null } });
   queueMicrotask(pumpQueue);
   return task;
 }
@@ -598,5 +644,9 @@ export function taskWithQueuePosition(task) {
   const waiting = task.kind === 'line-take' && task.status === 'running' && !(task.result?.events || []).some((event) => event.type === 'started');
   return { ...task, ...(waiting ? { status: 'queued', progress: 0, startedAt: null } : {}), queuePosition: queuePositionOf(task.id) };
 }
+
+// index.js 在所有模块加载完（包括 database.js 的 recoverInterruptedTasks）之后再踢一次队列，
+// 避免启动时 pump 先于任务恢复执行，恢复出来的任务一直排队等到下一次 enqueue。
+export function kickTaskQueue() { queueMicrotask(pumpQueue); }
 
 queueMicrotask(pumpQueue);

@@ -376,7 +376,7 @@ const GENDER_WORD = { 男: '男声', 女: '女声', male: '男声', female: '女
 const AGE_WORD = { 儿童: '童声', 少年: '少年', 青年: '青年', 中年: '中年', 老年: '老年', child: '童声', teen: '少年', young: '青年', middle: '中年', elder: '老年' };
 
 // 音色设计用的描述：优先拆解给出的 voiceDescription；否则用 性别/年龄 + 角色描述
-// 拼一句；规则拆解的占位描述不算。没有可用信息返回 ''。
+// 拼一句；旧版规则拆解的占位描述不算（老项目里可能还留着）。没有可用信息返回 ''。
 export function voiceDesignDescription(character) {
   const explicit = String(character?.voiceDescription || '').trim();
   if (explicit) return explicit.slice(0, 500);

@@ -89,8 +89,7 @@ function mergeAnalysis(target, result) {
 // .../chat/completions，也可以只填 base URL（如 http://127.0.0.1:11434/v1）。
 export { llmChatUrl };
 
-// API Key 只有托管服务需要；本地 OpenAI 兼容服务通常不校验，留空即可。方舟默认地址
-// 仍要求 Key（没填 Key 时走规则拆解，而不是打一个必然 401 的请求）。
+// API Key 只有托管服务需要；本地 OpenAI 兼容服务通常不校验，留空即可。方舟默认地址仍要求 Key。
 export function llmRequiresApiKey(endpoint) {
   try { return /(^|\.)volces\.com$/i.test(new URL(llmChatUrl(endpoint)).hostname); } catch { return true; }
 }
@@ -105,126 +104,6 @@ export function validateLlmConfig(config) {
   if (!url || !['http:', 'https:'].includes(url.protocol)) throw configInvalid('llmEndpoint', '地址格式不对，应以 http:// 或 https:// 开头');
   if (!config.llmApiKey && llmRequiresApiKey(config.llmEndpoint)) throw configInvalid('llmApiKey', '请填写 API Key（火山方舟必须填写）');
   if (!String(config.llmModel || '').trim()) throw configInvalid('llmModel', '请填写模型名');
-}
-
-// --- Offline rule-based fallback (TODO-1) -------------------------------
-// Engages only when no LLM is configured. Chinese dialogue attribution by
-// regex is genuinely lossy, so every output is tagged breakdown:'heuristic'
-// and the UI asks the user to review it - a wrong guess must be visible,
-// not silent.
-const CHAPTER_HEADING = /^(?:第[0-9一二三四五六七八九十百千两]+[章节卷回幕集部]|序章|楔子|引子|尾声|终章|后记|番外.{0,10}|chapter\s+\d+)/i;
-// Multi-char verbs first; bare 道/答/笑 etc. are deliberately absent - 道
-// alone false-positives on 知道 inside quoted text (caught by the golden run).
-const SPEECH_VERB = '(?:低声说|轻声说|沉声说|大声说|说道?|问道?|喊道?|叫道?|笑道?|答道|叹道?|骂道?|吼道?|催道|念叨|开口|接话|嘀咕|嘟囔|说|问|喊)';
-const SPEECH_ADVERB = '(?:轻声|低声|大声|沉声|冷冷|缓缓|急忙|连忙|忽然|突然|随即|接着|随后|笑着|叹了口气)?';
-// Lazy capture (min 1 char) so single-char pronouns resolve and the name
-// does not swallow the verb; the after-quote gap is separator-only so it
-// cannot eat into the name from the left.
-const SPEAKER_NAME = '([\\u4e00-\\u9fa5A-Za-z·]{1,12}?)';
-// ASCII double quotes are included alongside CJK quotes: many web novels use
-// straight quotes for dialogue, and without them every line lands on the
-// narrator. Straight quotes pair sequentially (first opens, second closes).
-const QUOTE_OPEN = '[「『“"]';
-const QUOTE_CLOSE = '[」』”"]';
-const QUOTE_PAIR = /[「『“"]([^「『“”」』"]{1,400})[」』”"]/g;
-const SPEAKER_BEFORE_QUOTE = new RegExp(SPEAKER_NAME + SPEECH_ADVERB + SPEECH_VERB + '[\\s:：,，、]*' + QUOTE_OPEN);
-const SPEAKER_AFTER_QUOTE = new RegExp(QUOTE_CLOSE + '[\\s,，、:：;；——-]*' + SPEAKER_NAME + SPEECH_ADVERB + SPEECH_VERB);
-const PRONOUN_SPEAKERS = new Set(['他', '她', '它', '他们', '她们', '它们']);
-// Fragments the name regex grabs that are scene description, not a person.
-const NAME_FILLER = /^(?:只听|只见|听|见|这时|然后|接着|突然|忽然|原来|一个|那个|这个)+/;
-
-const MAX_SYNTH_CHARS = 120;
-
-function cleanSpeakerName(raw, lastSpeaker) {
-  const name = String(raw || '').replace(NAME_FILLER, '').trim();
-  if (PRONOUN_SPEAKERS.has(name)) return lastSpeaker || null;
-  if (name.length < 2 || name.length > 12) return null;
-  return name;
-}
-
-function attributeParagraph(paragraph, lastSpeaker) {
-  // Try "X说：「…」" first, then "「…」X说". Both regexes are anchored so the
-  // captured name sits directly against a speech verb next to a quote.
-  const before = paragraph.match(SPEAKER_BEFORE_QUOTE);
-  const after = !before && paragraph.match(SPEAKER_AFTER_QUOTE);
-  const matched = before || after;
-  if (!matched) return { speaker: null, attributionSpan: '' };
-  return { speaker: cleanSpeakerName(matched[1], lastSpeaker), attributionSpan: matched[0] };
-}
-
-function narrationChunks(text) {
-  if (!text.trim()) return [];
-  const sentences = text.split(/(?<=[。！？；!?…])/);
-  const chunks = [];
-  let buffer = '';
-  for (const sentence of sentences) {
-    if (buffer && (buffer + sentence).length > MAX_SYNTH_CHARS) { chunks.push(buffer); buffer = sentence; }
-    else buffer += sentence;
-  }
-  if (buffer.trim()) chunks.push(buffer);
-  // A single unpunctuated run can still exceed the cap; hard-split it.
-  return chunks.flatMap((chunk) => chunk.length > MAX_SYNTH_CHARS * 1.5 ? chunk.match(new RegExp('[\\s\\S]{1,' + MAX_SYNTH_CHARS + '}', 'g')) : [chunk]);
-}
-
-export function heuristicAnalysis(text, fallbackName) {
-  const paragraphs = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const chapters = [];
-  for (const line of paragraphs) {
-    if (line.length <= 40 && CHAPTER_HEADING.test(line)) chapters.push({ title: line.slice(0, 24), paragraphs: [] });
-    else {
-      if (!chapters.length) chapters.push({ title: '', paragraphs: [] });
-      chapters[chapters.length - 1].paragraphs.push(line);
-    }
-  }
-  let groups = chapters.filter((chapter) => chapter.paragraphs.length);
-  // No recognizable chapter structure: regroup into fixed-size scenes so a
-  // chapterless novel still lands as several reviewable scenes, not one giant.
-  if (groups.length <= 1) {
-    const flat = groups.flatMap((chapter) => chapter.paragraphs);
-    groups = [];
-    for (let index = 0; index < flat.length; index += 40) groups.push({ title: '', paragraphs: flat.slice(index, index + 40) });
-  }
-
-  const speakers = new Map();
-  let lastSpeaker = null;
-  const scenes = [];
-  for (const [index, group] of groups.entries()) {
-    const lines = [];
-    for (const paragraph of group.paragraphs) {
-      const quotes = [...paragraph.matchAll(QUOTE_PAIR)];
-      if (!quotes.length) {
-        for (const chunk of narrationChunks(paragraph)) lines.push({ type: 'dialogue', speaker: '旁白', speakerId: 'narrator', text: chunk });
-        continue;
-      }
-      const { speaker: attributed, attributionSpan } = attributeParagraph(paragraph, lastSpeaker);
-      let speaker = attributed;
-      if (speaker) lastSpeaker = speaker;
-      // Walk the paragraph quote by quote; the text around quotes becomes
-      // narrator lines, minus the attribution clause we already understood.
-      const attributionClause = attributionSpan.replace(new RegExp(QUOTE_OPEN + '$'), '').replace(new RegExp('^' + QUOTE_CLOSE), '');
-      let cursor = 0;
-      const pushNarration = (text) => {
-        const narration = (text.includes(attributionClause) && attributionClause ? text.replace(attributionClause, '') : text).replace(/^[\s，。：:、—-]+/, '').trim();
-        for (const chunk of narrationChunks(narration)) lines.push({ type: 'dialogue', speaker: '旁白', speakerId: 'narrator', text: chunk });
-      };
-      for (const quote of quotes) {
-        pushNarration(paragraph.slice(cursor, quote.index));
-        const text = quote[1].trim();
-        cursor = quote.index + quote[0].length;
-        if (!text) continue;
-        // Unattributed speech falls back to the narrator (TODO-1 spec): a
-        // wrong character assignment is worse than an audible narrator.
-        const resolved = speaker || '旁白';
-        const speakerId = resolved === '旁白' ? 'narrator' : resolved;
-        if (speakerId !== 'narrator' && !speakers.has(speakerId)) speakers.set(speakerId, { id: speakerId, name: resolved, role: '角色', description: '由规则拆解推断的说话人，请人工确认角色与声音设定。' });
-        lines.push({ type: 'dialogue', speaker: resolved, speakerId, text });
-      }
-      pushNarration(paragraph.slice(cursor));
-    }
-    if (lines.length) scenes.push({ title: group.title || '场景 ' + (index + 1), location: '待设定', mood: '待导演', synopsis: '规则拆解：按章节或固定段落分组，未经文本模型理解。', lines });
-  }
-  const characters = [...speakers.values()];
-  return { project: { name: fallbackName, genre: '' }, characters, scenes };
 }
 
 // 设置页「测试连接」：只验证地址 / Key / 模型名能不能通，不跑拆解（拆解慢且贵）。
@@ -302,7 +181,7 @@ export async function testLlm(config, { fetchImpl = fetch, timeoutMs = LLM_TEST_
   } finally { clearTimeout(timer); }
 }
 
-export const LLM_DEFAULT_TIMEOUT_MS = 180_000;
+export const LLM_DEFAULT_TIMEOUT_MS = 600_000;
 
 // 有的 OpenAI 兼容服务（LM Studio、部分 vLLM / 旧版 llama.cpp）不认
 // response_format: json_object，返回 400/422。此时去掉它重试一次，靠提示词约束 JSON。
@@ -312,7 +191,7 @@ async function callLlm(config, sourceText) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Number(config.llmTimeoutMs) || LLM_DEFAULT_TIMEOUT_MS);
   const headers = { 'Content-Type': 'application/json', ...(config.llmApiKey ? { Authorization: `Bearer ${config.llmApiKey}` } : {}) };
-  const body = { model: config.llmModel, temperature: 0.25, max_tokens: 8_192, messages: [{ role: 'system', content: `${config.llmSystemPrompt}\n${SCHEMA_INSTRUCTION}` }, { role: 'user', content: sourceText }] };
+  const body = { model: config.llmModel, temperature: 0.25, max_tokens: 16_384, messages: [{ role: 'system', content: `${config.llmSystemPrompt}\n${SCHEMA_INSTRUCTION}` }, { role: 'user', content: sourceText }] };
   const post = (jsonMode) => fetch(llmChatUrl(config.llmEndpoint), { method: 'POST', signal: controller.signal, headers, body: JSON.stringify(jsonMode ? { ...body, response_format: { type: 'json_object' } } : body) });
   try {
     let response = await post(true);
@@ -327,44 +206,39 @@ async function callLlm(config, sourceText) {
     // exactly 8k). Left unset, many providers default to 2-4k and the
     // breakdown JSON gets cut mid-object; finish_reason 'length' is the
     // provider saying even that was not enough.
-    if (payload.choices?.[0]?.finish_reason === 'length') throw new Error('模型输出达到长度上限被截断，拆解结果不完整。请在设置中换用输出上限更大的模型（建议 ≥16k token），或分章导入减少单段篇幅');
+    if (payload.choices?.[0]?.finish_reason === 'length') throw new Error('模型输出达到长度上限被截断，拆解结果不完整。请调小 llmChunkChars、换用输出上限更大的模型，或分章导入减少单段篇幅');
     const content = payload.choices?.[0]?.message?.content ?? payload.output?.text ?? payload.result;
     return extractJson(content);
   } finally { clearTimeout(timer); }
 }
 
 // Transient network hiccups should not kill a multi-chunk run: one automatic
-// retry with a short backoff absorbs them; persistent failures still surface
-// (and chunk-level resume covers the retry).
+// retry with a short backoff absorbs them. Timeouts are not retried: a slow
+// model that burned the whole per-request timeout will usually burn a second
+// one too; surface the failure and let the user retry or raise llmTimeoutMs.
 async function callWithRetry(call, config, prompt, { shouldCancel, retryDelayMs }) {
   for (let attempt = 0; ; attempt += 1) {
     try { return await call(config, prompt); }
     catch (error) {
-      if (attempt >= 1 || error.code === 'TASK_CANCELLED') throw error;
+      if (attempt >= 1 || error.code === 'TASK_CANCELLED' || error.name === 'AbortError') throw error;
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
       if (shouldCancel?.()) throw error;
     }
   }
 }
 
-export async function analyzeNovel(config, { text, filename, name }, { onProgress, shouldCancel, resume, onCheckpoint, call = callLlm, chunkChars = 24_000, retryDelayMs = 2_500 } = {}) {
+export async function analyzeNovel(config, { text, filename, name, seedCharacters = [] }, { onProgress, shouldCancel, resume, onCheckpoint, call = callLlm, chunkChars = 6_000, retryDelayMs = 2_500 } = {}) {
   if (!text.trim()) throw new Error('小说文本为空');
   const fallbackName = name || filename.replace(/\.[^.]+$/, '');
-  // Zero-key fallback (TODO-1): when no LLM is configured, break the novel
-  // down with rules instead of failing the import. The result is tagged so
-  // both the task message and the UI can label it as heuristic.
-  let llmReady = true;
-  try { validateLlmConfig(config); } catch { llmReady = false; }
-  if (!llmReady) {
-    onProgress?.({ current: 1, total: 1, progress: 60 });
-    return { ...normalizeResult(heuristicAnalysis(text, fallbackName), fallbackName), breakdown: 'heuristic' };
-  }
+  const seedRoster = Array.isArray(seedCharacters) ? seedCharacters : [];
+  // 文本模型是唯一的拆解路径；没配置或配置不完整时直接报错，不再退回规则拆解。
+  validateLlmConfig(config);
   const chunks = splitNovel(text, chunkChars);
   // Chunk-level resume: a failed multi-chunk run checkpoints its merged
   // analysis after every completed chunk; retryTask copies the task payload,
   // so the retry only pays for the chunks it never finished.
   const chunksDone = Math.max(0, Math.min(Number(resume?.chunksDone) || 0, chunks.length - 1));
-  const merged = resume?.merged && chunksDone > 0 ? resume.merged : { project: { name: fallbackName, genre: '' }, characters: [], scenes: [] };
+  const merged = resume?.merged && chunksDone > 0 ? resume.merged : { project: { name: fallbackName, genre: '' }, characters: [...seedRoster], scenes: [] };
   for (let index = chunksDone; index < chunks.length; index += 1) {
     if (shouldCancel?.()) {
       const error = new Error('小说拆解任务已取消');
@@ -372,8 +246,8 @@ export async function analyzeNovel(config, { text, filename, name }, { onProgres
       throw error;
     }
     onProgress?.({ current: index + 1, total: chunks.length, progress: 8 + Math.round((index / chunks.length) * 82) });
-    const roster = merged.characters.length ? `\n\n已确认角色表（后续必须沿用这些 id，同名人物不可新建 id）：\n${JSON.stringify(merged.characters)}` : '';
-    const result = await callWithRetry(call, config, `作品名：${fallbackName}\n这是第 ${index + 1} / ${chunks.length} 段，请只拆解本段，不重复前文场景。${roster}\n\n小说原文：\n${chunks[index]}`, { shouldCancel, retryDelayMs });
+    const rosterNote = merged.characters.length ? `\n\n已确认角色表（后续必须沿用这些 id，同名人物不可新建 id）：\n${JSON.stringify(merged.characters)}` : '';
+    const result = await callWithRetry(call, config, `作品名：${fallbackName}\n这是第 ${index + 1} / ${chunks.length} 段，请只拆解本段，不重复前文场景。${rosterNote}\n\n小说原文：\n${chunks[index]}`, { shouldCancel, retryDelayMs });
     if (index === 0) merged.project = { ...merged.project, ...result.project };
     else if (!merged.project.genre && result.project?.genre) merged.project.genre = result.project.genre;
     mergeAnalysis(merged, result);

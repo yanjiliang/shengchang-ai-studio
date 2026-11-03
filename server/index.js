@@ -9,13 +9,14 @@ import { TTS_SLOT_FIELDS, applyTtsUpdate } from './tts-providers.js';
 import { archiveProject, createProject, getProject, listPersistentTasks, listProjects, updateProject } from './database.js';
 import { designVoice, validateProviderConfig, validateSoundConfig } from './model-adapters.js';
 import { assertDialogueFilesPresent, ensureRuntime, exportSceneTimeline, extractPeaks, inspectProjectMedia, probeDuration, probeFfmpeg, renderScenePreview, runtimePaths, saveUploadedAsset } from './media-store.js';
-import { taskWithQueuePosition, cancelTask, enqueueGeneration, enqueueNovelAnalysis, enqueueOneClick, enqueueProjectExport, enqueueSoundGeneration, estimateBillableCharacters, estimateGeneration, getTask, retryTask } from './task-manager.js';
+import { taskWithQueuePosition, cancelTask, enqueueGeneration, enqueueNovelAnalysis, enqueueOneClick, enqueueProjectExport, enqueueSoundGeneration, estimateBillableCharacters, estimateGeneration, getTask, kickTaskQueue, retryTask } from './task-manager.js';
 import { seedSampleProject } from './sample-project.js';
 import { ensureBuiltinAssets, listBuiltinAssets } from './builtin-assets.js';
 import { recommendForEvent } from './asset-recommend.js';
 import { redactLlmSecret, resolveLlmApiKey, resolveSavedSecret, testLlm, validateLlmConfig } from './story-analyzer.js';
 import { sameEndpoint, sameLlmEndpoint } from '../shared/endpoint.mjs';
 import { registerBreezeRoutes, sendError } from './breeze-routes.js';
+import { registerBookImportRoutes } from './book-import-routes.js';
 import { oneClickMissingVoiceRoles, voiceNotReadyError } from './one-click.js';
 import { annotateStaleness, generationVoiceMap, needsGenerationPredicate, staleLineCount } from './voice-references.js';
 import { registerProductionRoutes } from './production-routes.js';
@@ -42,10 +43,11 @@ try {
 // contact is 一键成片 on a real, direction-rich project — no key, no setup.
 const seeded = seedSampleProject();
 if (seeded.created) console.log(`已创建示例项目「西游记 · 三打白骨精」：一键成片可在离线演示引擎下完整跑通`);
-// The novel import caps at 2M characters; CJK costs 3 bytes per character in
-// UTF-8, so the body limit has to clear 6MB for that check to be the one that
-// rejects oversized input instead of the parser.
-app.use(express.json({ limit: '24mb' }));
+// Each chapter is capped at 2M characters, but a whole book is saved as one
+// chapter payload when the import record is created. CJK costs 3 bytes per
+// character in UTF-8; 64MB clears a multi-million-character book with room to
+// spare while still bounding a local request.
+app.use(express.json({ limit: '64mb' }));
 // Loopback-only guard: the server binds 127.0.0.1, but a hostile web page can
 // still drive mutations at it (form POSTs need no CORS preflight, and a DNS-
 // rebinding attack can fake the Host). Reject API calls whose Host or Origin
@@ -158,10 +160,13 @@ app.delete('/api/projects/:projectId', (request, response, next) => {
 app.post('/api/projects/:projectId/analyze', (request, response, next) => {
   try {
     if (!request.body.text?.trim()) throw new Error('小说文本为空');
-    if (request.body.text.length > 2_000_000) throw new Error('单次导入上限为 200 万字符，请按卷拆分');
+    if (request.body.text.length > 2_000_000) throw new Error('单章导入上限为 200 万字符，请把它拆成更小的章节');
     const project = getProject(request.params.projectId);
     if (!project) throw new Error('项目不存在');
-    response.status(202).json(enqueueNovelAnalysis({ projectId: project.id, text: request.body.text, filename: request.body.filename || 'novel.txt', name: request.body.name || project.name }));
+    // 一键成片运行中导入会改写场景树，和生成/导出抢同一份状态；等它结束再导入。
+    const active = listPersistentTasks(project.id, 100).some((task) => task.kind === 'one-click' && ['queued', 'running'].includes(task.status));
+    if (active) return response.status(409).json({ error: '一键成片运行中，完成后可继续导入' });
+    response.status(202).json(enqueueNovelAnalysis({ projectId: project.id, text: request.body.text, filename: request.body.filename || 'novel.txt', name: request.body.name || project.name, appendScenes: request.body.appendScenes === true, chapterTitle: request.body.chapterTitle || '' }));
   } catch (error) { next(error); }
 });
 app.get('/api/projects/:projectId/tasks', (request, response, next) => {
@@ -385,6 +390,7 @@ app.post('/api/tasks/:taskId/retry', (request, response, next) => {
   try { response.status(202).json(retryTask(request.params.taskId)); } catch (error) { next(error); }
 });
 registerBreezeRoutes(app);
+registerBookImportRoutes(app);
 registerProductionRoutes(app);
 // Unknown API routes must not fall through to the SPA fallback: apiRequest
 // would parse the HTML shell as `{}` and treat the call as a success.
@@ -398,7 +404,9 @@ app.use((error, _request, response, _next) => {
   // for genuine server faults.
   if (status >= 500) console.error(error);
   else console.warn(`请求失败（${status}）：${error.message}`);
-  if (status === 413) return response.status(413).json({ error: '请求体过大，请按卷拆分后再导入' });
+  if (status === 413) return response.status(413).json({ error: '请求体过大，请减少单次导入的章节篇幅' });
   response.status(status).json({ error: error.message || '本地服务处理失败', ...(Number.isInteger(error.status) && typeof error.code === 'string' ? { code: error.code } : {}), ...(error.code === 'AUDIO_FILE_MISSING' ? { details: error.details } : {}) });
 });
 app.listen(PORT, BIND_HOST, () => console.log(`声场本地服务：http://127.0.0.1:${PORT}（监听 ${BIND_HOST}）`));
+// 所有模块（含数据库恢复）都加载完后再踢一次任务队列，确保重启后恢复的任务会被领取。
+kickTaskQueue();

@@ -2,6 +2,7 @@
 // sandboxed HOME and runtime dir, so the real ~/.shengchang credentials and the
 // repo's .runtime/ data are never touched. Usage: npm run test:e2e
 import { spawn } from 'node:child_process';
+import http from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -19,8 +20,10 @@ let serverLog = '';
 server.stdout.on('data', (chunk) => { serverLog += chunk; });
 server.stderr.on('data', (chunk) => { serverLog += chunk; });
 
+let fakeLlm = null;
 const cleanup = () => {
   server.kill('SIGKILL');
+  fakeLlm?.close();
   rmSync(scratchHome, { recursive: true, force: true });
   rmSync(scratchRuntime, { recursive: true, force: true });
 };
@@ -44,6 +47,31 @@ const waitForTask = async (id) => {
   return task;
 };
 
+// Fake OpenAI-compatible text model: analysis is the only path now, so the
+// scratch server needs a reachable model. It returns a fixed, schema-valid scene.
+const FAKE_ANALYSIS = {
+  project: { genre: '测试' },
+  characters: [
+    { id: 'narrator', name: '旁白', role: '叙事者', gender: '未知', age: '未知', description: '叙事者' },
+    { id: '林夏', name: '林夏', role: '主角', gender: '女', age: '青年', description: '测试角色' },
+  ],
+  scenes: [{
+    title: '第一章 雨夜', location: '待设定', mood: '待导演', synopsis: '测试',
+    lines: [{ type: 'dialogue', speaker: '林夏', speakerId: '林夏', text: '我到了。', subtext: '试探', emotion: '克制', intensity: 40, pace: 90, distance: '近讲' }],
+  }],
+};
+fakeLlm = await new Promise((resolve) => {
+  const server = http.createServer((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(FAKE_ANALYSIS) }, finish_reason: 'stop' }] }));
+    });
+  });
+  server.listen(0, '127.0.0.1', () => resolve(server));
+});
+const fakeLlmBase = `http://127.0.0.1:${fakeLlm.address().port}/v1`;
+
 // 0. wait for the scratch server to boot
 let up = false;
 for (let i = 0; i < 60 && !up; i += 1) {
@@ -63,9 +91,9 @@ check('health ok + real ffmpeg probe', health.payload.ok === true && health.payl
 const nope = await call('/api/definitely-not-a-route');
 check('unknown /api route is 404 JSON', nope.status === 404 && typeof nope.payload.error === 'string');
 
-// 3. switch to demo provider (writes scratch HOME config only)
-const saved = await call('/api/config', { method: 'PUT', body: JSON.stringify({ provider: 'demo' }) });
-check('config saved with demo provider', saved.status === 200 && saved.payload.provider === 'demo');
+// 3. switch to demo provider (writes scratch HOME config only) + fake text model
+const saved = await call('/api/config', { method: 'PUT', body: JSON.stringify({ provider: 'demo', llmEndpoint: fakeLlmBase, llmModel: 'fake', llmApiKey: '', preserveSecret: false }) });
+check('config saved with demo provider + fake text model', saved.status === 200 && saved.payload.provider === 'demo' && saved.payload.llmModel === 'fake' && String(saved.payload.llmEndpoint).includes('127.0.0.1'));
 
 // 3.5 fresh boot auto-seeds the 三打白骨精 sample (design B2)
 const listing = await call('/api/projects');
@@ -133,14 +161,13 @@ const postLab = (await call(`/api/projects/${projectId}`)).payload.state.scenes[
 check('direction-lab does not write back to the line', postLab.audioUrl === preLab.audioUrl, `audioUrl ${preLab.audioUrl} -> ${postLab.audioUrl}`);
 check('direction-lab take audio is served', labResults.length === 2 && (await fetch(`${BASE}${labResults[0].url}`)).status === 200);
 
-// 11. zero-key import: rule-based breakdown fallback (TODO-1). The scratch
-// server has no LLM configured, so analysis must still complete heuristically.
+// 11. text-model analysis through the fake OpenAI-compatible endpoint.
 const novel = await call(`/api/projects/${projectId}/analyze`, { method: 'POST', body: JSON.stringify({ text: '第一章 雨夜\n\n林夏说：「我到了。」', filename: 'demo.txt' }) });
-check('heuristic analysis accepted', novel.status === 202 && Boolean(novel.payload.id), novel.payload.error || '');
+check('text-model analysis accepted', novel.status === 202 && Boolean(novel.payload.id), novel.payload.error || '');
 task = await waitForTask(novel.payload.id);
-check('heuristic breakdown completes without LLM key', task.status === 'completed' && task.result?.breakdown === 'heuristic', task.error || task.message);
+check('text-model breakdown completes', task.status === 'completed' && task.result?.breakdown === 'llm', task.error || task.message);
 project = (await call(`/api/projects/${projectId}`)).payload;
-check('heuristic scenes written to project', (project.state.scenes?.length || 0) >= 1 && project.state.breakdown === 'heuristic');
+check('text-model scenes written to project', (project.state.scenes?.length || 0) >= 1 && project.state.breakdown === 'llm');
 
 // 12. one-click pipeline end-to-end via the demo provider (zero-key). The
 // wait allows generous iterations: the export stage spawns several ffmpeg
@@ -164,7 +191,39 @@ const finalProject = (await call(`/api/projects/${projectId}`)).payload;
 check('one-click auto-mapped unmapped voices', Boolean(finalProject.state.voiceMap?.林夏), JSON.stringify(finalProject.state.voiceMap));
 check('one-click generated the missing dialogue', finalProject.state.scenes.some((scene) => scene.lines.some((line) => line.speakerId === '林夏' && line.audioUrl)));
 
-// 13. seed script is idempotent: force mode skips when the marker exists
+// 13. saved book imports: chapter texts + import progress live on the server,
+// so re-importing the same book reuses the record and never re-runs imported chapters.
+const bookProject = (await call('/api/projects', { method: 'POST', body: JSON.stringify({ name: '整本导入测试' }) })).payload;
+const bookChapters = [
+  { title: '第一章 山门', text: '第一章 山门\n山门在雾里。\n「走吧。」唐僧说。' },
+  { title: '第二章 夜雨', text: '第二章 夜雨\n雨下了一夜。\n「师父，前面有座庙。」孙悟空说。' },
+];
+const savedBook = await call(`/api/projects/${bookProject.id}/book-imports`, { method: 'POST', body: JSON.stringify({ filename: 'e2e.epub', format: 'epub', chapters: bookChapters }) });
+check('book import saved', savedBook.status === 201 && savedBook.payload.book.chapterCount === 2, savedBook.payload.error || '');
+const bookId = savedBook.payload.book.id;
+const duplicateBook = await call(`/api/projects/${bookProject.id}/book-imports`, { method: 'POST', body: JSON.stringify({ filename: 'e2e.epub', format: 'epub', chapters: bookChapters }) });
+check('same book reuses the saved record', duplicateBook.status === 201 && duplicateBook.payload.book.id === bookId);
+const firstChapter = await call(`/api/book-imports/${bookId}/chapters/0/import`, { method: 'POST', body: JSON.stringify({ appendScenes: false }) });
+const firstTask = await waitForTask(firstChapter.payload.taskId);
+check('book chapter import completes', firstTask.status === 'completed' && firstTask.result?.sceneCount >= 1, firstTask.error || firstTask.message);
+let savedBookState = (await call(`/api/book-imports/${bookId}`)).payload.book;
+check('imported chapter marked, next chapter pending', savedBookState.importedCount === 1 && savedBookState.remainingCount === 1);
+const reimport = await call(`/api/book-imports/${bookId}/chapters/0/import`, { method: 'POST', body: JSON.stringify({}) });
+check('imported chapter cannot be imported twice', reimport.status === 409 && reimport.payload.code === 'BOOK_CHAPTER_ALREADY_IMPORTED');
+const replaceAfterImport = await call(`/api/book-imports/${bookId}/chapters/1/import`, { method: 'POST', body: JSON.stringify({ mode: 'replace' }) });
+check('continued book import cannot replace earlier chapters', replaceAfterImport.status === 409 && replaceAfterImport.payload.code === 'BOOK_IMPORT_APPEND_ONLY');
+const secondChapter = await call(`/api/book-imports/${bookId}/chapters/1/import`, { method: 'POST', body: JSON.stringify({ appendScenes: true }) });
+const secondTask = await waitForTask(secondChapter.payload.taskId);
+check('remaining chapter import completes', secondTask.status === 'completed', secondTask.error || secondTask.message);
+savedBookState = (await call(`/api/book-imports/${bookId}`)).payload.book;
+check('all chapters marked imported', savedBookState.importedCount === 2 && savedBookState.remainingCount === 0);
+const bookProjectState = (await call(`/api/projects/${bookProject.id}`)).payload;
+check('book scenes appended in chapter order', bookProjectState.state.scenes.length === 2 && bookProjectState.state.scenes[0].title.includes('第一章 山门') && bookProjectState.state.scenes[1].title.includes('第二章 夜雨'), bookProjectState.state.scenes.map((scene) => scene.title).join(' / '));
+check('book sourceText accumulates chapters', bookProjectState.sourceText.includes('第一章 山门') && bookProjectState.sourceText.includes('第二章 夜雨'));
+const deletedBook = await call(`/api/book-imports/${bookId}`, { method: 'DELETE' });
+check('book import record can be deleted', deletedBook.status === 200);
+
+// 14. seed script is idempotent: force mode skips when the marker exists
 const seed = await new Promise((resolve) => {
   const child = spawn(process.execPath, ['scripts/seed-sample.mjs'], { env: { ...process.env, SHENGCHANG_RUNTIME_DIR: scratchRuntime }, stdio: ['ignore', 'pipe', 'inherit'] });
   let out = '';

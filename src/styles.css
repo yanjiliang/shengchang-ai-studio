@@ -100,6 +100,7 @@ button { cursor: pointer; }
 .app-loading, .empty-project { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 11px; padding: 28px; color: var(--color-muted); text-align: center; }
 .empty-project h2 { margin: 0; color: var(--color-text); font-size: 20px; overflow-wrap: anywhere; }
 .empty-project p { max-width: 520px; margin: 0 0 6px; color: var(--color-text-soft); font-size: 12px; line-height: 1.7; }
+.empty-project .analysis-wait-hint { max-width: 520px; margin: -2px 0 2px; color: var(--color-dim); font-size: 10px; line-height: 1.7; }
 .app-shell.is-welcome .app-content { grid-row: 1 / -1; }
 .empty-project { position: relative; isolation: isolate; overflow-y: auto; }
 .empty-project::before { content: ''; position: absolute; z-index: -1; inset: 0; background: url('/brand/stage-background.jpg') center / cover no-repeat; opacity: 0.22; pointer-events: none; }
@@ -117,7 +118,6 @@ button { cursor: pointer; }
 .project-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .project-heading h1 { margin: 0 0 5px; font-size: 17px; line-height: 1.25; font-style: normal; font-weight: 680; overflow-wrap: anywhere; }
 .project-heading p { margin: 0; color: var(--color-muted); font-size: 10px; }
-.breakdown-note { margin: 6px 0 0; color: var(--color-accent); font-size: 10px; font-weight: 600; }
 .project-heading button { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: var(--color-muted); }
 .project-progress { height: 3px; margin: 15px 0 7px; overflow: hidden; border-radius: 2px; background: var(--color-paper-4); }
 .project-progress span { display: block; height: 100%; background: var(--color-accent); }
@@ -755,6 +755,36 @@ button.issue-copy { padding: 0; border: 0; background: transparent; font: inheri
 .app-dialog .dialog-input:focus { border-color: var(--color-accent); outline: none; }
 .app-dialog .dialog-detail { margin: 10px 0 0; color: var(--color-muted); font-size: 10px; line-height: 1.8; white-space: pre-line; }
 .app-dialog .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; padding: 0 18px 16px; }
+
+/* Chapter picker (whole-book import) */
+.chapter-picker { width: min(620px, calc(100vw - 40px)); max-height: min(82vh, 720px); }
+.chapter-picker-file { display: block; margin-top: 4px; color: var(--color-dim); font-size: 10px; }
+.chapter-picker-summary { margin: 0; padding: 12px 18px 0; color: var(--color-muted); font-size: 10px; }
+.chapter-picker-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 18px; }
+.chapter-mode { display: inline-flex; align-items: center; gap: 7px; color: var(--color-muted); font-size: 10px; }
+.chapter-mode-note { color: var(--color-dim); font-size: 9px; }
+.chapter-mode select { height: 27px; padding: 0 7px; border: 1px solid var(--color-line-strong); border-radius: var(--radius-sm); background: var(--color-paper-2); color: var(--color-text); font-size: 10px; }
+.chapter-list { flex: 1; min-height: 140px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding: 0 18px 10px; }
+.chapter-item { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-paper-2); font-size: 11px; cursor: pointer; }
+.chapter-item:hover { border-color: var(--color-line-strong); }
+.chapter-item.is-selected { border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-line)); }
+.chapter-item.is-imported { opacity: 0.62; cursor: default; }
+.chapter-item.is-imported:hover { border-color: var(--color-line); }
+.chapter-item input { margin: 0; accent-color: var(--color-accent); }
+.chapter-item-title { overflow: hidden; color: var(--color-text); text-overflow: ellipsis; white-space: nowrap; }
+.chapter-item-count { color: var(--color-dim); font-size: 9px; white-space: nowrap; }
+.chapter-picker-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 18px 14px; border-top: 1px solid var(--color-line); color: var(--color-muted); font-size: 9px; }
+.chapter-picker-footer .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin: 0; padding: 0; }
+
+/* Saved book imports (continue without re-selecting the file) */
+.import-hub { width: min(560px, calc(100vw - 40px)); max-height: min(76vh, 640px); }
+.import-hub-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 12px 18px; }
+.import-hub-row { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-paper-2); }
+.import-hub-copy { flex: 1; min-width: 0; }
+.import-hub-copy strong { display: block; overflow: hidden; color: var(--color-text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.import-hub-copy small { display: block; margin-top: 4px; color: var(--color-dim); font-size: 9px; }
+.import-hub-row .button { white-space: nowrap; }
+.import-hub-done { color: var(--color-mint); font-size: 10px; white-space: nowrap; }
 
 /* Sound picker & three-source asset library */
 .sound-picker { width: min(580px, calc(100vw - 40px)); }

@@ -1,6 +1,6 @@
 // Sample project content + seeder (design B2): a direction-rich condensed
 // excerpt of 西游记·第二十七回「尸魔三戏唐三藏」(public domain, Ming dynasty).
-// Hand-authored instead of heuristic output so every line carries real
+// Hand-authored so every line carries real direction data (subtext/emotion/
 // direction data (subtext/emotion/intensity/distance) — that layer is the
 // product pitch, so the first-run sample must show it at its best.
 //
@@ -23,13 +23,13 @@ const dialogue = (id, speaker, speakerId, text, direction) => ({
 });
 
 const CHARACTERS = [
-  { id: 'narrator', name: '旁白', role: '叙事者', description: '冷静克制，保留说书人的节奏感，不抢戏。' },
-  { id: 'tangseng', name: '唐僧', gender: '男', age: '青年', role: '主角', description: '慈悲而执拗。动怒时也带着文气，字字有礼却句句见责。' },
-  { id: 'sunwukong', name: '孙悟空', gender: '男', age: '青年', role: '主角', description: '火气与忠心都写在嗓门里，急躁但死心塌地护主。' },
-  { id: 'zhubajie', name: '猪八戒', gender: '男', age: '中年', role: '主角', description: '憨直嘴碎，情绪永远比脑子快半拍。' },
-  { id: 'shaonv', name: '青衣少女', gender: '女', age: '青年', role: '角色（白骨精一化）', description: '甜糯殷勤，妖气全部藏进笑意里。' },
-  { id: 'laoyu', name: '老妪', gender: '女', age: '老年', role: '角色（白骨精二化）', description: '苍老悲切，哭腔里带着钩子。' },
-  { id: 'laoweng', name: '老翁', gender: '男', age: '老年', role: '角色（白骨精三化）', description: '苍凉迟缓，每个问句都是试探。' },
+  { id: 'narrator', name: '旁白', role: '叙事者', description: '冷静克制，保留说书人的节奏感，不抢戏。', voiceDescription: '中性偏成熟的声音，中音区，清晰沉稳，语速平缓。' },
+  { id: 'tangseng', name: '唐僧', gender: '男', age: '青年', role: '主角', description: '慈悲而执拗。动怒时也带着文气，字字有礼却句句见责。', voiceDescription: '青年男声，温和清朗，中音区，语速从容，念经时有稳定节拍。' },
+  { id: 'sunwukong', name: '孙悟空', gender: '男', age: '青年', role: '主角', description: '火气与忠心都写在嗓门里，急躁但死心塌地护主。', voiceDescription: '青年男声，音色明亮偏尖，语速快，脾气上来时音量先冲出去。' },
+  { id: 'zhubajie', name: '猪八戒', gender: '男', age: '中年', role: '主角', description: '憨直嘴碎，情绪永远比脑子快半拍。', voiceDescription: '中年男声，偏厚重带鼻音，语速忽快忽慢，笑的时候拖尾音。' },
+  { id: 'shaonv', name: '青衣少女', gender: '女', age: '青年', role: '角色（白骨精一化）', description: '甜糯殷勤，妖气全部藏进笑意里。', voiceDescription: '年轻女声，甜软轻快，音高偏高，尾音带笑意。' },
+  { id: 'laoyu', name: '老妪', gender: '女', age: '老年', role: '角色（白骨精二化）', description: '苍老悲切，哭腔里带着钩子。', voiceDescription: '老年女声，沙哑偏低，语速慢，哭腔时气息发颤。' },
+  { id: 'laoweng', name: '老翁', gender: '男', age: '老年', role: '角色（白骨精三化）', description: '苍凉迟缓，每个问句都是试探。', voiceDescription: '老年男声，低沉苍凉，语速迟缓，句尾常带试探。' },
 ];
 
 const SCENES = [

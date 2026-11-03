@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { LLM_IMPORT_BLOCKED, llmReady } from './lib/llm.js';
+import { extractNovelFile, formatLabel, NOVEL_FILE_ACCEPT } from './lib/import-file.js';
+import { ChapterPicker } from './components/import/ChapterPicker';
+import { ImportHub } from './components/import/ImportHub';
 import { AppRail } from './components/AppRail';
 import { BrandSignature } from './components/BrandSignature';
 import { Dialog } from './components/Dialog';
@@ -83,6 +86,9 @@ function App() {
   // Promise-based prompt/confirm: replaces every window.prompt / window.confirm
   // call site; resolving (or dismissing) the dialog settles the awaiting flow.
   const [dialog, setDialog] = useState(null);
+  // 整本导入：章节选择结果通过 Promise 回到 importNovel 的顺序导入循环。
+  const [chapterPicker, setChapterPicker] = useState(null);
+  const [importHub, setImportHub] = useState(null);
   // 一键成片被「没定声音」拦下时跳到这个角色。
   const [voicesRoleId, setVoicesRoleIdRaw] = useState('');
   const [voicesFocus, setVoicesFocus] = useState(0);
@@ -90,6 +96,10 @@ function App() {
   const setVoicesRoleId = (roleId) => { setVoicesRoleIdRaw(roleId); setVoicesFocus(Date.now()); };
   const openDialog = (request) => new Promise((resolve) => setDialog({ ...request, resolve }));
   const closeDialog = (value) => { dialog?.resolve(value); setDialog(null); };
+  const openChapterPicker = (request) => new Promise((resolve) => setChapterPicker({ ...request, resolve }));
+  const closeChapterPicker = (value) => { chapterPicker?.resolve(value); setChapterPicker(null); };
+  const openImportHub = (request) => new Promise((resolve) => setImportHub({ ...request, resolve }));
+  const closeImportHub = (value) => { importHub?.resolve(value); setImportHub(null); };
 
   const commitPendingSave = async () => {
     window.clearTimeout(saveTimer.current);
@@ -306,30 +316,100 @@ function App() {
   };
   const playLine = (line) => { const url = line.audioUrl || line.assetUrl; if (!url) setToast('请先生成或绑定实际音频'); else if (line.type === 'dialogue') { setRequestedLineId(null); window.setTimeout(() => setRequestedLineId(line.id), 0); } else new Audio(url).play().catch(() => setToast('素材无法播放')); };
 
+  // 按服务端保存的章节记录逐章导入；已导入的章节由 ChapterPicker 过滤掉，
+  // 每章完成后服务端会把 imported_at 写回 book_chapters，下次可以直接续传。
+  const importBookRecord = async (book) => {
+    if (!book) return;
+    if (book.remainingCount === 0) { setToast('这本书的章节已经全部导入过了'); return; }
+    const selection = await openChapterPicker({ chapters: book.chapters, fileName: book.filename, hasScenes: (state.scenes || []).length > 0 });
+    if (!selection) return;
+    const indexes = selection.indexes || [];
+    if (!indexes.length) return;
+    const chaptersByIndex = new Map(book.chapters.map((chapter) => [chapter.index, chapter]));
+    let currentChapter = '';
+    try {
+      // 替换模式：第一章清空旧场景，后续章节追加；追加模式：全部追加。
+      let append = selection.mode === 'append';
+      let scenesAdded = 0;
+      for (let position = 0; position < indexes.length; position += 1) {
+        const chapter = chaptersByIndex.get(indexes[position]);
+        if (!chapter) continue;
+        currentChapter = chapter.title || `第 ${chapter.index + 1} 章`;
+        const prefix = indexes.length > 1 ? `第 ${position + 1}/${indexes.length} 章 · ` : '';
+        setAnalysis({ progress: Math.round((position / indexes.length) * 100), message: `${prefix}正在导入「${currentChapter}」`, slowHint: true });
+        await commitPendingSave();
+        const chunkChars = Number(config?.llmChunkChars) || 6_000;
+        const chunkCount = Math.max(1, Math.ceil((chapter.charCount || 0) / chunkChars));
+        // 服务端每个分块按 llmTimeoutMs 等待；页面等待留出 1 分钟余量，避免任务还在跑就报失败。
+        const llmTimeoutMs = Number(config?.llmTimeoutMs) || 600_000;
+        const perChunkMs = Math.max(3.5 * 60_000, llmTimeoutMs + 60_000);
+        const queued = await api.importBookChapter(book.id, chapter.index, { appendScenes: append, mode: selection.mode });
+        const completed = await waitForTask(queued.taskId, (taskState) => setAnalysis({
+          progress: Math.min(99, Math.round(((position + (taskState.progress || 0) / 100) / indexes.length) * 100)),
+          message: `${prefix}${taskState.message || '正在拆解'}`,
+          taskId: queued.taskId,
+          slowHint: true,
+        }), { timeoutMs: chunkCount * perChunkMs });
+        await refreshProjects(project.id);
+        append = true;
+        scenesAdded += Number(completed.result?.sceneCount) || 0;
+      }
+      setToast(`导入完成：${indexes.length} 章，${scenesAdded} 个场景`);
+    } catch (error) {
+      if (/等待任务超时/.test(error.message)) setToast(`「${currentChapter || '导入'}」仍在后台拆解，页面等待超时了；可以去制作中心的任务历史查看，稍后再试（已完成的章节已保留）`);
+      else setToast(`「${currentChapter || '导入'}」失败：${error.message}（之前完成的章节已保留）`);
+    }
+    finally { setAnalysis(null); }
+  };
+
+  const deleteBookImportRecord = async (bookId) => {
+    try {
+      await api.deleteBookImport(bookId);
+      setImportHub((current) => current ? { ...current, books: current.books.filter((book) => book.id !== bookId) } : current);
+      setToast('已删除导入记录（已生成的场景不受影响）');
+    } catch (error) { setToast(error.message); }
+  };
+
   const importNovel = async () => {
     if (!project) return;
-    // 文本模型没测通就不导入（Yan：通用 OpenAI 兼容服务，没有本地规则拆解兜底）。
+    // 文本模型是唯一的拆解路径：没测试通过就不开始导入。
     if (!llmReady(config)) {
       if (await openDialog({ type: 'confirm', message: LLM_IMPORT_BLOCKED, detail: '在「设置 · 文本模型」里填好地址和模型名（服务需要的话再填 Key），点「测试连接」通过后再导入。', confirmLabel: '去设置' })) setView('settings');
       return;
     }
-    const input = document.createElement('input'); input.type = 'file'; input.accept = '.txt,text/plain';
+    // 先看有没有保存过的书；有就列出继续/删除，或者换新文件。
+    let savedBooks = [];
+    try {
+      const listing = await api.listBookImports(project.id);
+      savedBooks = listing.books || [];
+    } catch (error) { setToast(`读取已保存的导入记录失败：${error.message}`); }
+    if (savedBooks.length) {
+      const choice = await openImportHub({ books: savedBooks });
+      if (!choice) return;
+      if (choice.action === 'continue') {
+        try {
+          const { book } = await api.getBookImport(choice.bookId);
+          await importBookRecord(book);
+        } catch (error) { setToast(error.message); }
+        return;
+      }
+    }
+    const input = document.createElement('input'); input.type = 'file'; input.accept = NOVEL_FILE_ACCEPT;
     input.onchange = async () => {
       const file = input.files?.[0]; if (!file) return;
+      let imported;
       try {
-        const text = await file.text();
-        setAnalysis({ progress: 1, message: '正在上传小说原文' });
-        await commitPendingSave();
-        const task = await api.analyzeNovel(project.id, { text, filename: file.name, name: project.name });
-        setAnalysis({ progress: task.progress || 1, message: task.message, taskId: task.id });
-        // The server chunks at 24k chars with up to 3 minutes per chunk; a
-        // 2M-character import needs far more than the default 30-minute wait.
-        const chunkCount = Math.max(1, Math.ceil(text.length / 24000));
-        const completed = await waitForTask(task.id, (taskState) => setAnalysis({ progress: taskState.progress, message: taskState.message, taskId: task.id }), { timeoutMs: chunkCount * 3.5 * 60 * 1000 });
-        await refreshProjects(project.id);
-        setToast(`小说拆解完成${completed.result.breakdown === 'heuristic' ? '（规则拆解，建议人工校对角色归属）' : ''}：${completed.result.sceneCount} 个场景，${completed.result.characterCount} 个角色`);
-      } catch (error) { setToast(error.message); }
-      finally { setAnalysis(null); }
+        setAnalysis({ progress: 1, message: `正在读取 ${file.name}` });
+        imported = await extractNovelFile(file);
+      } catch (error) { setToast(error.message); setAnalysis(null); return; }
+      if (!imported.text.trim()) { setToast('没有从文件里读到正文'); setAnalysis(null); return; }
+      const chapters = (imported.chapters?.length ? imported.chapters : [{ title: '全文', text: imported.text }]).map((chapter) => ({ title: chapter.title || '', text: chapter.text }));
+      try {
+        setAnalysis({ progress: 1, message: `正在保存章节（${formatLabel(imported.format)}，${chapters.length} 章）` });
+        const { book } = await api.createBookImport(project.id, { filename: file.name, format: imported.format, chapters });
+        setAnalysis(null);
+        await importBookRecord(book);
+      } catch (error) { setToast(error.message); setAnalysis(null); }
     };
     input.click();
   };
@@ -664,14 +744,14 @@ function App() {
   }
   const activeProgress = analysis || generation;
   let content;
-  if (view === 'studio') content = currentScene ? <StudioLayout project={project} scenes={scenes} currentScene={currentScene} mediaReport={mediaReport} characters={state.characters || []} selectedLineId={selectedLineId} onSelectLine={setSelectedLineId} onUpdateLine={updateLine} onUpdateScene={updateScene} onSceneChange={changeScene} onImportNovel={importNovel} onAddScene={addScene} onDeleteScene={deleteScene} onRegenerate={regenerateLine} onPlayLine={playLine} onAddLine={addLine} onDeleteLine={deleteLine} onAcquireSound={setPickerLine} onUnbindSound={unbindAsset} activeProgress={activeProgress} onCancelTask={cancelActiveTask} voiceMap={engineVoiceMap} configProvider={config?.provider} config={config} onOpenVoices={() => setView('voices')} onLabGenerate={runDirectionLab} labResult={labResult} labGenerating={Boolean(generation)} /> : <div className="empty-project"><BrandSignature /><h2>{project.name}</h2><p>{analysis ? `${analysis.message} · ${analysis.progress}%` : '还没有场景。导入 TXT 小说后，文本模型会识别角色、对白、旁白、声音事件和场景结构。'}</p>{analysis ? <button className="button secondary-button" type="button" onClick={cancelActiveTask}>取消拆解</button> : <><button className="button primary-button" type="button" onClick={importNovel}>导入小说并拆解</button><button className="button secondary-button" type="button" onClick={addScene}>手动新建场景</button></>}</div>;
+  if (view === 'studio') content = currentScene ? <StudioLayout project={project} scenes={scenes} currentScene={currentScene} mediaReport={mediaReport} characters={state.characters || []} selectedLineId={selectedLineId} onSelectLine={setSelectedLineId} onUpdateLine={updateLine} onUpdateScene={updateScene} onSceneChange={changeScene} onImportNovel={importNovel} onAddScene={addScene} onDeleteScene={deleteScene} onRegenerate={regenerateLine} onPlayLine={playLine} onAddLine={addLine} onDeleteLine={deleteLine} onAcquireSound={setPickerLine} onUnbindSound={unbindAsset} activeProgress={activeProgress} onCancelTask={cancelActiveTask} voiceMap={engineVoiceMap} configProvider={config?.provider} config={config} onOpenVoices={() => setView('voices')} onLabGenerate={runDirectionLab} labResult={labResult} labGenerating={Boolean(generation)} /> : <div className="empty-project"><BrandSignature /><h2>{project.name}</h2><p>{analysis ? `${analysis.message} · ${analysis.progress}%` : '还没有场景。导入 TXT / EPUB / DOCX / Markdown / HTML 小说后，会自动拆解角色、对白、旁白、声音事件和场景结构。'}</p>{analysis?.slowHint ? <p className="analysis-wait-hint">文本模型生成中，可能需要几分钟；如果经常超时，请把 llmTimeoutMs 调大或换更快的模型。</p> : null}{analysis ? <button className="button secondary-button" type="button" onClick={cancelActiveTask}>取消拆解</button> : <><button className="button primary-button" type="button" onClick={importNovel}>导入小说并拆解</button><button className="button secondary-button" type="button" onClick={addScene}>手动新建场景</button></>}</div>;
   else if (view === 'voices') content = <VoicesView characters={state.characters || []} voiceReferences={state.voiceReferences || {}} voiceMap={state.voiceMap || {}} voiceDesignConfig={config} onDesignVoice={designVoice} onSetVoice={setVoice} onUpdateCharacter={updateCharacter} onToast={setToast} breeze={breezeMode ? breeze : null} scenes={scenes} projectId={project.id} voiceDrafts={voiceDrafts} onApplyVoice={applyCharacterVoice} onOpenSettings={() => setView('settings')} initialRoleId={voicesRoleId} focusRequest={voicesFocus} />;
   else if (view === 'sounds') content = <SoundsView assets={state.assets || []} builtinAssets={builtinAssets} sceneUsage={assetUsage} sceneEvents={(currentScene?.lines || []).filter((line) => line.type !== 'dialogue')} sceneTitle={currentScene?.title || ''} onUpload={uploadAsset} onBindAsset={bindAsset} onDeleteAsset={deleteAsset} onUpdateAsset={updateAsset} onToast={setToast} />;
   else if (view === 'production') content = <ProductionView onRegenerateLines={regenerateLines} project={project} mediaReport={mediaReport} currentSceneId={currentSceneId} onSceneChange={changeScene} onUpdateLine={updateLine} onUpdateDictionary={updateDictionary} onExportScene={exportSceneById} onExportEpisode={exportEpisode} exportLocked={exportLock.locked} onOneClick={oneClick} oneClickToken={oneClickToken} oneClickTaskId={oneClickTaskId} oneClickBusy={oneClickBusy} projectRefreshToken={projectRefreshToken} onGenerateMissing={generateMissingDialogue} generating={Boolean(generation)} exporting={exporting} taskRefreshToken={taskRefreshToken} onToast={setToast} onUpdateAnyLine={updateAnyLine} onLineAccepted={() => refreshProjects(project.id)} onSaveNow={commitPendingSave} hideBilling={breezeMode} breezeMode={breezeMode} breeze={breezeMode ? breeze : null} onOpenStudio={() => setView('studio')} />;
   else if (view === 'quality') content = <QualityView report={qualityReport} stages={stages} onToast={setToast} onExport={() => exportSceneById(currentScene?.id)} onOpenProduction={() => setView('production')} onOpenView={setView} onLocateLine={locateLine} onOpenVoices={() => setView('voices')} onOpenSounds={() => setView('sounds')} onGenerateMissing={() => generateMissingDialogue([currentScene?.id])} onRegenerateStale={() => regenerateStaleDialogue([currentScene?.id])} generating={Boolean(generation)} exporting={exporting} exportLocked={exportLock.locked} />;
   else content = <SettingsView config={config} onSave={saveConfig} onTestLlm={api.testLlm} onToast={setToast} onReload={reloadConfig} />;
 
-  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{outage ? <BreezeOutageBanner outage={outage} checking={breeze.checking} onRetry={retryAfterOutage} onResume={retryAfterOutage} onSettings={() => { setOutage(null); setView('settings'); }} onDismiss={() => setOutage(null)} /> : null}{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} exportLocked={exportLock.locked} /> : null}{pickerLine ? <SoundPicker line={pickerLine} projectId={project.id} config={config} builtinAssets={builtinAssets} onBind={bindAsset} onUpload={uploadAndBind} onGenerate={generateSound} onClose={() => setPickerLine(null)} onToast={setToast} /> : null}{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}<Toast message={toast} />{exportFailure ? <ExportFailure className="export-failure-notice" text={exportFailure.text} detail={exportFailure.detail} missing={Boolean(exportFailure.missing)} lines={exportFailure.lines || []} onRegenerate={(ids) => { setExportFailure(null); regenerateLines(ids); }} onLocate={(item) => locateLine(item.lineId)} retryDisabled={exporting || exportLock.locked} onRetry={() => { const { retry } = exportFailure; setExportFailure(null); retry?.(); }} onClose={() => setExportFailure(null)} /> : null}</div>;
+  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{outage ? <BreezeOutageBanner outage={outage} checking={breeze.checking} onRetry={retryAfterOutage} onResume={retryAfterOutage} onSettings={() => { setOutage(null); setView('settings'); }} onDismiss={() => setOutage(null)} /> : null}{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} exportLocked={exportLock.locked} /> : null}{pickerLine ? <SoundPicker line={pickerLine} projectId={project.id} config={config} builtinAssets={builtinAssets} onBind={bindAsset} onUpload={uploadAndBind} onGenerate={generateSound} onClose={() => setPickerLine(null)} onToast={setToast} /> : null}{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}{chapterPicker ? <ChapterPicker chapters={chapterPicker.chapters} fileName={chapterPicker.fileName} hasScenes={chapterPicker.hasScenes} onCancel={() => closeChapterPicker(null)} onConfirm={(value) => closeChapterPicker(value)} /> : null}{importHub ? <ImportHub books={importHub.books} onCancel={() => closeImportHub(null)} onContinue={(bookId) => closeImportHub({ action: 'continue', bookId })} onNewFile={() => closeImportHub({ action: 'file' })} onDelete={deleteBookImportRecord} /> : null}<Toast message={toast} />{exportFailure ? <ExportFailure className="export-failure-notice" text={exportFailure.text} detail={exportFailure.detail} missing={Boolean(exportFailure.missing)} lines={exportFailure.lines || []} onRegenerate={(ids) => { setExportFailure(null); regenerateLines(ids); }} onLocate={(item) => locateLine(item.lineId)} retryDisabled={exporting || exportLock.locked} onRetry={() => { const { retry } = exportFailure; setExportFailure(null); retry?.(); }} onClose={() => setExportFailure(null)} /> : null}</div>;
 }
 
 // --- Local composition helpers (props-only, no state of their own) --------

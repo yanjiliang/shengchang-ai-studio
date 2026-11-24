@@ -644,6 +644,7 @@ components:
         sfxSecretHint: { $ref: '#/components/schemas/SecretHint' }
         customHeaders: { type: string, description: 'JSON 字符串；名字含 authorization/token/key/secret 的头值显示为 __SAVED_SECRET__，原样回传即保留（地址没变时）' }
         sfxCustomHeaders: { type: string, description: '同 customHeaders 的脱敏规则' }
+        sfxTimeoutMs: { type: integer, minimum: 5000, maximum: 1800000, default: 120000, description: '自定义音效 HTTP 请求超时（毫秒）' }
         targetLufs: { type: number, example: -16 }
         endpoint: { type: string, description: '当前引擎那一槽的地址（resourceId、model、audioFormat 等平铺 TTS 字段同样反映当前引擎）' }
         ttsProviders:

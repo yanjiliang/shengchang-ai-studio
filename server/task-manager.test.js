@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -8,8 +8,8 @@ import { after, describe, test } from 'node:test';
 // before importing anything that resolves media-store paths.
 const scratch = mkdtempSync(path.join(tmpdir(), 'shengchang-task-test-'));
 process.env.SHENGCHANG_RUNTIME_DIR = scratch;
-const { createProject, getProject, updateProject } = await import('./database.js');
-const { applyResultsToProject, recoverCachedAudioFromDisk, runGenerationRequests } = await import('./task-manager.js');
+const { cacheAudio, createProject, findCachedAudio, getProject, soundContentHash, updateProject } = await import('./database.js');
+const { applyResultsToProject, generateSoundAsset, recoverCachedAudioFromDisk, runGenerationRequests } = await import('./task-manager.js');
 
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
@@ -190,6 +190,90 @@ describe('计费汇总：缓存命中不计费，缺 usage 单独计数', () => 
       { cached: false, usageExpected: false, usage: null },
     ]);
     assert.deepEqual(summary, { billedCharacters: 10, freshCount: 3, cacheHits: 1, missingUsageCount: 1 });
+  });
+});
+
+describe('声音素材生成防缓存投毒', () => {
+  const sfxConfig = { sfxProvider: 'custom', sfxEndpoint: 'http://127.0.0.1:9/sfx', sfxModel: 'm1' };
+
+  test('损坏或零时长音频不会落盘写入缓存，重试拿到好音频可正常完成', async () => {
+    const sound = { prompt: '雨打芭蕉', durationMs: 3000, type: 'ambient' };
+    const hash = soundContentHash(sfxConfig, sound);
+    let calls = 0;
+
+    // 1. 首次返回损坏音频（probe 抛错）
+    await assert.rejects(() => generateSoundAsset(sfxConfig, sound, {
+      synthesize: async () => { calls += 1; return { mime: 'audio/wav', buffer: Buffer.from('corrupt') }; },
+      probe: async () => { throw new Error('Invalid data found when processing input'); },
+    }), /Invalid data/);
+    assert.equal(calls, 1);
+    assert.equal(findCachedAudio(hash), null, '失败时绝不能写入 audio_cache');
+    assert.equal(existsSync(path.join(scratch, 'media', `${hash}.wav`)), false, '失败时绝不能落盘到最终路径');
+    assert.deepEqual(readdirSync(path.join(scratch, 'media')).filter((name) => name.startsWith('.tmp-')), [], '临时文件必须清理');
+
+    // 2. 第二次返回 0 秒音频同样拒绝且不留脏缓存
+    await assert.rejects(() => generateSoundAsset(sfxConfig, sound, {
+      synthesize: async () => { calls += 1; return { mime: 'audio/wav', buffer: Buffer.from('zero') }; },
+      probe: async () => 0,
+    }), /没有有效时长/);
+    assert.equal(calls, 2);
+    assert.equal(findCachedAudio(hash), null);
+    assert.equal(existsSync(path.join(scratch, 'media', `${hash}.wav`)), false);
+
+    // 3. 第三次返回正常音频：落盘 + 写缓存；第四次直接命中缓存不重复合成
+    const ok = await generateSoundAsset(sfxConfig, sound, {
+      synthesize: async () => { calls += 1; return { mime: 'audio/wav', buffer: Buffer.from('RIFF-good') }; },
+      probe: async () => 2.5,
+    });
+    assert.equal(calls, 3);
+    assert.equal(ok.cached, false);
+    assert.equal(ok.durationMs, 2500);
+    assert.equal(ok.url, `/media/${hash}.wav`);
+    assert.ok(findCachedAudio(hash), '有效音频才写入 audio_cache');
+
+    const hit = await generateSoundAsset(sfxConfig, sound, {
+      synthesize: async () => { calls += 1; throw new Error('不应再次调用合成'); },
+      probe: async () => 2.5,
+    });
+    assert.equal(calls, 3);
+    assert.equal(hit.cached, true);
+    assert.equal(hit.durationMs, 2500);
+  });
+
+  test('已存在的损坏缓存会自动淘汰并重新合成覆盖', async () => {
+    const sound = { prompt: '雷鸣滚滚', durationMs: 4000, type: 'sfx' };
+    const hash = soundContentHash(sfxConfig, sound);
+    mkdirSync(path.join(scratch, 'media'), { recursive: true });
+    writeFileSync(path.join(scratch, 'media', `${hash}.wav`), Buffer.from('corrupt-disk'));
+    cacheAudio({ contentHash: hash, url: `/media/${hash}.wav`, mime: 'audio/wav', provider: 'custom', model: 'm1', voiceId: '' });
+
+    let calls = 0;
+    const healed = await generateSoundAsset(sfxConfig, sound, {
+      synthesize: async () => { calls += 1; return { mime: 'audio/wav', buffer: Buffer.from('RIFF-healed') }; },
+      probe: async (filePath) => {
+        if (!path.basename(filePath).startsWith('.tmp-')) throw new Error('bad old file');
+        return 3.2;
+      },
+    });
+    assert.equal(calls, 1, '损坏缓存必须触发重新合成');
+    assert.equal(healed.cached, false);
+    assert.equal(healed.durationMs, 3200);
+  });
+
+  test('缺少 ffprobe（ENOENT）时原样报错，不误删已有缓存也不重复合成', async () => {
+    const sound = { prompt: '林间风声', durationMs: 5000, type: 'ambient' };
+    const hash = soundContentHash(sfxConfig, sound);
+    mkdirSync(path.join(scratch, 'media'), { recursive: true });
+    writeFileSync(path.join(scratch, 'media', `${hash}.wav`), Buffer.from('RIFF-ok'));
+    cacheAudio({ contentHash: hash, url: `/media/${hash}.wav`, mime: 'audio/wav', provider: 'custom', model: 'm1', voiceId: '' });
+
+    let calls = 0;
+    await assert.rejects(() => generateSoundAsset(sfxConfig, sound, {
+      synthesize: async () => { calls += 1; return { mime: 'audio/wav', buffer: Buffer.from('x') }; },
+      probe: async () => { throw Object.assign(new Error('spawn ffprobe ENOENT'), { code: 'ENOENT' }); },
+    }), /ENOENT/);
+    assert.equal(calls, 0);
+    assert.ok(findCachedAudio(hash), 'ffprobe 缺失不应清掉已有缓存行');
   });
 });
 

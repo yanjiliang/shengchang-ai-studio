@@ -30,6 +30,7 @@ export function SoundPicker({ line, projectId, config, builtinAssets, onBind, on
   const [uploading, setUploading] = useState(false);
   const audioRef = useRef(null);
   const fileInput = useRef(null);
+  const validDuration = Number.isFinite(Number(durationSec)) && Number(durationSec) >= 1 && Number(durationSec) <= 60;
 
   useEffect(() => {
     const onKey = (event) => { if (event.key === 'Escape') onClose(); };
@@ -51,7 +52,7 @@ export function SoundPicker({ line, projectId, config, builtinAssets, onBind, on
   };
   const builtinVisible = builtinAssets.filter((asset) => asset.type === line.type && `${asset.name} ${(asset.tags || []).join(' ')}`.toLowerCase().includes(query.trim().toLowerCase()));
   const generate = async () => {
-    if (!prompt.trim() || generating) return;
+    if (!prompt.trim() || generating || !validDuration) return;
     setGenerating(true);
     try {
       const ok = await onGenerate(line, { prompt: prompt.trim(), durationSec: Number(durationSec) || undefined });
@@ -73,7 +74,7 @@ export function SoundPicker({ line, projectId, config, builtinAssets, onBind, on
     <div className="picker-row" key={asset.id}>
       <button className="picker-play" type="button" aria-label={`试听${asset.name}`} onClick={() => play(asset)}>{playingId === asset.id ? <PauseCircle size={15} fill="currentColor" /> : <PlayCircle size={15} fill="currentColor" />}</button>
       <div className="picker-copy"><strong>{asset.name}</strong><small>{asset.reason || (asset.tags || []).slice(0, 4).join(' · ') || TYPE_LABEL[asset.type]}</small></div>
-      <span className="picker-duration">{formatSeconds(asset.durationMs)}</span>
+      <span className="picker-duration">{asset.durationMs > 0 ? formatSeconds(asset.durationMs) : asset.duration || '—'}</span>
       <span className={`source-chip is-${asset.source}`}>{SOURCE_LABEL[asset.source]}</span>
       <button className="button primary-button" type="button" onClick={() => { onBind(asset, line); onClose(); }}>绑定</button>
       {extra}
@@ -114,8 +115,8 @@ export function SoundPicker({ line, projectId, config, builtinAssets, onBind, on
               <label className="setting-field"><span>生成描述</span><textarea rows="3" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="描述想要的声音：环境、动作或音乐氛围" /></label>
               <label className="setting-field"><span>时长（秒）</span><input type="number" min="1" max="60" step="1" value={durationSec} onChange={(event) => setDurationSec(event.target.value)} /></label>
               {config?.sfxProvider === 'demo' ? <p className="picker-note is-warning">当前为离线演示引擎：生成的是占位音（链路真实，声音为合成示意）。在设置中配置音效生成服务后可产出真实素材。</p> : null}
-              {config?.sfxProvider === 'custom' && !config?.hasSfxAccessKey ? <p className="picker-note is-warning">音效生成服务尚未配置完成，请先到「设置」填写接口与凭证。</p> : null}
-              <div className="settings-actions"><button className="button primary-button" type="button" disabled={!prompt.trim() || generating} onClick={generate}><WandSparkles size={14} />{generating ? '正在生成…' : '生成并绑定'}</button></div>
+              {config?.sfxProvider === 'custom' && !config?.sfxEndpoint ? <p className="picker-note is-warning">音效生成服务尚未配置完成，请先到「设置」填写接口地址。</p> : null}
+              <div className="settings-actions"><button className="button primary-button" type="button" disabled={!prompt.trim() || generating || !validDuration} onClick={generate}><WandSparkles size={14} />{generating ? '正在生成…' : '生成并绑定'}</button></div>
               <p className="picker-note">生成结果进入本地素材库（按描述缓存，重复生成同一描述直接命中）；来源清单会随整集导出。</p>
             </>
           ) : null}

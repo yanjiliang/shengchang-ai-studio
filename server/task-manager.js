@@ -1,10 +1,11 @@
-import { access, stat, unlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { access, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { mergeAnalyzedCharacters } from './character-meta.js';
 import { mergeAppendedAnalysis } from './append-analysis.js';
 import path from 'node:path';
 import { readConfig } from './config-store.js';
 import { audioContentHash, cacheAudio, createPersistentTask, deleteAudioCache, findCachedAudio, getPersistentTask, getProject, listAudioCache, listProjects, markBookChapterFailed, markBookChapterImported, nextQueuedTask, requestTaskCancellation, soundContentHash, touchCachedAudio, updatePersistentTask, updateProject } from './database.js';
-import { exportProjectTimeline, runtimePaths, saveMedia } from './media-store.js';
+import { exportProjectTimeline, probeDuration, runtimePaths, saveMedia } from './media-store.js';
 import { synthesize, synthesizeSound } from './model-adapters.js';
 import { analyzeNovel } from './story-analyzer.js';
 import { runOneClickPipeline } from './one-click.js';
@@ -359,6 +360,60 @@ function labelChapterScenes(scenes, chapterTitle) {
   });
 }
 
+async function probeValidDurationMs(filePath, probe) {
+  try {
+    const durationMs = Math.round((await probe(filePath)) * 1000);
+    return Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw error;
+    return 0;
+  }
+}
+
+// 声音素材生成与缓存（导出给测试）：先写临时文件并校验有效时长，通过后再原子落盘
+// 并写入 audio_cache，避免损坏音频污染缓存导致重试反复命中坏文件。
+export async function generateSoundAsset(config, sound, { synthesize: synthesizeClip = synthesizeSound, probe = probeDuration } = {}) {
+  // Same content-addressed cache as speech, keyed by prompt + params: the
+  // same description reused anywhere in the project is a free hit.
+  const contentHash = soundContentHash(config, sound);
+  const cached = findCachedAudio(contentHash);
+  let badCachedUrl = '';
+  if (await validCache(cached)) {
+    const durationMs = await probeValidDurationMs(path.join(runtimePaths.MEDIA_DIR, path.basename(cached.url)), probe);
+    if (durationMs > 0) {
+      touchCachedAudio(contentHash);
+      return { url: cached.url, mime: cached.mime, contentHash, durationMs, cached: true };
+    }
+    badCachedUrl = cached.url;
+    deleteAudioCache(contentHash);
+  }
+  const recovered = await recoverCachedAudioFromDisk(contentHash);
+  if (recovered && recovered.url !== badCachedUrl) {
+    const durationMs = await probeValidDurationMs(path.join(runtimePaths.MEDIA_DIR, path.basename(recovered.url)), probe);
+    if (durationMs > 0) {
+      cacheAudio({ contentHash, url: recovered.url, mime: recovered.mime, provider: config.sfxProvider || 'demo', model: config.sfxModel || '', voiceId: '' });
+      return { url: recovered.url, mime: recovered.mime, contentHash, durationMs, cached: true };
+    }
+  }
+  const audio = await synthesizeClip(config, sound);
+  const extension = extensionForMime(audio.mime, 'mp3');
+  const staged = await saveMedia(`.tmp-${contentHash}-${randomUUID()}`, extension, audio.buffer);
+  try {
+    // Report the decoded file duration; undecodable or zero-length files must
+    // never be promoted to the cache path.
+    const durationMs = Math.round((await probe(staged.target)) * 1000);
+    if (!Number.isFinite(durationMs) || durationMs <= 0) throw new Error('生成的声音素材没有有效时长，请重新生成');
+    const finalTarget = path.join(runtimePaths.MEDIA_DIR, `${contentHash}.${extension}`);
+    await rename(staged.target, finalTarget);
+    const url = `/media/${path.basename(finalTarget)}`;
+    cacheAudio({ contentHash, url, mime: audio.mime, provider: config.sfxProvider || 'demo', model: config.sfxModel || '', voiceId: '' });
+    return { url, mime: audio.mime, contentHash, durationMs, cached: false };
+  } catch (error) {
+    await unlink(staged.target).catch(() => {});
+    throw error;
+  }
+}
+
 async function runTask(task) {
   const config = await readConfig();
   if (task.kind === 'voice-design') return runVoiceDesignTask(task, config);
@@ -406,33 +461,11 @@ async function runTask(task) {
     const sound = task.payload.sound || {};
     updatePersistentTask(task.id, { status: 'running', progress: 10, message: `正在生成声音素材：${String(sound.prompt || '').slice(0, 30)}`, startedAt: Date.now(), error: '' });
     try {
-      // Same content-addressed cache as speech, keyed by prompt + params: the
-      // same description reused anywhere in the project is a free hit.
-      const contentHash = soundContentHash(config, sound);
-      const cached = findCachedAudio(contentHash);
-      let url;
-      let mime;
-      let durationMs = Number(sound.durationMs) || 0;
-      if (await validCache(cached)) {
-        touchCachedAudio(contentHash);
-        url = cached.url; mime = cached.mime;
-      } else {
-        const recovered = await recoverCachedAudioFromDisk(contentHash);
-        if (recovered) {
-          cacheAudio({ contentHash, url: recovered.url, mime: recovered.mime, provider: config.sfxProvider || 'demo', model: config.sfxModel || '', voiceId: '' });
-          url = recovered.url; mime = recovered.mime;
-        } else {
-          const audio = await synthesizeSound(config, sound);
-          const extension = extensionForMime(audio.mime, 'mp3');
-          const saved = await saveMedia(contentHash, extension, audio.buffer);
-          cacheAudio({ contentHash, url: saved.url, mime: audio.mime, provider: config.sfxProvider || 'demo', model: config.sfxModel || '', voiceId: '' });
-          url = saved.url; mime = audio.mime;
-        }
-      }
+      const { url, mime, contentHash, durationMs } = await generateSoundAsset(config, sound);
       await evictAudioCacheIfNeeded(config.cacheLimitGb);
       updatePersistentTask(task.id, {
         status: 'completed', progress: 100, message: `声音素材已生成：${String(sound.prompt || '').slice(0, 30)}`,
-        result: { url, name: `${String(sound.prompt || '声音素材').slice(0, 24)}`, contentHash, durationMs, prompt: sound.prompt, type: sound.type, provider: config.sfxProvider || 'demo' },
+        result: { url, mime, name: `${String(sound.prompt || '声音素材').slice(0, 24)}`, contentHash, durationMs, prompt: sound.prompt, type: sound.type, provider: config.sfxProvider || 'demo' },
         completedAt: Date.now(),
       });
     } catch (error) {

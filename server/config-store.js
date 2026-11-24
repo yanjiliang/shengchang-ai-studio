@@ -47,6 +47,7 @@ export const DEFAULT_CONFIG = {
   sfxEndpoint: '',
   sfxAccessKey: '',
   sfxModel: '',
+  sfxTimeoutMs: 120_000,
   sfxCustomHeaders: '{}',
   sfxCustomBodyTemplate: '{"prompt":"{{prompt}}","duration":{{durationSec}}}',
 };
@@ -82,6 +83,7 @@ export function sanitizeConfig(input = {}) {
     sfxEndpoint: String(config.sfxEndpoint || ''),
     sfxAccessKey: String(config.sfxAccessKey || ''),
     sfxModel: String(config.sfxModel || ''),
+    sfxTimeoutMs: Number.isInteger(Number(config.sfxTimeoutMs)) && Number(config.sfxTimeoutMs) >= 5_000 && Number(config.sfxTimeoutMs) <= 1_800_000 ? Number(config.sfxTimeoutMs) : 120_000,
     sfxCustomHeaders: String(config.sfxCustomHeaders || '{}'),
     sfxCustomBodyTemplate: String(config.sfxCustomBodyTemplate || DEFAULT_CONFIG.sfxCustomBodyTemplate),
   };

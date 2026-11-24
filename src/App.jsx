@@ -314,7 +314,7 @@ function App() {
     }
     return generateBatch({ selects: (line) => wanted.has(line.id), kind: 'batch-stale', emptyMessage: '这些句子已经不在作品里了', doneMessage: (count) => `已重新配音 ${count} 句，可以再导出` });
   };
-  const playLine = (line) => { const url = line.audioUrl || line.assetUrl; if (!url) setToast('请先生成或绑定实际音频'); else if (line.type === 'dialogue') { setRequestedLineId(null); window.setTimeout(() => setRequestedLineId(line.id), 0); } else new Audio(url).play().catch(() => setToast('素材无法播放')); };
+  const playLine = (line) => { const url = line.audioUrl || line.assetUrl; if (!url) setToast('请先生成或绑定实际音频'); else { setRequestedLineId(null); window.setTimeout(() => setRequestedLineId(line.id), 0); } };
 
   // 按服务端保存的章节记录逐章导入；已导入的章节由 ChapterPicker 过滤掉，
   // 每章完成后服务端会把 imported_at 写回 book_chapters，下次可以直接续传。
@@ -560,6 +560,8 @@ function App() {
         category: line.type === 'music' ? '音乐' : line.type === 'ambient' ? '环境' : '动作',
         tags: ['AI 生成'],
         color: '#8fb4ff',
+        durationMs: result.durationMs,
+        mime: result.mime,
         duration: formatDuration(result.durationMs),
         source: 'generated',
         license: 'AI 生成',

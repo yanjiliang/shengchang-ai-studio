@@ -404,7 +404,7 @@ function demoSound(request, config) {
 }
 
 async function synthesizeSoundCustom(config, request) {
-  const timeout = requestTimeout(120_000);
+  const timeout = requestTimeout(config.sfxTimeoutMs || 120_000);
   try {
     const headers = parseJsonObject(config.sfxCustomHeaders, '音效生成请求头');
     if (config.sfxAccessKey && !Object.values(headers).some((value) => String(value).includes(config.sfxAccessKey))) headers.Authorization ||= `Bearer ${config.sfxAccessKey}`;

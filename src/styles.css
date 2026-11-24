@@ -156,6 +156,10 @@ button { cursor: pointer; }
 .scene-title-row button { width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: var(--color-muted); }
 .scene-heading-copy > p { max-width: 660px; margin: 8px 0 10px; color: var(--color-text-soft); font-size: 11px; line-height: 1.65; }
 .scene-meta-row { display: flex; gap: 18px; color: var(--color-dim); font-size: 9px; }
+.scene-director-strip { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--color-line); }
+.scene-director-strip label { display: flex; align-items: center; gap: 8px; color: var(--color-dim); font-size: 9px; }
+.scene-director-strip label span { flex: 0 0 auto; color: var(--color-accent); font-weight: 600; }
+.meta-input.is-director { flex: 1 1 auto; min-width: 0; color: var(--color-text-soft); font-size: 9px; }
 .emotion-arc { align-self: center; min-width: 0; }
 .arc-copy { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; color: var(--color-dim); font-size: 9px; }
 .arc-copy strong { color: var(--color-muted); font-weight: 600; }
@@ -238,6 +242,10 @@ button { cursor: pointer; }
 .character-selector strong, .character-selector small { display: block; }
 .character-selector strong { margin-bottom: 3px; font-size: 11px; }
 .character-selector small { overflow: hidden; color: var(--color-dim); text-overflow: ellipsis; white-space: nowrap; font-size: 8px; }
+.speaker-switch { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--color-muted); font-size: 9px; }
+.speaker-switch > span { flex: 0 0 auto; }
+.speaker-switch select { flex: 1; min-width: 0; height: 26px; padding: 0 7px; border: 1px solid var(--color-line-strong); border-radius: var(--radius-sm); background: var(--color-paper-3); color: var(--color-text); font-size: 10px; }
+.speaker-switch-hint { margin: 6px 0 0; color: var(--color-dim); font-size: 9px; line-height: 1.6; }
 .voice-lock { display: flex; align-items: center; gap: 3px; color: var(--color-mint); font-size: 8px; white-space: nowrap; }
 .similarity-row { display: flex; justify-content: space-between; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--color-line); color: var(--color-muted); font-size: 9px; }
 .similarity-row b { color: var(--color-mint); }

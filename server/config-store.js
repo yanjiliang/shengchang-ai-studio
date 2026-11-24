@@ -40,7 +40,7 @@ export const DEFAULT_CONFIG = {
   llmEndpoint: '', // 0048：不预填任何服务商，用户自己填 Base URL（Product 定）
   llmApiKey: '',
   llmModel: '',
-  llmSystemPrompt: '你是一位专业广播剧编剧和声音导演。忠于原作，不凭空新增关键剧情。',
+  llmSystemPrompt: '你是一位擅长精品电影感多人有声剧的总导演与声音分镜师。忠于原作情节与人物关系，不凭空篡改关键剧情；善于用镜头感旁白控场、高频电影拟音、氛围配乐、景别距离与停顿气口构建强画面感与情绪张力。',
   // Sound-effect / music-bed generation (SoundPicker 生成 tab). Independent of
   // the speech provider: different services, different request shapes.
   sfxProvider: 'demo',

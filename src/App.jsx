@@ -210,7 +210,16 @@ function App() {
   };
   // Changing the text does not delete the clip; the server flags it stale so the
   // old audio stays auditionable until it is regenerated.
-  const updateLine = (lineId, patch) => persistState({ ...state, scenes: scenes.map((scene) => scene.id !== currentScene.id ? scene : { ...scene, status: 'draft', lines: scene.lines.map((line) => line.id === lineId ? { ...line, ...normalizeLinePatch(patch) } : line) }) });
+  const updateLine = (lineId, patch) => persistState({
+    ...state,
+    scenes: scenes.map((scene) => {
+      if (scene.id !== currentScene.id) return scene;
+      const lines = scene.lines.map((line) => line.id === lineId ? { ...line, ...normalizeLinePatch(patch) } : line);
+      // 改说话人后同步场景 cast，侧栏不会还显示旧的角色列表。
+      const cast = [...new Set(lines.filter((line) => line.type === 'dialogue' && line.speaker).map((line) => line.speaker))].join(' · ') || '旁白';
+      return { ...scene, status: 'draft', cast, lines };
+    }),
+  });
   const updateScene = (sceneId, patch) => persistState({ ...state, scenes: scenes.map((scene) => scene.id !== sceneId ? scene : { ...scene, ...patch, status: 'draft' }) });
   const changeScene = (sceneId) => { const scene = scenes.find((item) => item.id === sceneId); setCurrentSceneId(sceneId); setSelectedLineId(scene.lines.find((line) => line.type === 'dialogue')?.id || scene.lines[0]?.id || null); };
   const selectProject = async (projectId) => { setLoading(true); try { await refreshProjects(projectId); setView('studio'); } catch (error) { setToast(error.message); } finally { setLoading(false); } };
@@ -451,7 +460,7 @@ function App() {
     if (!currentScene) return;
     const id = crypto.randomUUID();
     const line = type === 'dialogue'
-      ? { id, type, speaker: '旁白', speakerId: 'narrator', text: '输入新的旁白或对白', subtext: '按当前剧情上下文表达。', emotion: '克制', intensity: 40, pace: 90, distance: '近讲' }
+      ? { id, type, speaker: '旁白', speakerId: 'narrator', text: '输入新的旁白或对白', subtext: '', emotion: '克制', intensity: 40, pace: 90, distance: '近讲' }
       : { id, type, label: SOUND_EVENT_LABELS[type] || '声音事件', text: SOUND_EVENT_PLACEHOLDERS[type] || '描述需要的声音' };
     persistState({ ...state, scenes: scenes.map((scene) => scene.id === currentScene.id ? { ...scene, status: 'draft', lines: [...scene.lines, line] } : scene) });
     setSelectedLineId(id);

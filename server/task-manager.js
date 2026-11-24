@@ -479,9 +479,9 @@ async function runTask(task) {
       const before = getProject(task.projectId);
       if (!before) throw new Error('分析目标项目不存在');
       const append = Boolean(task.payload.appendScenes);
-      const analyzed = await analyzeNovel(config, { ...task.payload, seedCharacters: append ? before.state?.characters || [] : [] }, {
+      const analyzed = await analyzeNovel(config, { ...task.payload, seedCharacters: append ? before.state?.characters || [] : [], seedPreviousScene: append ? before.state?.scenes?.at(-1) || null : null }, {
         shouldCancel: () => Boolean(getPersistentTask(task.id)?.cancelRequested),
-        onProgress: ({ current, total, progress }) => updatePersistentTask(task.id, { progress, message: `正在拆解原文 ${current} / ${total} 段` }),
+        onProgress: ({ current, total, progress, message }) => updatePersistentTask(task.id, { progress, message: message || `正在拆解原文 ${current} / ${total} 段` }),
         // Chunk checkpoints land in the task payload; retryTask copies the
         // payload, so a failed multi-chunk run resumes from the last completed
         // chunk instead of re-paying for every LLM call.

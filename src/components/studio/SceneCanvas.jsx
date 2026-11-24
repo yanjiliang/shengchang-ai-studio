@@ -37,6 +37,12 @@ export function SceneCanvas({ scene, provider, durationMs, sourceText, character
           <div className="scene-title-row"><h2><input className="meta-input is-title" value={scene.title || ''} aria-label="场景标题" onChange={(event) => onUpdateScene(scene.id, { title: event.target.value })} /></h2></div>
           <p><input className="meta-input is-synopsis" value={scene.synopsis || ''} placeholder="一句话概括本场的剧情作用" aria-label="场景概要" onChange={(event) => onUpdateScene(scene.id, { synopsis: event.target.value })} /></p>
           <div className="scene-meta-row"><span>气氛：<input className="meta-input is-inline" value={scene.mood || ''} placeholder="待导演" aria-label="场景气氛" onChange={(event) => onUpdateScene(scene.id, { mood: event.target.value })} /></span><span>{durationMs ? `对白时长 ${formatMs(durationMs)}` : '对白时长待生成'}</span></div>
+          {scene.emotionArc || scene.directorNote ? (
+            <div className="scene-director-strip" aria-label="导演分镜提示">
+              {scene.emotionArc ? <label><span>情绪弧线</span><input className="meta-input is-director" value={scene.emotionArc} aria-label="情绪弧线" onChange={(event) => onUpdateScene(scene.id, { emotionArc: event.target.value })} /></label> : null}
+              {scene.directorNote ? <label><span>分镜调度</span><input className="meta-input is-director" value={scene.directorNote} aria-label="分镜调度" onChange={(event) => onUpdateScene(scene.id, { directorNote: event.target.value })} /></label> : null}
+            </div>
+          ) : null}
         </div>
         <div className="emotion-arc" aria-label="情绪强度曲线">
           <div className="arc-copy"><span>{curve.length ? `首句 ${firstEmotion || '—'}` : '暂无对白'}</span><strong>情绪强度</strong><span>{curve.length ? `峰值 ${peak}%` : '—'}</span></div>

@@ -51,10 +51,41 @@ test('循环声床拉伸至场景结束', () => {
 
 test('defaultMix 按轨道类型给出默认混音参数', () => {
   assert.equal(defaultMix({ type: 'dialogue' }).startMs, '');
+  assert.equal(defaultMix({ type: 'sfx' }).startMs, '');
+  assert.equal(defaultMix({ type: 'sfx' }).fadeInMs, 0);
+  assert.equal(defaultMix({ type: 'sfx' }).fadeOutMs, 100);
+  assert.equal(defaultMix({ type: 'sfx' }).loop, false);
   assert.equal(defaultMix({ type: 'music' }).startMs, 0);
   assert.equal(defaultMix({ type: 'ambient' }).loop, true);
   assert.equal(defaultMix({ type: 'dialogue' }).loop, false);
   assert.equal(defaultMix({ type: 'music', mix: { gainDb: -3 } }).gainDb, -3);
+});
+
+test('动作音效未设入点时锚定脚本位置并受限于 1800ms 推进，未绑定或手定入点不推动对白', () => {
+  const scene = { lines: [
+    { id: 'd1', type: 'dialogue', audioUrl: '/media/d1.wav' },
+    { id: 's-unbound', type: 'sfx' },
+    { id: 's-short', type: 'sfx', assetUrl: '/media/s1.wav' },
+    { id: 'd2', type: 'dialogue', audioUrl: '/media/d2.wav' },
+    { id: 's-long', type: 'sfx', assetUrl: '/media/s2.wav' },
+    { id: 's-pin', type: 'sfx', assetUrl: '/media/s3.wav', mix: { startMs: 400 } },
+    { id: 'd3', type: 'dialogue', audioUrl: '/media/d3.wav' },
+  ] };
+  const durations = new Map([['d1', 1000], ['s-short', 800], ['d2', 1000], ['s-long', 4000], ['s-pin', 600], ['d3', 1000]]);
+  const { tracks, totalMs } = timelinePreview(scene, durations);
+  const byId = new Map(tracks.map((track) => [track.line.id, track]));
+  assert.equal(byId.get('d1').startMs, 0);
+  // 未绑定音效锚在当前游标处，但不推进游标
+  assert.equal(byId.get('s-unbound').startMs, 1320);
+  assert.equal(byId.get('s-short').startMs, 1320);
+  // 短音效 800ms + 200ms 气口 → d2 从 2320ms 进入
+  assert.equal(byId.get('d2').startMs, 2320);
+  // 长音效 4000ms 从 3640ms 进入，推进封顶 1800ms → d3 从 5440ms 进入
+  assert.equal(byId.get('s-long').startMs, 3640);
+  assert.equal(byId.get('s-pin').startMs, 400);
+  assert.equal(byId.get('d3').startMs, 5440);
+  // 总长被 4000ms 长音效尾端（3640 + 4000 = 7640ms）撑满
+  assert.equal(totalMs, 7640);
 });
 
 test('rulerTicks 按总时长取档且不超过约 6 个刻度', () => {

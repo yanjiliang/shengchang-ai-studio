@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { buildGenerationRequest } from '../shared/generation-requests.mjs';
+import { DISTANCE_OPTIONS } from '../shared/mix-defaults.mjs';
 import { audioContentHash, getProject, updateProject } from './database.js';
 import { missingDialogueFiles, runtimePaths } from './media-store.js';
 import { BreezeError, listBreezeVoices, registerBreezeVoice } from './breeze.js';
@@ -252,6 +253,27 @@ export function expectedAudioHash(config, state, line, voiceMap = effectiveVoice
   return resolved.voiceId ? audioContentHash(config, resolved) : null;
 }
 
+const DISTANCE_CANDIDATES = ['', ...DISTANCE_OPTIONS];
+
+// 说话距离由混音层（media-store.js）实时模拟，豆包 / Breeze / 演示引擎都不发 distance。
+// 为保持既有音频缓存键（audioContentHash）零变动，仅在判断 stale / 影响范围时把
+// “只改了距离”视为未过期；自定义引擎模板若显式使用 {{distance}} 则照旧判定过期。
+function ttsUsesDistance(config) {
+  return config?.provider === 'custom' && String(config.customBodyTemplate || '').includes('{{distance}}');
+}
+
+function matchesExpectedAudioHash(config, state, line, voiceMap) {
+  if (!line.audioHash) return false;
+  if (expectedAudioHash(config, state, line, voiceMap) === line.audioHash) return true;
+  if (ttsUsesDistance(config)) return false;
+  const current = String(line.distance || '');
+  for (const distance of DISTANCE_CANDIDATES) {
+    if (distance === current) continue;
+    if (expectedAudioHash(config, state, { ...line, distance }, voiceMap) === line.audioHash) return true;
+  }
+  return false;
+}
+
 // stale：已有音频与“现在生成会得到的”不符，纯由缓存键推导：按当前台词/参数复算的
 // hash ≠ 台词上存的 audioHash 就是 stale（台词改回原文、参数改回去都会自动恢复）。
 // reason 'text' = 台词与音频原文（audioText）不同；否则 'params' = 情绪/语速/音色/
@@ -262,8 +284,7 @@ export function lineStaleness(config, state, line, voiceMap = effectiveVoiceMap(
   if (line.type !== 'dialogue' || !line.audioUrl) return { stale: false, staleReason: null };
   const textChanged = typeof line.audioText === 'string' ? String(line.text ?? '') !== line.audioText : Boolean(line.audioStale);
   if (!line.audioHash || (line.audioEngine && line.audioEngine !== (config.provider || ''))) return textChanged ? { stale: true, staleReason: 'text' } : { stale: false, staleReason: null };
-  const expected = expectedAudioHash(config, state, line, voiceMap);
-  if (expected === line.audioHash) return { stale: false, staleReason: null };
+  if (matchesExpectedAudioHash(config, state, line, voiceMap)) return { stale: false, staleReason: null };
   // e2e7 升级检查：d04fa3f（4174 生产）配的句子有 audioHash、没有 audioEngine。哈希对不上时分不清是
   // “参数改了”还是“当时是别的引擎配的”（demo / 自定义的句子在启用豆包后全部对不上），按“别的引擎”处理、
   // 只看文本——否则升级后一键成片会拿豆包把没改过的老句子整批重配。代价：老句子同引擎下只改情绪 / 语速
@@ -357,7 +378,7 @@ export function referenceImpact(config, project, roleId) {
   for (const scene of state.scenes || []) {
     for (const line of scene.lines || []) {
       if (line.type !== 'dialogue' || line.speakerId !== roleId || !line.audioUrl) continue;
-      if (line.audioHash !== expectedAudioHash(config, state, line, voiceMap)) lineIds.push(line.id);
+      if (!matchesExpectedAudioHash(config, state, line, voiceMap)) lineIds.push(line.id);
     }
   }
   return { affectedLineCount: lineIds.length, lineIds };

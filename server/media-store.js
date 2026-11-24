@@ -3,7 +3,7 @@ import { mkdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveGapAfterMs } from '../shared/mix-defaults.mjs';
+import { defaultFadeInMs, defaultFadeOutMs, defaultGainDb, defaultLoop, distanceFilters, normalizeDistance, parseLegacyStartMs, resolveGapAfterMs, sfxCursorAdvanceMs } from '../shared/mix-defaults.mjs';
 
 const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
 // Overridable so tests can point the database and media tree at a scratch
@@ -121,6 +121,10 @@ export function timelineSegments(resolved, { sceneId = null, offsetMs = 0 } = {}
     .sort((a, b) => a.startMs - b.startMs || (a.type === 'dialogue' ? -1 : 0) - (b.type === 'dialogue' ? -1 : 0));
 }
 
+function optionalNumber(value) {
+  return value === '' || value === null || value === undefined ? NaN : Number(value);
+}
+
 function clamp(value, min, max, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback;
@@ -148,11 +152,6 @@ async function mapWithConcurrency(items, limit, worker) {
     }
   }));
   return results;
-}
-
-function legacyStartMs(value) {
-  const match = String(value || '').match(/^(\d+):(\d{2})$/);
-  return match ? (Number(match[1]) * 60 + Number(match[2])) * 1000 : 0;
 }
 
 function mediaPath(url) {
@@ -279,21 +278,31 @@ export async function resolveSceneTimeline(scene) {
     const sourceDuration = await probeDuration(source);
     const mix = line.mix || {};
     const isDialogue = line.type === 'dialogue';
-    const defaultLoop = line.type === 'ambient' || line.type === 'music';
+    const isSfx = line.type === 'sfx';
     const explicitStart = mix.startMs !== '' && mix.startMs !== null && mix.startMs !== undefined && Number.isFinite(Number(mix.startMs)) ? Math.max(0, Number(mix.startMs)) / 1000 : null;
-    const start = explicitStart ?? (isDialogue ? dialogueCursor : legacyStartMs(line.time) / 1000);
-    const trimStart = clamp(Number(mix.trimStartMs) / 1000, 0, Math.max(0, sourceDuration - 0.02), 0);
+    const legacyStart = !isDialogue ? parseLegacyStartMs(line.time) : null;
+    const autoAnchorSfx = isSfx && explicitStart === null && legacyStart === null;
+    const start = explicitStart ?? (isDialogue ? dialogueCursor : autoAnchorSfx ? dialogueCursor : (legacyStart ?? 0) / 1000);
+    const trimStart = clamp(optionalNumber(mix.trimStartMs) / 1000, 0, Math.max(0, sourceDuration - 0.02), 0);
     const hasTrimEnd = mix.trimEndMs !== '' && mix.trimEndMs !== null && mix.trimEndMs !== undefined;
     const requestedTrimEnd = hasTrimEnd ? Number(mix.trimEndMs) / 1000 : sourceDuration;
     if (hasTrimEnd && (!Number.isFinite(requestedTrimEnd) || requestedTrimEnd <= trimStart)) throw new Error(`轨道「${line.speaker || line.label || line.id}」的裁切结束必须晚于裁切开始`);
     const trimEndSetting = hasTrimEnd ? clamp(requestedTrimEnd, trimStart + 0.02, sourceDuration, sourceDuration) : sourceDuration;
     const trimmedSourceDuration = Math.max(0.02, trimEndSetting - trimStart);
     const requestedDuration = mix.durationMs !== '' && mix.durationMs !== null && mix.durationMs !== undefined ? clamp(Number(mix.durationMs) / 1000, 0.05, 21_600, 0) : 0;
-    const loop = !isDialogue && (mix.loop ?? defaultLoop);
+    const loop = !isDialogue && (mix.loop ?? defaultLoop(line.type));
     const duration = requestedDuration || trimmedSourceDuration;
-    const gapAfter = isDialogue ? clamp(Number(resolveGapAfterMs({ ...line, mix })) / 1000, 0, 10, 0.32) : 0;
-    tracks.push({ lineId: line.id, type: line.type, source, sourceDuration, trimmedSourceDuration, trimStart, trimEnd: trimEndSetting, start, duration, loop, gainDb: clamp(mix.gainDb, -60, 12, isDialogue ? 0 : line.type === 'music' ? -18 : line.type === 'ambient' ? -14 : -6), fadeIn: clamp(Number(mix.fadeInMs) / 1000, 0, 30, isDialogue ? 0 : 0.4), fadeOut: clamp(Number(mix.fadeOutMs) / 1000, 0, 30, isDialogue ? 0 : 0.7), pan: clamp(mix.pan, -1, 1, 0) });
+    const gapAfter = isDialogue ? clamp(optionalNumber(resolveGapAfterMs({ ...line, mix })) / 1000, 0, 10, 0.32) : 0;
+    tracks.push({
+      lineId: line.id, type: line.type, source, sourceDuration, trimmedSourceDuration, trimStart, trimEnd: trimEndSetting, start, duration, loop,
+      distance: isDialogue ? normalizeDistance(line.distance) : null,
+      gainDb: clamp(optionalNumber(mix.gainDb), -60, 12, defaultGainDb(line.type)),
+      fadeIn: clamp(optionalNumber(mix.fadeInMs) / 1000, 0, 30, defaultFadeInMs(line.type) / 1000),
+      fadeOut: clamp(optionalNumber(mix.fadeOutMs) / 1000, 0, 30, defaultFadeOutMs(line.type) / 1000),
+      pan: clamp(optionalNumber(mix.pan), -1, 1, 0),
+    });
     if (isDialogue) dialogueCursor = Math.max(dialogueCursor, start + duration + gapAfter);
+    else if (autoAnchorSfx) dialogueCursor = Math.max(dialogueCursor, start + sfxCursorAdvanceMs(duration * 1000) / 1000);
   }
   if (!tracks.some((track) => track.type === 'dialogue')) throw new Error(`场景「${scene.title}」没有可用对白音频`);
   let totalDuration = Math.max(dialogueCursor, ...tracks.map((track) => track.start + track.duration));
@@ -309,28 +318,37 @@ function busFilter(labels, name, filters) {
   else filters.push(`${labels.join('')}amix=inputs=${labels.length}:duration=longest:normalize=0[${name}]`);
 }
 
-async function renderTimeline(scene, output, { targetLufs = -16, normalize = true, tailPadMs = 350 } = {}) {
-  const resolved = await resolveSceneTimeline(scene);
+// Exported for tests: pure FFmpeg filter graph builder for a resolved timeline.
+// 分三条总线：对白（含说话距离声场建模）、声床（ambient/music，随对白 sidechain 闪避）、
+// 动作音效（sfx，独立总线不参与对白闪避，保留敲门/雷声/撞击等瞬态冲击）。
+export function buildRenderFilterGraph(resolved, { targetLufs = -16, normalize = true, tailPadMs = 350 } = {}) {
   const inputs = [];
   const filters = [];
   const dialogueLabels = [];
   const bedLabels = [];
+  const sfxLabels = [];
   resolved.tracks.forEach((track, index) => {
     inputs.push('-i', track.source);
-    const label = track.type === 'dialogue' ? `[d${index}]` : `[b${index}]`;
+    const label = track.type === 'dialogue' ? `[d${index}]` : track.type === 'sfx' ? `[s${index}]` : `[b${index}]`;
     const chain = [`[${index}:a]aresample=48000`, 'aformat=sample_fmts=fltp:channel_layouts=stereo', `atrim=start=${track.trimStart.toFixed(3)}:end=${track.trimEnd.toFixed(3)}`, 'asetpts=PTS-STARTPTS'];
     if (track.loop && track.duration > track.trimmedSourceDuration) chain.push(`aloop=loop=-1:size=${Math.max(1, Math.round(track.trimmedSourceDuration * 48000))}`);
     else if (track.duration > track.trimmedSourceDuration) chain.push('apad');
     chain.push(`atrim=duration=${track.duration.toFixed(3)}`, 'asetpts=PTS-STARTPTS', `volume=${Math.pow(10, track.gainDb / 20).toFixed(6)}`);
     if (track.fadeIn > 0) chain.push(`afade=t=in:st=0:d=${Math.min(track.fadeIn, track.duration).toFixed(3)}`);
     if (track.fadeOut > 0) chain.push(`afade=t=out:st=${Math.max(0, track.duration - track.fadeOut).toFixed(3)}:d=${Math.min(track.fadeOut, track.duration).toFixed(3)}`);
+    if (track.type === 'dialogue') {
+      const spatial = distanceFilters(track.distance);
+      if (spatial.length) chain.push(...spatial);
+    }
     if (track.pan !== 0) chain.push(`stereotools=balance_out=${track.pan.toFixed(3)}`);
     chain.push(`adelay=${Math.round(track.start * 1000)}:all=1`);
     filters.push(`${chain.join(',')}${label}`);
-    (track.type === 'dialogue' ? dialogueLabels : bedLabels).push(label);
+    if (track.type === 'dialogue') dialogueLabels.push(label);
+    else if (track.type === 'sfx') sfxLabels.push(label);
+    else bedLabels.push(label);
   });
   busFilter(dialogueLabels, 'dialogue', filters);
-  let mixedLabel = '[dialogue]';
+  const mixInputs = [];
   if (bedLabels.length) {
     busFilter(bedLabels, 'beds', filters);
     filters.push('[dialogue]asplit=2[dialogue_mix][dialogue_side]');
@@ -341,7 +359,17 @@ async function renderTimeline(scene, output, { targetLufs = -16, normalize = tru
     // EOF and the render hangs.
     filters.push(`[dialogue_side]apad=pad_dur=${resolved.totalDuration.toFixed(3)}[dialogue_side_pad]`);
     filters.push(`[beds][dialogue_side_pad]sidechaincompress=threshold=0.025:ratio=8:attack=20:release=450[ducked]`);
-    filters.push('[dialogue_mix][ducked]amix=inputs=2:duration=longest:normalize=0[mixed]');
+    mixInputs.push('[dialogue_mix]', '[ducked]');
+  } else {
+    mixInputs.push('[dialogue]');
+  }
+  if (sfxLabels.length) {
+    busFilter(sfxLabels, 'sfx', filters);
+    mixInputs.push('[sfx]');
+  }
+  let mixedLabel = mixInputs[0];
+  if (mixInputs.length > 1) {
+    filters.push(`${mixInputs.join('')}amix=inputs=${mixInputs.length}:duration=longest:normalize=0[mixed]`);
     mixedLabel = '[mixed]';
   }
   const finalDuration = resolved.totalDuration + tailPadMs / 1000;
@@ -354,6 +382,12 @@ async function renderTimeline(scene, output, { targetLufs = -16, normalize = tru
   if (normalize) finalChain.push(`loudnorm=I=${targetLufs}:TP=-1:LRA=11`);
   finalChain.push('alimiter=limit=0.95');
   filters.push(`${mixedLabel}${finalChain.join(',')}[out]`);
+  return { inputs, filters, finalDuration };
+}
+
+async function renderTimeline(scene, output, { targetLufs = -16, normalize = true, tailPadMs = 350 } = {}) {
+  const resolved = await resolveSceneTimeline(scene);
+  const { inputs, filters, finalDuration } = buildRenderFilterGraph(resolved, { targetLufs, normalize, tailPadMs });
   const codec = output.endsWith('.wav') ? ['-codec:a', 'pcm_s24le'] : ['-codec:a', 'libmp3lame', '-b:a', '192k'];
   await run('ffmpeg', ['-y', ...inputs, '-filter_complex', filters.join(';'), '-map', '[out]', '-ar', '48000', '-ac', '2', ...codec, output]);
   return { ...resolved, durationMs: Math.round(finalDuration * 1000) };

@@ -20,7 +20,10 @@ COPY . .
 # missing mountpoints as root, which would block the non-root runtime user
 # from writing its config; pre-existing dirs are copied into fresh named
 # volumes together with their ownership.
+# Build tools and frontend-only libs (vite, react, …) are devDependencies: install
+# everything for the build, then prune them so the runtime image stays small.
 RUN npm run build \
+  && npm prune --omit=dev \
   && mkdir -p /app/.runtime /home/node/.shengchang \
   && chown -R node:node /app/.runtime /home/node/.shengchang
 

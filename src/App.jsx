@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { LLM_IMPORT_BLOCKED, llmReady } from './lib/llm.js';
-import { extractNovelFile, formatLabel, NOVEL_FILE_ACCEPT } from './lib/import-file.js';
+import { formatLabel, NOVEL_FILE_ACCEPT } from './lib/import-formats.js';
 import { ChapterPicker } from './components/import/ChapterPicker';
 import { ImportHub } from './components/import/ImportHub';
 import { AppRail } from './components/AppRail';
@@ -14,11 +14,13 @@ import { Inspector } from './components/studio/Inspector';
 import { SceneCanvas } from './components/studio/SceneCanvas';
 import { SceneSidebar } from './components/studio/SceneSidebar';
 import { SoundPicker } from './components/studio/SoundPicker';
-import { QualityView } from './components/views/QualityView';
-import { SettingsView } from './components/views/SettingsView';
-import { SoundsView } from './components/views/SoundsView';
-import { VoicesView } from './components/views/VoicesView';
-import { ProductionView } from './components/views/ProductionView';
+// 工作台（studio）之外的视图按需加载，首屏只打包剧本工作台。
+const lazyView = (load, name) => lazy(() => load().then((module) => ({ default: module[name] })));
+const QualityView = lazyView(() => import('./components/views/QualityView'), 'QualityView');
+const SettingsView = lazyView(() => import('./components/views/SettingsView'), 'SettingsView');
+const SoundsView = lazyView(() => import('./components/views/SoundsView'), 'SoundsView');
+const VoicesView = lazyView(() => import('./components/views/VoicesView'), 'VoicesView');
+const ProductionView = lazyView(() => import('./components/views/ProductionView'), 'ProductionView');
 import { api, waitForTask } from './lib/api';
 import { formatDuration, qualityReport as buildQualityReport, stageProgress as buildStageProgress } from './lib/quality';
 import { buildGenerationRequest } from '../shared/generation-requests.mjs';
@@ -409,6 +411,7 @@ function App() {
       let imported;
       try {
         setAnalysis({ progress: 1, message: `正在读取 ${file.name}` });
+        const { extractNovelFile } = await import('./lib/import-file.js');
         imported = await extractNovelFile(file);
       } catch (error) { setToast(error.message); setAnalysis(null); return; }
       if (!imported.text.trim()) { setToast('没有从文件里读到正文'); setAnalysis(null); return; }
@@ -762,7 +765,7 @@ function App() {
   else if (view === 'quality') content = <QualityView report={qualityReport} stages={stages} onToast={setToast} onExport={() => exportSceneById(currentScene?.id)} onOpenProduction={() => setView('production')} onOpenView={setView} onLocateLine={locateLine} onOpenVoices={() => setView('voices')} onOpenSounds={() => setView('sounds')} onGenerateMissing={() => generateMissingDialogue([currentScene?.id])} onRegenerateStale={() => regenerateStaleDialogue([currentScene?.id])} generating={Boolean(generation)} exporting={exporting} exportLocked={exportLock.locked} />;
   else content = <SettingsView config={config} onSave={saveConfig} onTestLlm={api.testLlm} onToast={setToast} onReload={reloadConfig} />;
 
-  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{outage ? <BreezeOutageBanner outage={outage} checking={breeze.checking} onRetry={retryAfterOutage} onResume={retryAfterOutage} onSettings={() => { setOutage(null); setView('settings'); }} onDismiss={() => setOutage(null)} /> : null}{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} exportLocked={exportLock.locked} /> : null}{pickerLine ? <SoundPicker line={pickerLine} projectId={project.id} config={config} builtinAssets={builtinAssets} onBind={bindAsset} onUpload={uploadAndBind} onGenerate={generateSound} onClose={() => setPickerLine(null)} onToast={setToast} /> : null}{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}{chapterPicker ? <ChapterPicker chapters={chapterPicker.chapters} fileName={chapterPicker.fileName} hasScenes={chapterPicker.hasScenes} onCancel={() => closeChapterPicker(null)} onConfirm={(value) => closeChapterPicker(value)} /> : null}{importHub ? <ImportHub books={importHub.books} onCancel={() => closeImportHub(null)} onContinue={(bookId) => closeImportHub({ action: 'continue', bookId })} onNewFile={() => closeImportHub({ action: 'file' })} onDelete={deleteBookImportRecord} /> : null}<Toast message={toast} />{exportFailure ? <ExportFailure className="export-failure-notice" text={exportFailure.text} detail={exportFailure.detail} missing={Boolean(exportFailure.missing)} lines={exportFailure.lines || []} onRegenerate={(ids) => { setExportFailure(null); regenerateLines(ids); }} onLocate={(item) => locateLine(item.lineId)} retryDisabled={exporting || exportLock.locked} onRetry={() => { const { retry } = exportFailure; setExportFailure(null); retry?.(); }} onClose={() => setExportFailure(null)} /> : null}</div>;
+  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{outage ? <BreezeOutageBanner outage={outage} checking={breeze.checking} onRetry={retryAfterOutage} onResume={retryAfterOutage} onSettings={() => { setOutage(null); setView('settings'); }} onDismiss={() => setOutage(null)} /> : null}<Suspense fallback={<ViewLoading />}>{content}</Suspense></div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} exportLocked={exportLock.locked} /> : null}{pickerLine ? <SoundPicker line={pickerLine} projectId={project.id} config={config} builtinAssets={builtinAssets} onBind={bindAsset} onUpload={uploadAndBind} onGenerate={generateSound} onClose={() => setPickerLine(null)} onToast={setToast} /> : null}{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}{chapterPicker ? <ChapterPicker chapters={chapterPicker.chapters} fileName={chapterPicker.fileName} hasScenes={chapterPicker.hasScenes} onCancel={() => closeChapterPicker(null)} onConfirm={(value) => closeChapterPicker(value)} /> : null}{importHub ? <ImportHub books={importHub.books} onCancel={() => closeImportHub(null)} onContinue={(bookId) => closeImportHub({ action: 'continue', bookId })} onNewFile={() => closeImportHub({ action: 'file' })} onDelete={deleteBookImportRecord} /> : null}<Toast message={toast} />{exportFailure ? <ExportFailure className="export-failure-notice" text={exportFailure.text} detail={exportFailure.detail} missing={Boolean(exportFailure.missing)} lines={exportFailure.lines || []} onRegenerate={(ids) => { setExportFailure(null); regenerateLines(ids); }} onLocate={(item) => locateLine(item.lineId)} retryDisabled={exporting || exportLock.locked} onRetry={() => { const { retry } = exportFailure; setExportFailure(null); retry?.(); }} onClose={() => setExportFailure(null)} /> : null}</div>;
 }
 
 // --- Local composition helpers (props-only, no state of their own) --------
@@ -777,6 +780,10 @@ function WelcomeScreen({ onCreate }) {
 
 function LoadErrorScreen({ onRetry, onCreate }) {
   return <main className="empty-project"><BrandSignature /><h2>作品加载失败</h2><p>没有打开任何作品：读取失败，或所选作品已不存在。可重试，或从顶部切换其他作品。</p><div className="empty-project-actions"><button className="button primary-button" type="button" onClick={onRetry}>重试加载</button><button className="button secondary-button" type="button" onClick={onCreate}>新建作品</button></div></main>;
+}
+
+function ViewLoading() {
+  return <div className="app-loading" role="status"><span>正在加载…</span></div>;
 }
 
 function LoadingScreen() {

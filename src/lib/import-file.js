@@ -6,17 +6,12 @@
 // EPUB/DOCX 是 ZIP：只解出 OPF/NCX/XHTML 或 word/document.xml，不碰图片/字体。
 import { unzipSync } from 'fflate';
 
-export const NOVEL_FILE_ACCEPT = [
-  '.txt', '.md', '.markdown', '.html', '.htm', '.epub', '.docx',
-  'text/plain', 'text/markdown', 'text/html',
-  'application/epub+zip',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-].join(',');
+import { formatLabel, NOVEL_FILE_ACCEPT } from './import-formats.js';
+
+export { formatLabel, NOVEL_FILE_ACCEPT };
 
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
-const FORMAT_LABEL = { text: 'TXT', epub: 'EPUB', docx: 'DOCX', markdown: 'Markdown', html: 'HTML' };
 const UNSUPPORTED_FORMATS = { pdf: 'PDF', mobi: 'MOBI', azw: 'AZW', azw3: 'AZW3', doc: 'DOC', rtf: 'RTF', djvu: 'DjVu' };
-export const formatLabel = (format) => FORMAT_LABEL[format] || '文本';
 
 const ZIP_MAGIC = (bytes) => bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b
   && ((bytes[2] === 0x03 && bytes[3] === 0x04) || (bytes[2] === 0x05 && bytes[3] === 0x06) || (bytes[2] === 0x07 && bytes[3] === 0x08));

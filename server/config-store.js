@@ -2,7 +2,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { validateProviderConfig } from './model-adapters.js';
-import { llmRequiresApiKey } from './story-analyzer.js';
+import { llmRequiresApiKey } from './llm-client.js';
 import { DEFAULT_ENGINE_CONCURRENCY, normalizeEngineConcurrency } from './breeze-lane.js';
 import { activeTtsSettings, LEGACY_BYTE_PROVIDERS, legacyByteEndpoint, publicTtsProviders, redactHeaders, sanitizeTtsProviders } from './tts-providers.js';
 import { BREEZE_DEFAULT_ENDPOINT, BREEZE_DEFAULT_TIMEOUT_MS, normalizeBreezeEndpoint, normalizeBreezeTimeout } from './breeze.js';

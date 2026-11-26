@@ -7,7 +7,7 @@
 ![声场：让故事，有声有场。AI 多人广播剧创作工作台](public/brand/launch-cover.jpg)
 
 **Personal AI radio-drama workbench — paste a novel, get a directed, mixed episode.**
-本地运行、开源免费；每个角色都有自己的声音，从头到尾不换人。
+本地运行、代码 MIT 开源；每个角色都有自己的声音，从头到尾不换人。
 
 ---
 

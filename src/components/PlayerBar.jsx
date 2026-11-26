@@ -16,21 +16,27 @@ export function PlayerBar({ scene, requestedLineId, reviewToken, onOpenMix, onEx
   const [volume, setVolume] = useState(1);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const activeClip = clips[clipIndex];
+  const [soundClipId, setSoundClipId] = useState(null);
+  // Individual environment/SFX previews use this player too. Keep the scene
+  // review playlist dialogue-only; a sound preview ends after that one asset.
+  const soundClip = scene.lines.find((line) => line.id === soundClipId && line.type !== 'dialogue' && line.assetUrl);
+  const activeClip = soundClip || clips[clipIndex];
+  const activeUrl = activeClip?.audioUrl || activeClip?.assetUrl;
 
-  useEffect(() => { if (audioRef.current) audioRef.current.volume = volume; }, [volume, activeClip?.audioUrl]);
+  useEffect(() => { if (audioRef.current) audioRef.current.volume = volume; }, [volume, activeUrl]);
 
-  useEffect(() => { setClipIndex(0); setPlaying(false); setCurrentTime(0); }, [scene.id]);
+  useEffect(() => { setClipIndex(0); setSoundClipId(null); setPlaying(false); setCurrentTime(0); setDuration(0); }, [scene.id]);
   useEffect(() => {
     if (!requestedLineId) return;
     const index = clips.findIndex((clip) => clip.id === requestedLineId);
-    if (index >= 0) { setClipIndex(index); setPlaying(true); }
-  }, [requestedLineId, clips]);
+    if (index >= 0) { setSoundClipId(null); setClipIndex(index); setPlaying(true); }
+    else if (scene.lines.some((line) => line.id === requestedLineId && line.type !== 'dialogue' && line.assetUrl)) {
+      setSoundClipId(requestedLineId); setPlaying(true);
+    }
+  }, [requestedLineId, clips, scene.lines]);
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio || !activeClip) return;
-    audio.load(); setCurrentTime(0); setDuration(0);
-  }, [activeClip?.audioUrl]);
+    setCurrentTime(0); setDuration(0);
+  }, [activeUrl]);
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !activeClip) return;
@@ -38,7 +44,7 @@ export function PlayerBar({ scene, requestedLineId, reviewToken, onOpenMix, onEx
   }, [playing, activeClip]);
   useEffect(() => {
     if (!reviewToken || !clips.length) return;
-    setClipIndex(0); setPlaying(true);
+    setSoundClipId(null); setClipIndex(0); setPlaying(true);
   }, [reviewToken, clips.length]);
 
   const seekBy = (seconds) => {
@@ -46,7 +52,7 @@ export function PlayerBar({ scene, requestedLineId, reviewToken, onOpenMix, onEx
     if (audio) audio.currentTime = Math.max(0, Math.min(audio.duration || 0, audio.currentTime + seconds));
   };
   const handleEnded = () => {
-    if (clipIndex < clips.length - 1) setClipIndex((index) => index + 1);
+    if (!soundClip && clipIndex < clips.length - 1) setClipIndex((index) => index + 1);
     else setPlaying(false);
   };
   const togglePlayback = () => {
@@ -56,8 +62,8 @@ export function PlayerBar({ scene, requestedLineId, reviewToken, onOpenMix, onEx
 
   return (
     <footer className="player-bar">
-      <audio ref={audioRef} src={activeClip?.audioUrl || undefined} onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)} onDurationChange={(event) => setDuration(event.currentTarget.duration)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={handleEnded} />
-      <div className="now-playing"><div className="cover-art"><span>{scene.number}</span></div><div className="now-copy"><strong>{activeClip ? `${activeClip.speaker} · ${scene.title}` : scene.title}</strong><span>{clips.length ? `${clipIndex + 1} / ${clips.length} 个对白片段` : '生成场景后可审听真实音频'}</span></div></div>
+      <audio ref={audioRef} src={activeUrl || undefined} preload="metadata" onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)} onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)} onDurationChange={(event) => setDuration(event.currentTarget.duration)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={handleEnded} />
+      <div className="now-playing"><div className="cover-art"><span>{scene.number}</span></div><div className="now-copy"><strong>{activeClip ? `${soundClip ? activeClip.label || activeClip.assetName || '声音素材' : activeClip.speaker} · ${scene.title}` : scene.title}</strong><span>{soundClip ? `正在试听${activeClip.type === 'ambient' ? '环境声' : activeClip.type === 'music' ? '音乐' : '音效'}` : clips.length ? `${clipIndex + 1} / ${clips.length} 个对白片段` : '生成或绑定音频后可试听'}</span></div></div>
       <div className="transport">
         <button type="button" aria-label="后退 10 秒" title="后退 10 秒" onClick={() => seekBy(-10)}><RotateCcw size={17} /></button>
         <button className="main-play" type="button" aria-label={playing ? '暂停' : '播放'} disabled={!activeClip} onClick={togglePlayback}>{playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}</button>

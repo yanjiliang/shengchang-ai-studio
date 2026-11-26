@@ -19,3 +19,14 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run test:e2e
+      # Catch frontend / landing compile errors that the node tests never load.
+      - run: npm run build
+      - run: npm run build:landing
+      # Landing output is committed under docs/ for GitHub Pages: fail if it is stale.
+      - name: Landing build under docs/ is committed and up to date
+        run: |
+          if [ -n "$(git status --porcelain -- docs/)" ]; then
+            git status --short -- docs/
+            echo "::error::docs/ is stale - run 'npm run build:landing' and commit the result (delete superseded docs/vite bundles)."
+            exit 1
+          fi

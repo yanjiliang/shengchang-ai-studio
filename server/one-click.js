@@ -259,7 +259,7 @@ export async function runOneClickPipeline(task, config, deps = {}) {
       if (!project.sourceText?.trim()) throw new Error('项目既没有场景也没有小说原文，无法拆解');
       progress(8, '拆解 · 正在理解人物与场景结构');
       const analyzed = await analyze(config, { text: project.sourceText, filename: project.sourceFilename || 'novel.txt', name: project.name }, {
-        onProgress: ({ current, total, progress: percent }) => progress(8 + Math.round(percent * 0.2), `拆解 · 原文 ${current} / ${total} 段`),
+        onProgress: ({ current, total, progress: percent, message }) => progress(8 + Math.round(percent * 0.2), message ? `拆解 · ${message}` : `拆解 · 原文 ${current} / ${total} 段`),
         shouldCancel,
       });
       if (shouldCancel()) throw cancelledError();

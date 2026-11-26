@@ -2,7 +2,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { validateProviderConfig } from './model-adapters.js';
-import { llmRequiresApiKey } from './story-analyzer.js';
+import { llmRequiresApiKey } from './llm-client.js';
 import { DEFAULT_ENGINE_CONCURRENCY, normalizeEngineConcurrency } from './breeze-lane.js';
 import { activeTtsSettings, LEGACY_BYTE_PROVIDERS, legacyByteEndpoint, publicTtsProviders, redactHeaders, sanitizeTtsProviders } from './tts-providers.js';
 import { BREEZE_DEFAULT_ENDPOINT, BREEZE_DEFAULT_TIMEOUT_MS, normalizeBreezeEndpoint, normalizeBreezeTimeout } from './breeze.js';
@@ -40,13 +40,14 @@ export const DEFAULT_CONFIG = {
   llmEndpoint: '', // 0048：不预填任何服务商，用户自己填 Base URL（Product 定）
   llmApiKey: '',
   llmModel: '',
-  llmSystemPrompt: '你是一位专业广播剧编剧和声音导演。忠于原作，不凭空新增关键剧情。',
+  llmSystemPrompt: '你是一位擅长精品电影感多人有声剧的总导演与声音分镜师。忠于原作情节与人物关系，不凭空篡改关键剧情；善于用镜头感旁白控场、高频电影拟音、氛围配乐、景别距离与停顿气口构建强画面感与情绪张力。',
   // Sound-effect / music-bed generation (SoundPicker 生成 tab). Independent of
   // the speech provider: different services, different request shapes.
   sfxProvider: 'demo',
   sfxEndpoint: '',
   sfxAccessKey: '',
   sfxModel: '',
+  sfxTimeoutMs: 120_000,
   sfxCustomHeaders: '{}',
   sfxCustomBodyTemplate: '{"prompt":"{{prompt}}","duration":{{durationSec}}}',
 };
@@ -82,6 +83,7 @@ export function sanitizeConfig(input = {}) {
     sfxEndpoint: String(config.sfxEndpoint || ''),
     sfxAccessKey: String(config.sfxAccessKey || ''),
     sfxModel: String(config.sfxModel || ''),
+    sfxTimeoutMs: Number.isInteger(Number(config.sfxTimeoutMs)) && Number(config.sfxTimeoutMs) >= 5_000 && Number(config.sfxTimeoutMs) <= 1_800_000 ? Number(config.sfxTimeoutMs) : 120_000,
     sfxCustomHeaders: String(config.sfxCustomHeaders || '{}'),
     sfxCustomBodyTemplate: String(config.sfxCustomBodyTemplate || DEFAULT_CONFIG.sfxCustomBodyTemplate),
   };

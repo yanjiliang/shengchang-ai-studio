@@ -64,6 +64,10 @@ fakeLlm = await new Promise((resolve) => {
   const server = http.createServer((request, response) => {
     request.resume();
     request.on('end', () => {
+      if (request.url === '/invalid-sfx') {
+        response.writeHead(200, { 'Content-Type': 'audio/wav' });
+        return response.end('not a decodable audio file');
+      }
       response.writeHead(200, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(FAKE_ANALYSIS) }, finish_reason: 'stop' }] }));
     });
@@ -262,6 +266,18 @@ const soundTask = await waitForTask(soundTaskCreated.payload.id);
 check('sound generation completes (demo engine)', soundTask.status === 'completed' && Boolean(soundTask.result?.url), soundTask.error || soundTask.message);
 const soundAudio = await fetch(`${BASE}${soundTask.result?.url || ''}`);
 check('generated sound audio served', soundAudio.ok, `${soundAudio.status}`);
+check('sound generation returns decoded duration and MIME', soundTask.result?.durationMs === 3000 && soundTask.result?.mime === 'audio/wav');
+const defaultSoundInput = { kind: 'sound-generate', projectId: sampleProject.id, sound: { prompt: '雨夜环境，默认时长', type: 'ambient' } };
+for (const label of ['fresh', 'cached']) {
+  const created = await call('/api/generate', { method: 'POST', body: JSON.stringify(defaultSoundInput) });
+  const finished = await waitForTask(created.payload.id);
+  check(`${label} sound without requested duration reports actual 12s`, finished.status === 'completed' && finished.result?.durationMs === 12000, finished.error || JSON.stringify(finished.result));
+}
+
+await call('/api/config', { method: 'PUT', body: JSON.stringify({ sfxProvider: 'custom', sfxEndpoint: `http://127.0.0.1:${fakeLlm.address().port}/invalid-sfx`, sfxCustomBodyTemplate: '{"prompt":"{{prompt}}"}' }) });
+const invalidSound = await call('/api/generate', { method: 'POST', body: JSON.stringify(defaultSoundInput) });
+const invalidResult = await waitForTask(invalidSound.payload.id);
+check('undecodable generated sound fails instead of claiming success', invalidResult.status === 'failed' && Boolean(invalidResult.error), invalidResult.error);
 
 console.log(process.exitCode ? 'E2E FAILED' : 'E2E GREEN');
 // The spawned server would keep the event loop alive forever; tear down

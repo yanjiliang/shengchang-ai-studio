@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { LLM_IMPORT_BLOCKED, llmReady } from './lib/llm.js';
-import { extractNovelFile, formatLabel, NOVEL_FILE_ACCEPT } from './lib/import-file.js';
+import { formatLabel, NOVEL_FILE_ACCEPT } from './lib/import-formats.js';
 import { ChapterPicker } from './components/import/ChapterPicker';
 import { ImportHub } from './components/import/ImportHub';
 import { AppRail } from './components/AppRail';
@@ -14,11 +14,13 @@ import { Inspector } from './components/studio/Inspector';
 import { SceneCanvas } from './components/studio/SceneCanvas';
 import { SceneSidebar } from './components/studio/SceneSidebar';
 import { SoundPicker } from './components/studio/SoundPicker';
-import { QualityView } from './components/views/QualityView';
-import { SettingsView } from './components/views/SettingsView';
-import { SoundsView } from './components/views/SoundsView';
-import { VoicesView } from './components/views/VoicesView';
-import { ProductionView } from './components/views/ProductionView';
+// 工作台（studio）之外的视图按需加载，首屏只打包剧本工作台。
+const lazyView = (load, name) => lazy(() => load().then((module) => ({ default: module[name] })));
+const QualityView = lazyView(() => import('./components/views/QualityView'), 'QualityView');
+const SettingsView = lazyView(() => import('./components/views/SettingsView'), 'SettingsView');
+const SoundsView = lazyView(() => import('./components/views/SoundsView'), 'SoundsView');
+const VoicesView = lazyView(() => import('./components/views/VoicesView'), 'VoicesView');
+const ProductionView = lazyView(() => import('./components/views/ProductionView'), 'ProductionView');
 import { api, waitForTask } from './lib/api';
 import { formatDuration, qualityReport as buildQualityReport, stageProgress as buildStageProgress } from './lib/quality';
 import { buildGenerationRequest } from '../shared/generation-requests.mjs';
@@ -210,7 +212,16 @@ function App() {
   };
   // Changing the text does not delete the clip; the server flags it stale so the
   // old audio stays auditionable until it is regenerated.
-  const updateLine = (lineId, patch) => persistState({ ...state, scenes: scenes.map((scene) => scene.id !== currentScene.id ? scene : { ...scene, status: 'draft', lines: scene.lines.map((line) => line.id === lineId ? { ...line, ...normalizeLinePatch(patch) } : line) }) });
+  const updateLine = (lineId, patch) => persistState({
+    ...state,
+    scenes: scenes.map((scene) => {
+      if (scene.id !== currentScene.id) return scene;
+      const lines = scene.lines.map((line) => line.id === lineId ? { ...line, ...normalizeLinePatch(patch) } : line);
+      // 改说话人后同步场景 cast，侧栏不会还显示旧的角色列表。
+      const cast = [...new Set(lines.filter((line) => line.type === 'dialogue' && line.speaker).map((line) => line.speaker))].join(' · ') || '旁白';
+      return { ...scene, status: 'draft', cast, lines };
+    }),
+  });
   const updateScene = (sceneId, patch) => persistState({ ...state, scenes: scenes.map((scene) => scene.id !== sceneId ? scene : { ...scene, ...patch, status: 'draft' }) });
   const changeScene = (sceneId) => { const scene = scenes.find((item) => item.id === sceneId); setCurrentSceneId(sceneId); setSelectedLineId(scene.lines.find((line) => line.type === 'dialogue')?.id || scene.lines[0]?.id || null); };
   const selectProject = async (projectId) => { setLoading(true); try { await refreshProjects(projectId); setView('studio'); } catch (error) { setToast(error.message); } finally { setLoading(false); } };
@@ -314,7 +325,7 @@ function App() {
     }
     return generateBatch({ selects: (line) => wanted.has(line.id), kind: 'batch-stale', emptyMessage: '这些句子已经不在作品里了', doneMessage: (count) => `已重新配音 ${count} 句，可以再导出` });
   };
-  const playLine = (line) => { const url = line.audioUrl || line.assetUrl; if (!url) setToast('请先生成或绑定实际音频'); else if (line.type === 'dialogue') { setRequestedLineId(null); window.setTimeout(() => setRequestedLineId(line.id), 0); } else new Audio(url).play().catch(() => setToast('素材无法播放')); };
+  const playLine = (line) => { const url = line.audioUrl || line.assetUrl; if (!url) setToast('请先生成或绑定实际音频'); else { setRequestedLineId(null); window.setTimeout(() => setRequestedLineId(line.id), 0); } };
 
   // 按服务端保存的章节记录逐章导入；已导入的章节由 ChapterPicker 过滤掉，
   // 每章完成后服务端会把 imported_at 写回 book_chapters，下次可以直接续传。
@@ -400,6 +411,7 @@ function App() {
       let imported;
       try {
         setAnalysis({ progress: 1, message: `正在读取 ${file.name}` });
+        const { extractNovelFile } = await import('./lib/import-file.js');
         imported = await extractNovelFile(file);
       } catch (error) { setToast(error.message); setAnalysis(null); return; }
       if (!imported.text.trim()) { setToast('没有从文件里读到正文'); setAnalysis(null); return; }
@@ -451,7 +463,7 @@ function App() {
     if (!currentScene) return;
     const id = crypto.randomUUID();
     const line = type === 'dialogue'
-      ? { id, type, speaker: '旁白', speakerId: 'narrator', text: '输入新的旁白或对白', subtext: '按当前剧情上下文表达。', emotion: '克制', intensity: 40, pace: 90, distance: '近讲' }
+      ? { id, type, speaker: '旁白', speakerId: 'narrator', text: '输入新的旁白或对白', subtext: '', emotion: '克制', intensity: 40, pace: 90, distance: '近讲' }
       : { id, type, label: SOUND_EVENT_LABELS[type] || '声音事件', text: SOUND_EVENT_PLACEHOLDERS[type] || '描述需要的声音' };
     persistState({ ...state, scenes: scenes.map((scene) => scene.id === currentScene.id ? { ...scene, status: 'draft', lines: [...scene.lines, line] } : scene) });
     setSelectedLineId(id);
@@ -560,6 +572,8 @@ function App() {
         category: line.type === 'music' ? '音乐' : line.type === 'ambient' ? '环境' : '动作',
         tags: ['AI 生成'],
         color: '#8fb4ff',
+        durationMs: result.durationMs,
+        mime: result.mime,
         duration: formatDuration(result.durationMs),
         source: 'generated',
         license: 'AI 生成',
@@ -751,7 +765,7 @@ function App() {
   else if (view === 'quality') content = <QualityView report={qualityReport} stages={stages} onToast={setToast} onExport={() => exportSceneById(currentScene?.id)} onOpenProduction={() => setView('production')} onOpenView={setView} onLocateLine={locateLine} onOpenVoices={() => setView('voices')} onOpenSounds={() => setView('sounds')} onGenerateMissing={() => generateMissingDialogue([currentScene?.id])} onRegenerateStale={() => regenerateStaleDialogue([currentScene?.id])} generating={Boolean(generation)} exporting={exporting} exportLocked={exportLock.locked} />;
   else content = <SettingsView config={config} onSave={saveConfig} onTestLlm={api.testLlm} onToast={setToast} onReload={reloadConfig} />;
 
-  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{outage ? <BreezeOutageBanner outage={outage} checking={breeze.checking} onRetry={retryAfterOutage} onResume={retryAfterOutage} onSettings={() => { setOutage(null); setView('settings'); }} onDismiss={() => setOutage(null)} /> : null}{content}</div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} exportLocked={exportLock.locked} /> : null}{pickerLine ? <SoundPicker line={pickerLine} projectId={project.id} config={config} builtinAssets={builtinAssets} onBind={bindAsset} onUpload={uploadAndBind} onGenerate={generateSound} onClose={() => setPickerLine(null)} onToast={setToast} /> : null}{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}{chapterPicker ? <ChapterPicker chapters={chapterPicker.chapters} fileName={chapterPicker.fileName} hasScenes={chapterPicker.hasScenes} onCancel={() => closeChapterPicker(null)} onConfirm={(value) => closeChapterPicker(value)} /> : null}{importHub ? <ImportHub books={importHub.books} onCancel={() => closeImportHub(null)} onContinue={(bookId) => closeImportHub({ action: 'continue', bookId })} onNewFile={() => closeImportHub({ action: 'file' })} onDelete={deleteBookImportRecord} /> : null}<Toast message={toast} />{exportFailure ? <ExportFailure className="export-failure-notice" text={exportFailure.text} detail={exportFailure.detail} missing={Boolean(exportFailure.missing)} lines={exportFailure.lines || []} onRegenerate={(ids) => { setExportFailure(null); regenerateLines(ids); }} onLocate={(item) => locateLine(item.lineId)} retryDisabled={exporting || exportLock.locked} onRetry={() => { const { retry } = exportFailure; setExportFailure(null); retry?.(); }} onClose={() => setExportFailure(null)} /> : null}</div>;
+  return <div className="app-shell"><AppRail view={view} onViewChange={setView} /><TopBar view={view} project={project} currentScene={currentScene} projects={projects} onSelectProject={selectProject} onCreateProject={createProject} onArchiveProject={archiveProjectById} onGenerate={generateScene} onReview={() => setReviewToken(Date.now())} onImportNovel={importNovel} generating={Boolean(activeProgress)} canReview={generatedClips.length > 0} saveState={saveState} /><div className="app-content">{outage ? <BreezeOutageBanner outage={outage} checking={breeze.checking} onRetry={retryAfterOutage} onResume={retryAfterOutage} onSettings={() => { setOutage(null); setView('settings'); }} onDismiss={() => setOutage(null)} /> : null}<Suspense fallback={<ViewLoading />}>{content}</Suspense></div>{view === 'studio' && currentScene ? <PlayerBar scene={currentScene} requestedLineId={requestedLineId} reviewToken={reviewToken} onOpenMix={() => setView('production')} onExport={() => exportSceneById(currentScene.id)} exporting={exporting} exportLocked={exportLock.locked} /> : null}{pickerLine ? <SoundPicker line={pickerLine} projectId={project.id} config={config} builtinAssets={builtinAssets} onBind={bindAsset} onUpload={uploadAndBind} onGenerate={generateSound} onClose={() => setPickerLine(null)} onToast={setToast} /> : null}{dialog ? <Dialog request={dialog} onDone={closeDialog} /> : null}{chapterPicker ? <ChapterPicker chapters={chapterPicker.chapters} fileName={chapterPicker.fileName} hasScenes={chapterPicker.hasScenes} onCancel={() => closeChapterPicker(null)} onConfirm={(value) => closeChapterPicker(value)} /> : null}{importHub ? <ImportHub books={importHub.books} onCancel={() => closeImportHub(null)} onContinue={(bookId) => closeImportHub({ action: 'continue', bookId })} onNewFile={() => closeImportHub({ action: 'file' })} onDelete={deleteBookImportRecord} /> : null}<Toast message={toast} />{exportFailure ? <ExportFailure className="export-failure-notice" text={exportFailure.text} detail={exportFailure.detail} missing={Boolean(exportFailure.missing)} lines={exportFailure.lines || []} onRegenerate={(ids) => { setExportFailure(null); regenerateLines(ids); }} onLocate={(item) => locateLine(item.lineId)} retryDisabled={exporting || exportLock.locked} onRetry={() => { const { retry } = exportFailure; setExportFailure(null); retry?.(); }} onClose={() => setExportFailure(null)} /> : null}</div>;
 }
 
 // --- Local composition helpers (props-only, no state of their own) --------
@@ -766,6 +780,10 @@ function WelcomeScreen({ onCreate }) {
 
 function LoadErrorScreen({ onRetry, onCreate }) {
   return <main className="empty-project"><BrandSignature /><h2>作品加载失败</h2><p>没有打开任何作品：读取失败，或所选作品已不存在。可重试，或从顶部切换其他作品。</p><div className="empty-project-actions"><button className="button primary-button" type="button" onClick={onRetry}>重试加载</button><button className="button secondary-button" type="button" onClick={onCreate}>新建作品</button></div></main>;
+}
+
+function ViewLoading() {
+  return <div className="app-loading" role="status"><span>正在加载…</span></div>;
 }
 
 function LoadingScreen() {

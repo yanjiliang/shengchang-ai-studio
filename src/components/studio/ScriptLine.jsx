@@ -1,4 +1,5 @@
 import { Play, RefreshCcw, Sparkles, Trash2 } from 'lucide-react';
+import { normalizeDistance } from '../../../shared/mix-defaults.mjs';
 import { deliveryLabel } from './delivery-label.js';
 import { Waveform } from './Waveform';
 
@@ -15,7 +16,17 @@ const typeColors = {
 function eventTimeLabel(line) {
   if (!line.assetUrl) return '待绑定';
   const startMs = Number(line.mix?.startMs);
-  return Number.isFinite(startMs) && line.mix.startMs !== '' ? `入点 ${(Math.max(0, startMs) / 1000).toFixed(1)}s` : '跟随场景';
+  if (Number.isFinite(startMs) && line.mix.startMs !== '') return `入点 ${(Math.max(0, startMs) / 1000).toFixed(1)}s`;
+  return line.type === 'sfx' ? '跟随脚本' : '跟随场景';
+}
+
+function pauseTag(line) {
+  const raw = line.mix?.gapAfterMs;
+  if (raw === undefined || raw === null || raw === '') return '';
+  const ms = Number(raw);
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const sec = (ms / 1000).toFixed(2).replace(/\.?0+$/, '');
+  return ms <= 180 ? `抢白 ${sec}s` : ms >= 550 ? `留白 ${sec}s` : `停顿 ${sec}s`;
 }
 
 export function ScriptLine({ line, provider, character, selected, onSelect, onTextChange, onRegenerate, onPlay, onAcquire, onDelete }) {
@@ -34,6 +45,9 @@ export function ScriptLine({ line, provider, character, selected, onSelect, onTe
     );
   }
 
+  const distance = line.distance ? normalizeDistance(line.distance) : '近讲';
+  const pause = pauseTag(line);
+
   return (
     <article
       className={`dialogue-line ${selected ? 'is-selected' : ''}`}
@@ -44,7 +58,11 @@ export function ScriptLine({ line, provider, character, selected, onSelect, onTe
       <span className="line-selection" />
       <button className="speaker-button" type="button" style={{ color: character?.color }} onClick={onSelect}>{line.speaker}</button>
       <div className="dialogue-body">
-        <div className="delivery-line">{deliveryLabel(line, provider)}</div>
+        <div className="delivery-line">
+          {deliveryLabel(line, provider)}
+          {distance !== '近讲' ? ` · ${distance}` : ''}
+          {pause ? ` · ${pause}` : ''}
+        </div>
         <textarea
           className="dialogue-editor"
           value={line.text}
@@ -58,7 +76,7 @@ export function ScriptLine({ line, provider, character, selected, onSelect, onTe
             onTextChange(event.target.value);
           }}
         />
-        <p className="subtext-line"><span>潜台词</span>{line.subtext}</p>
+        {line.subtext?.trim() ? <p className="subtext-line"><span>潜台词</span>{line.subtext}</p> : null}
       </div>
       <div className="line-actions">
         {line.audioStale ? <span className="stale-badge" title="台词已修改，当前音频仍是旧版本">待重生成</span> : null}

@@ -13,7 +13,7 @@ import { taskWithQueuePosition, cancelTask, enqueueGeneration, enqueueNovelAnaly
 import { seedSampleProject } from './sample-project.js';
 import { ensureBuiltinAssets, listBuiltinAssets } from './builtin-assets.js';
 import { recommendForEvent } from './asset-recommend.js';
-import { redactLlmSecret, resolveLlmApiKey, resolveSavedSecret, testLlm, validateLlmConfig } from './story-analyzer.js';
+import { redactLlmSecret, resolveLlmApiKey, resolveSavedSecret, testLlm, validateLlmConfig } from './llm-client.js';
 import { sameEndpoint, sameLlmEndpoint } from '../shared/endpoint.mjs';
 import { registerBreezeRoutes, sendError } from './breeze-routes.js';
 import { registerBookImportRoutes } from './book-import-routes.js';

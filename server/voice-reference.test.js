@@ -354,4 +354,34 @@ describe('生成解析与影响范围', () => {
     assert.equal(outcome.failures.length, 0, JSON.stringify(outcome.failures));
     assert.ok(mock.state.voices.has(state.voiceReferences.tangseng.breezeVoiceId));
   });
+
+  test('只改说话距离不会触发 Breeze/豆包 过期重配；自定义模板含 {{distance}} 时照旧过期', async () => {
+    const { lineStaleness, referenceImpact } = await import('./voice-references.js');
+    const config = await readConfig();
+    const project = getProject(projectId);
+    const line = project.state.scenes[0].lines.find((item) => item.id === 'l2'); // sunwukong（未换参考音）
+    assert.equal(lineStaleness(config, project.state, line).stale, false);
+
+    // 仅改 distance → Breeze 不判过期、不影响 referenceImpact
+    const distant = { ...line, distance: '远距' };
+    assert.deepEqual(lineStaleness(config, project.state, distant), { stale: false, staleReason: null });
+    assert.deepEqual(lineStaleness(config, project.state, { ...line, distance: '耳语' }), { stale: false, staleReason: null });
+    const modifiedProject = { ...project, state: { ...project.state, scenes: [{ ...project.state.scenes[0], lines: project.state.scenes[0].lines.map((item) => (item.id === 'l2' ? distant : item)) }] } };
+    assert.deepEqual(referenceImpact(config, modifiedProject, 'sunwukong'), { affectedLineCount: 0, lineIds: [] });
+
+    // 同时改了情绪 → 必须判 params 过期
+    assert.deepEqual(lineStaleness(config, project.state, { ...distant, emotion: '愤怒' }), { stale: true, staleReason: 'params' });
+
+    // 豆包引擎同样只改距离不过期
+    const doubao = { provider: 'volcengine-api-key', endpoint: 'https://openspeech.bytedance.com/api/v3/tts/unidirectional', resourceId: 'seed-tts-2.0', audioFormat: 'mp3', sampleRate: 24000, ttsStableSpeaker: true };
+    const doubaoState = { voiceMap: { a: 'zh_male_m191_uranus_bigtts' }, pronunciationDictionary: [] };
+    const baseLine = { id: 'd1', type: 'dialogue', speakerId: 'a', text: '测试台词', emotion: '克制', intensity: 40, pace: 90, distance: '近讲', audioUrl: '/media/a.mp3', audioText: '测试台词', audioEngine: 'volcengine-api-key' };
+    const doubaoHash = audioContentHash(doubao, buildGenerationRequest(baseLine, doubaoState.voiceMap));
+    assert.deepEqual(lineStaleness(doubao, doubaoState, { ...baseLine, audioHash: doubaoHash, distance: '远距' }), { stale: false, staleReason: null });
+
+    // 自定义引擎模板显式用了 {{distance}} → 改距离照旧判过期
+    const customWithDist = { provider: 'custom', endpoint: 'http://127.0.0.1:9/tts', model: 'm', resourceId: '', audioFormat: 'wav', sampleRate: 24000, customBodyTemplate: '{"text":"{{text}}","distance":"{{distance}}"}' };
+    const customHash = audioContentHash(customWithDist, buildGenerationRequest(baseLine, doubaoState.voiceMap));
+    assert.deepEqual(lineStaleness(customWithDist, doubaoState, { ...baseLine, audioEngine: 'custom', audioHash: customHash, distance: '远距' }), { stale: true, staleReason: 'params' });
+  });
 });

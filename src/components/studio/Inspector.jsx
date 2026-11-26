@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { DRIFT_RISK_HINT, emotionDriftRisk } from '../../lib/directable';
 import { intensityOf, showsNoEmotion, zeroIntensityHint, NO_SUBTEXT_NOTE } from '../../lib/intensity.js';
 import { DirectableBadge } from '../DirectableBadge';
+import { DISTANCE_OPTIONS, DISTANCE_PRESETS, normalizeDistance } from '../../../shared/mix-defaults.mjs';
 
 const emotions = ['警惕', '怀疑', '克制', '疲惫', '愤怒', '悲伤'];
 
@@ -45,7 +46,17 @@ export function Inspector({ line, characters = [], voiceMap = {}, provider, conf
   }
 
   const character = characters.find((item) => item.id === line.speakerId) || { id: line.speakerId, name: line.speaker || '未命名角色' };
-  const voiceId = voiceMap?.[line.speakerId] || '';
+  const currentSpeakerId = line.speakerId || 'narrator';
+  const voiceId = voiceMap?.[currentSpeakerId] || '';
+  // 拆解归属错了时直接改这句的说话人；选项来自项目角色表，旁白始终可用。
+  const speakerOptions = [...characters];
+  if (!speakerOptions.some((item) => item.id === 'narrator')) speakerOptions.unshift({ id: 'narrator', name: '旁白', role: '叙事者' });
+  if (!speakerOptions.some((item) => item.id === currentSpeakerId)) speakerOptions.unshift({ id: currentSpeakerId, name: line.speaker || '未命名角色', role: '' });
+  const changeSpeaker = (speakerId) => {
+    const next = speakerOptions.find((item) => item.id === speakerId);
+    if (!next || next.id === currentSpeakerId) return;
+    onUpdate({ speaker: next.name, speakerId: next.id });
+  };
   // 没验证过的音色 + 这句带情绪指令 → 在指令旁提示（只在真正发指令的 seed-tts-2.0 下）。
   const driftRisk = emotionDriftRisk({ line, voiceId, config });
   const driftHint = driftRisk ? <p className="drift-risk-hint" role="note"><AlertTriangle size={11} />{DRIFT_RISK_HINT}</p> : null;
@@ -70,11 +81,18 @@ export function Inspector({ line, characters = [], voiceMap = {}, provider, conf
               <span><strong>{character.name}<DirectableBadge voiceId={voiceId} /></strong><small>{voiceId || '尚未绑定 voice_id'}</small></span>
               <span className="voice-lock"><LockKeyhole size={11} />{voiceId ? '已绑定' : '待配置'}</span>
             </button>
+            <label className="speaker-switch">
+              <span>切换角色</span>
+              <select value={currentSpeakerId} onChange={(event) => changeSpeaker(event.target.value)} aria-label="切换这句台词的说话人">
+                {speakerOptions.map((item) => <option key={item.id} value={item.id}>{item.name}{item.role ? ` · ${item.role}` : ''}</option>)}
+              </select>
+            </label>
+            <p className="speaker-switch-hint">拆解归属不对时，直接在这里改成旁白或其他角色。</p>
             <div className="similarity-row"><span>当前音频</span><b>{line.audioUrl ? '已生成' : '待生成'}</b></div>
           </section>
           <section className={`inspector-section ${noEmotion ? 'is-muted' : ''}`}>
             <div className="section-caption">说话意图</div>
-            <textarea className="intent-editor" rows="4" value={line.subtext} onChange={(event) => onUpdate({ subtext: event.target.value })} />
+            <textarea className="intent-editor" rows="4" value={line.subtext || ''} placeholder="具体可演的心理动机或发声状态，如：明面客套，实则试探底牌" onChange={(event) => onUpdate({ subtext: event.target.value })} />
             {noEmotion ? <small className="muted-note">{NO_SUBTEXT_NOTE}</small> : null}
           </section>
           <section className="inspector-section">
@@ -127,14 +145,18 @@ export function Inspector({ line, characters = [], voiceMap = {}, provider, conf
           <button className="button secondary-button full-button" type="button" onClick={onOpenVoices}>管理角色音色</button>
         </section>
       ) : null}
-      {tab === 'space' ? (
-        <section className="inspector-section inspector-stack">
-          <div className="section-caption">声场位置</div>
-          <div className="parameter-row"><MapPin size={15} /><span>说话距离</span><b>{line.distance || '近讲'}</b></div>
-          <label className="setting-field"><span>声音距离提示</span><select value={line.distance || '近讲'} onChange={(event) => onUpdate({ distance: event.target.value })}><option value="耳语">耳语</option><option value="近讲">近讲</option><option value="中距">中距</option><option value="远距">远距</option></select></label>
-          <div className="parameter-row"><Volume2 size={15} /><span>用途</span><b>作为合成表演提示</b></div>
-        </section>
-      ) : null}
+      {tab === 'space' ? (() => {
+        const currentDistance = normalizeDistance(line.distance);
+        return (
+          <section className="inspector-section inspector-stack">
+            <div className="section-caption">声场位置</div>
+            <div className="parameter-row"><MapPin size={15} /><span>说话距离</span><b>{currentDistance}</b></div>
+            <label className="setting-field"><span>声场距离预设</span><select value={currentDistance} onChange={(event) => onUpdate({ distance: event.target.value })}>{DISTANCE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}</select></label>
+            <div className="parameter-row"><Volume2 size={15} /><span>混音处理</span><b>{DISTANCE_PRESETS[currentDistance].summary}</b></div>
+            <p className="picker-note">混音预听与导出时自动做声场处理，调整距离无需重新生成语音。</p>
+          </section>
+        );
+      })() : null}
     </aside>
   );
 }

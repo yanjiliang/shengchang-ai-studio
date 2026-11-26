@@ -40,6 +40,20 @@ test('推荐：使用过的素材获得一致性加成', () => {
   assert.ok(boosted.some((pick) => pick.id === 'builtin-music-pad-warm'), '高使用次数应进入推荐');
 });
 
+test('推荐：电影感拟音与配乐词（马蹄/战鼓/大提琴/肃杀）命中内置素材', () => {
+  const musicCandidates = [
+    { id: 'builtin-music-pad-suspense', name: '悬疑 · 低音持续音', type: 'music', tags: ['悬疑', '紧张', '低音', '不安', '铺垫'], mood: '紧张' },
+    { id: 'builtin-music-pulse-tension', name: '逐升 · 脉冲推进', type: 'music', tags: ['紧张', '推进', '脉冲', '追逐', '渐强'], mood: '推进' },
+    { id: 'builtin-sfx-footsteps', name: '脚步 · 碎石', type: 'sfx', tags: ['脚步', '行走', '碎石', '脚步声'], mood: '行进' },
+  ];
+  const drumPicks = recommendForEvent({ line: { type: 'music', text: '肃杀战鼓与急促鼓点推进对峙张力' }, candidates: musicCandidates });
+  assert.equal(drumPicks[0].id, 'builtin-music-pulse-tension');
+  const celloPicks = recommendForEvent({ line: { type: 'music', text: '低沉大提琴暗涌试探' }, candidates: musicCandidates });
+  assert.equal(celloPicks[0].id, 'builtin-music-pad-suspense');
+  const hoofPicks = recommendForEvent({ line: { type: 'sfx', text: '远处雪地马蹄声由远及近' }, candidates: musicCandidates });
+  assert.equal(hoofPicks[0].id, 'builtin-sfx-footsteps');
+});
+
 test('推荐：无匹配返回空数组，不硬凑', () => {
   const picks = recommendForEvent({ line: { type: 'music', text: '完全无关的描述' }, candidates: CANDIDATES });
   assert.deepEqual(picks.filter((pick) => pick.score < 2), []);
